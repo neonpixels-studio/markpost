@@ -47,7 +47,7 @@
         docs
       </NuxtLink>
       <a
-        href="https://github.com/grimicorn/markpost"
+        href="https://github.com/neonpixels-studio/markpost"
         style="
           background: none;
           border: 0;

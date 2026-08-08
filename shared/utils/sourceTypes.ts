@@ -8,7 +8,7 @@
 // RSS/Atom is intentionally excluded: there is no polling infrastructure
 // (scheduler, dedup, fetch cadence) anywhere in the codebase to service an
 // "rss" source, so creating one would silently never ingest a single record.
-// See https://github.com/grimicorn/markpost/issues/116.
+// See https://github.com/neonpixels-studio/markpost/issues/116.
 export const SOURCE_TYPES = [
   "webhook",
   "email",
