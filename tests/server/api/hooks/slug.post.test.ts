@@ -24,6 +24,13 @@ vi.mock("../../../../server/db", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
+  and: (...conditions: unknown[]) => ({ op: "and", conditions }),
+  isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
+  ilike: (column: unknown, pattern: unknown) => ({
+    op: "ilike",
+    column,
+    pattern,
+  }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     strings,
     values,
@@ -111,18 +118,29 @@ function makeSelectChain(resolvedRows: unknown[]) {
   return { from, where, limit };
 }
 
+// The filePath collision lookup resolves at `.where()` (no `.limit()`), unlike
+// the source/settings selects that resolve at `.limit()`.
+function makeWhereResolvingChain(resolvedRows: unknown[]) {
+  const where = vi.fn(() => Promise.resolve(resolvedRows));
+  const from = vi.fn(() => ({ where }));
+  return { from, where };
+}
+
 function stubSourceAndSettings(
   sourceRows: unknown[],
   filenameTemplate = DEFAULT_FILENAME_TEMPLATE,
+  collisionRows: unknown[] = [],
 ) {
   const sourceChain = makeSelectChain(sourceRows);
   const settingsChain = makeSelectChain([{ filenameTemplate }]);
+  const collisionChain = makeWhereResolvingChain(collisionRows);
 
   selectMock
     .mockReturnValueOnce({ from: sourceChain.from })
-    .mockReturnValueOnce({ from: settingsChain.from });
+    .mockReturnValueOnce({ from: settingsChain.from })
+    .mockReturnValueOnce({ from: collisionChain.from });
 
-  return { sourceChain, settingsChain };
+  return { sourceChain, settingsChain, collisionChain };
 }
 
 function stubSourceOnly(sourceRows: unknown[]) {
@@ -281,6 +299,50 @@ describe("POST /api/hooks/[slug]", () => {
       expect(insertedValues.userId).toBe(USER_ID);
       expect(insertedValues.sourceId).toBe(SOURCE_UUID);
       expect(insertedValues.status).toBe("pending");
+    });
+
+    it("appends a suffix when the generated filePath already exists", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource], DEFAULT_FILENAME_TEMPLATE, [
+        { filePath: "2026-01-01-hello.md" },
+      ]);
+      const { values } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+
+      expect(insertedValues.filePath).toBe("2026-01-01-hello-2.md");
+    });
+
+    it("keeps the generated filePath when nothing collides", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource]);
+      const { values } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+
+      expect(insertedValues.filePath).toBe("2026-01-01-hello.md");
     });
 
     it("handles a non-JSON body without crashing", async () => {

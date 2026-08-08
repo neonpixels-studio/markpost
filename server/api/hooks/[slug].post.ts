@@ -5,6 +5,7 @@ import { records, sources, userSettings } from "../../db/schema";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
 import { applyFieldMapping } from "../../utils/fieldMapper";
 import { parseWebhookPayload, type UserSettings } from "../../utils/markdown";
+import { ensureUniqueFilePath } from "../../utils/filePathCollision";
 import { assertWithinRecordLimit } from "../../utils/planLimits";
 import {
   GITHUB_SIGNATURE_HEADER,
@@ -288,7 +289,8 @@ async function buildAndInsertRecord(source: SourceRow, rawBody: string) {
   };
 
   const parsed = parseWebhookPayload(webhookPayload, userSettingsValues);
-  return insertWebhookRecord(source, parsed);
+  const filePath = await ensureUniqueFilePath(source.userId, parsed.filePath);
+  return insertWebhookRecord(source, { ...parsed, filePath });
 }
 
 // The record already exists at this point (writeBestEffortSideEffects is only ever
