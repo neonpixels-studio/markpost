@@ -1,11 +1,11 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../../db";
 import { users } from "../../db/schema";
+import { cancelSubscriptionsForCustomer } from "../../services/stripe";
 import { requireUser } from "../../utils/auth";
+import { findSubscriptionByUserId } from "../../utils/billing";
 import { deleteClerkUser } from "../../utils/clerk";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
-import { findSubscriptionByUserId } from "../../utils/billing";
-import { cancelSubscription } from "../../services/stripe";
 
 function billingUnavailableError(): ApiError {
   return new ApiError(
@@ -21,37 +21,6 @@ function billingUnavailableError(): ApiError {
   );
 }
 
-// Cancels the customer's live Stripe subscription before any local state is
-// wiped. The subscriptions row holds the id we need and is deleted by the
-// users-row cascade below, so once that runs we can no longer reconcile — a
-// Pro user would keep being charged. The Stripe service owns the "is this still
-// live" decision (it no-ops on already-cancelled/missing subscriptions); a
-// genuine Stripe failure aborts the whole delete (fail closed) so we never
-// remove the account while billing is still live. Returns the subscription id
-// we acted on (or null) so the caller can flag an irreversible partial failure.
-async function cancelActiveSubscription(
-  userId: string,
-): Promise<string | null> {
-  const subscription = await findSubscriptionByUserId(userId);
-
-  if (!subscription?.stripeSubscriptionId) {
-    return null;
-  }
-
-  try {
-    await cancelSubscription(subscription.stripeSubscriptionId);
-  } catch (error) {
-    console.error("[account/delete] Stripe subscription cancel failed", {
-      userId,
-      stripeSubscriptionId: subscription.stripeSubscriptionId,
-      error,
-    });
-    throw billingUnavailableError();
-  }
-
-  return subscription.stripeSubscriptionId;
-}
-
 async function deleteAllUserData(userId: string): Promise<void> {
   // Deleting the users row cascades to every user-owned table (api_tokens,
   // sources, records, events, user_settings, subscriptions) via their
@@ -59,23 +28,83 @@ async function deleteAllUserData(userId: string): Promise<void> {
   await getDb().delete(users).where(eq(users.userId, userId));
 }
 
-// Deletes local app data then the Clerk identity. If this fails after the
-// Stripe subscription was already cancelled, the account is left live with a
-// dead subscription — log it loudly so support can reconcile, then rethrow.
-async function deleteUserRecords(
+// Cancel Stripe billing for the account (see cancelSubscriptionsForCustomer for
+// why by-customer, not by-stored-id). Runs before the DB delete so the customer
+// id is still on the row — it cascades away with it. A sweep failure fails the
+// whole delete closed (503) so we never remove the account while billing may
+// still be live; the user is told to retry. Returns whether a sweep actually
+// ran, so the caller can flag the (irreversible) canceled-billing but
+// account-not-deleted state if a later delete step fails.
+async function cancelBillingForUser(userId: string): Promise<boolean> {
+  const subscription = await findSubscriptionByUserId(userId);
+  // No subscription row means checkout never linked a Stripe customer; a free
+  // user delete, nothing to sweep. Warn (not error) so it doesn't cry wolf.
+  if (!subscription) {
+    console.warn("[account] no subscription row; skipping Stripe sweep", {
+      userId,
+    });
+    return false;
+  }
+
+  const { stripeCustomerId, stripeSubscriptionId } = subscription;
+
+  // A row missing its customer id should not happen (upsertSubscription always
+  // sets it). If it also carries a subscription id the row is corrupt and we
+  // can't sweep by customer — and the by-id cancel path is gone — so we can't
+  // confirm billing is dead. Fail closed rather than delete over possibly-live
+  // billing.
+  if (!stripeCustomerId && stripeSubscriptionId) {
+    console.error(
+      "[account] subscription row missing Stripe customer id; failing closed",
+      { userId },
+    );
+    throw billingUnavailableError();
+  }
+
+  // No customer id and no subscription id: nothing billable to sweep. Log at
+  // error so the broken row is visible rather than swallowed.
+  if (!stripeCustomerId) {
+    console.error(
+      "[account] subscription row missing Stripe customer id; nothing to sweep",
+      { userId },
+    );
+    return false;
+  }
+
+  try {
+    const { canceledCount } =
+      await cancelSubscriptionsForCustomer(stripeCustomerId);
+    console.info("[account] canceled Stripe subscriptions on account delete", {
+      userId,
+      canceledCount,
+    });
+  } catch (error) {
+    console.error("[account] Stripe subscription sweep failed", {
+      userId,
+      error,
+    });
+    throw billingUnavailableError();
+  }
+
+  return true;
+}
+
+// Delete app data before the Clerk identity: the users-row delete is
+// idempotent, so a retry after a Clerk failure safely no-ops the DB side. If a
+// step fails after billing was swept, flag it: the user is still active but
+// their subscriptions are already (irreversibly) canceled.
+async function deleteAccount(
   userId: string,
-  canceledSubscriptionId: string | null,
+  billingSwept: boolean,
 ): Promise<void> {
   try {
-    // Delete app data before the Clerk identity: the users-row delete is
-    // idempotent, so a retry after a Clerk failure safely no-ops the DB side.
     await deleteAllUserData(userId);
     await deleteClerkUser(userId);
   } catch (error) {
-    if (canceledSubscriptionId) {
+    if (billingSwept) {
       console.error(
-        "[account/delete] subscription cancelled but account deletion failed; reconcile manually",
-        { userId, canceledSubscriptionId },
+        "[account] billing canceled but account delete failed; user still active",
+        { userId },
       );
     }
     throw error;
@@ -86,8 +115,8 @@ export default defineEventHandler(
   async (event): Promise<{ meta: { deleted: true } }> => {
     try {
       const userId = requireUser(event);
-      const canceledSubscriptionId = await cancelActiveSubscription(userId);
-      await deleteUserRecords(userId, canceledSubscriptionId);
+      const billingSwept = await cancelBillingForUser(userId);
+      await deleteAccount(userId, billingSwept);
       return { meta: { deleted: true } };
     } catch (error) {
       return apiErrorHandler(error);
