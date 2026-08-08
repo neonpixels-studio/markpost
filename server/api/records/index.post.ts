@@ -17,6 +17,7 @@ import {
   type UserSettings,
 } from "../../utils/markdown";
 import { recordSerializer, type RecordApiResponse } from "../../utils/response";
+import { ensureUniqueFilePath } from "../../utils/filePathCollision";
 import {
   apiValidate,
   isAbsent,
@@ -258,6 +259,28 @@ function resolveContentFromHtml(
   );
 }
 
+// Mirrors the `attributes.filePath ?? resolved.filePath` fallback, but
+// disambiguates the *generated* path against existing records so two ingests
+// that collapse to the same name no longer map to one file. A client-supplied
+// filePath (import flow) is intentional and passes through untouched.
+async function resolveGeneratedFilePath(
+  userId: string,
+  clientFilePath: string | null | undefined,
+  generatedFilePath: string | null,
+): Promise<string | null> {
+  if (clientFilePath !== undefined && clientFilePath !== null) {
+    return clientFilePath;
+  }
+
+  // Either "" or null here; preserve it as-is to match the prior
+  // `attributes.filePath ?? resolved.filePath` fallback.
+  if (!generatedFilePath) {
+    return generatedFilePath;
+  }
+
+  return ensureUniqueFilePath(userId, generatedFilePath);
+}
+
 async function applyMarkdownPipeline(
   attributes: CreateRecordAttributes,
   database: Database,
@@ -271,13 +294,18 @@ async function applyMarkdownPipeline(
   const userSettingsValues: UserSettings = { filenameTemplate };
 
   const resolved = resolveContentFromHtml(attributes, userSettingsValues);
+  const filePath = await resolveGeneratedFilePath(
+    userId,
+    attributes.filePath,
+    resolved.filePath,
+  );
 
   return {
     ...attributes,
     content: attributes.content ?? resolved.content,
     frontmatter: attributes.frontmatter ?? resolved.frontmatter,
     tags: attributes.tags ?? resolved.tags,
-    filePath: attributes.filePath ?? resolved.filePath,
+    filePath,
   };
 }
 

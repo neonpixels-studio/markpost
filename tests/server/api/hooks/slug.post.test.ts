@@ -7,6 +7,10 @@ import {
   spyConsoleError,
 } from "../../helpers";
 import { ApiError } from "../../../../server/utils/errors";
+import {
+  CONTENT_LENGTH_HEADER,
+  MAX_WEBHOOK_BODY_BYTES,
+} from "../../../../server/utils/webhookBodyLimit";
 import { hashSharedSecret } from "../../../../server/utils/signatureVerifier";
 import { SHARED_SECRET_HEADER } from "#shared/utils/webhookSecrets";
 
@@ -24,6 +28,13 @@ vi.mock("../../../../server/db", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
+  and: (...conditions: unknown[]) => ({ op: "and", conditions }),
+  isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
+  ilike: (column: unknown, pattern: unknown) => ({
+    op: "ilike",
+    column,
+    pattern,
+  }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     strings,
     values,
@@ -111,18 +122,29 @@ function makeSelectChain(resolvedRows: unknown[]) {
   return { from, where, limit };
 }
 
+// The filePath collision lookup resolves at `.where()` (no `.limit()`), unlike
+// the source/settings selects that resolve at `.limit()`.
+function makeWhereResolvingChain(resolvedRows: unknown[]) {
+  const where = vi.fn(() => Promise.resolve(resolvedRows));
+  const from = vi.fn(() => ({ where }));
+  return { from, where };
+}
+
 function stubSourceAndSettings(
   sourceRows: unknown[],
   filenameTemplate = DEFAULT_FILENAME_TEMPLATE,
+  collisionRows: unknown[] = [],
 ) {
   const sourceChain = makeSelectChain(sourceRows);
   const settingsChain = makeSelectChain([{ filenameTemplate }]);
+  const collisionChain = makeWhereResolvingChain(collisionRows);
 
   selectMock
     .mockReturnValueOnce({ from: sourceChain.from })
-    .mockReturnValueOnce({ from: settingsChain.from });
+    .mockReturnValueOnce({ from: settingsChain.from })
+    .mockReturnValueOnce({ from: collisionChain.from });
 
-  return { sourceChain, settingsChain };
+  return { sourceChain, settingsChain, collisionChain };
 }
 
 function stubSourceOnly(sourceRows: unknown[]) {
@@ -281,6 +303,50 @@ describe("POST /api/hooks/[slug]", () => {
       expect(insertedValues.userId).toBe(USER_ID);
       expect(insertedValues.sourceId).toBe(SOURCE_UUID);
       expect(insertedValues.status).toBe("pending");
+    });
+
+    it("appends a suffix when the generated filePath already exists", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource], DEFAULT_FILENAME_TEMPLATE, [
+        { filePath: "2026-01-01-hello.md" },
+      ]);
+      const { values } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+
+      expect(insertedValues.filePath).toBe("2026-01-01-hello-2.md");
+    });
+
+    it("keeps the generated filePath when nothing collides", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource]);
+      const { values } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+
+      expect(insertedValues.filePath).toBe("2026-01-01-hello.md");
     });
   });
 
@@ -998,6 +1064,83 @@ describe("POST /api/hooks/[slug]", () => {
         statusCode: 429,
       });
       expect(mockRecordWebhookHit).toHaveBeenCalledWith(SOURCE_UUID);
+    });
+  });
+
+  describe("payload size limit", () => {
+    function stubContentLengthHeader(value: string): void {
+      mockGetHeader.mockImplementation((_event: unknown, name: string) =>
+        name === CONTENT_LENGTH_HEADER ? value : undefined,
+      );
+    }
+
+    it("returns 413 by Content-Length before the source lookup or reading the body", async () => {
+      stubContentLengthHeader(String(MAX_WEBHOOK_BODY_BYTES + 1));
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 413,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 413,
+        data: {
+          errors: [
+            {
+              status: "413",
+              title: "Payload Too Large",
+              detail: expect.stringContaining(String(MAX_WEBHOOK_BODY_BYTES)),
+            },
+          ],
+        },
+      });
+      // Rejected on the declared length before doing any work: no source lookup,
+      // no body buffering, no throttle budget spent, no record inserted.
+      expect(selectMock).not.toHaveBeenCalled();
+      expect(mockReadRawBody).not.toHaveBeenCalled();
+      expect(mockRecordWebhookHit).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("returns 413 on the actual byte count when Content-Length is absent", async () => {
+      stubSourceOnly([sampleSource]);
+      mockGetHeader.mockReturnValue(undefined);
+      mockReadRawBody.mockResolvedValue("a".repeat(MAX_WEBHOOK_BODY_BYTES + 1));
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 413,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(mockRecordWebhookHit).not.toHaveBeenCalled();
+    });
+
+    it("returns 413 on the real byte count when Content-Length understates the body", async () => {
+      stubSourceOnly([sampleSource]);
+      stubContentLengthHeader("10");
+      mockReadRawBody.mockResolvedValue("a".repeat(MAX_WEBHOOK_BODY_BYTES + 1));
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 413,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("ingests a body at exactly the byte maximum, passing both checks", async () => {
+      const filler = "x".repeat(
+        MAX_WEBHOOK_BODY_BYTES - JSON.stringify({ content: "" }).length,
+      );
+      const rawBody = JSON.stringify({ content: filler });
+      expect(Buffer.byteLength(rawBody, "utf8")).toBe(MAX_WEBHOOK_BODY_BYTES);
+
+      stubSourceAndSettings([sampleSource]);
+      stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      // An honest Content-Length at the exact cap must pass (the guard rejects
+      // strictly greater), then the byte check at the same boundary must pass too.
+      stubContentLengthHeader(String(MAX_WEBHOOK_BODY_BYTES));
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
     });
   });
 });

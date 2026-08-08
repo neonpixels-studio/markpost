@@ -13,28 +13,33 @@ const mockLoadRecords = vi.fn();
 const mockFetchRecordStats = vi.fn();
 const mockTriggerRecordExport = vi.fn();
 
-vi.mock("../../app/composables/useRecords", () => ({
-  useRecords: () => ({
-    records: recordsRef,
-    isLoading: isLoadingRef,
-    loadError: loadErrorRef,
-    filter: filterRef,
-    loadRecords: mockLoadRecords,
-  }),
-  get fetchRecordStats() {
-    return mockFetchRecordStats;
-  },
-  formatRelativeTime: (isoString: string) => {
-    void isoString;
-    return "2m ago";
-  },
-  formatSourceLabel: (source: string | null) => `label:${source ?? "unknown"}`,
-  sourceTypeIcon: () => "zap",
-  get triggerRecordExportDownload() {
-    return mockTriggerRecordExport;
-  },
-  STATUS_TONE_MAP: { synced: "ok", pending: "warn", error: "err" },
-}));
+vi.mock("../../app/composables/useRecords", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../app/composables/useRecords")>();
+  return {
+    ...actual,
+    useRecords: () => ({
+      records: recordsRef,
+      isLoading: isLoadingRef,
+      loadError: loadErrorRef,
+      filter: filterRef,
+      loadRecords: mockLoadRecords,
+    }),
+    get fetchRecordStats() {
+      return mockFetchRecordStats;
+    },
+    formatRelativeTime: (isoString: string) => {
+      void isoString;
+      return "2m ago";
+    },
+    formatSourceLabel: (source: string | null) =>
+      `label:${source ?? "unknown"}`,
+    sourceTypeIcon: () => "zap",
+    get triggerRecordExportDownload() {
+      return mockTriggerRecordExport;
+    },
+  };
+});
 
 const detailRecordRef = ref<object | null>(null);
 const detailLoadingRef = ref(false);
@@ -64,6 +69,7 @@ const mockNavigateTo = vi.fn();
 vi.stubGlobal("navigateTo", mockNavigateTo);
 
 import InboxPage from "../../app/pages/inbox.vue";
+import { SOURCE_TYPES } from "../../shared/utils/sourceTypes";
 
 const globalConfig = {
   global: {
@@ -86,7 +92,8 @@ const globalConfig = {
         props: ["tone", "dot"],
       },
       InputSegmented: {
-        template: "<div />",
+        template:
+          '<div class="seg" role="radiogroup"><button v-for="option in options" :key="option.value" class="seg-option" :class="{ on: modelValue === option.value }" role="radio" :aria-checked="modelValue === option.value" @click="$emit(\'update:modelValue\', option.value)">{{ option.label }}</button></div>',
         props: ["modelValue", "options"],
         emits: ["update:modelValue"],
       },
@@ -147,6 +154,33 @@ describe("inbox page", () => {
     mockNavigateTo.mockReset();
   });
 
+  it("renders a filter button for every source type plus all/errors", async () => {
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const labels = wrapper
+      .findAll(".seg-option")
+      .map((button) => button.text());
+    for (const sourceType of SOURCE_TYPES) {
+      expect(labels).toContain(sourceType);
+    }
+    expect(labels).toContain("all");
+    expect(labels).toContain("errors");
+    expect(labels).toHaveLength(SOURCE_TYPES.length + 2);
+  });
+
+  it.each(SOURCE_TYPES)(
+    "selects the %s filter when its button is clicked",
+    async (sourceType) => {
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      const button = wrapper
+        .findAll(".seg-option")
+        .find((each) => each.text() === sourceType);
+      await button?.trigger("click");
+      expect(filterRef.value).toBe(sourceType);
+    },
+  );
+
   it("calls loadRecords on mount", async () => {
     mount(InboxPage, globalConfig);
     await flushPromises();
@@ -206,6 +240,24 @@ describe("inbox page", () => {
     const wrapper = mount(InboxPage, globalConfig);
     await flushPromises();
     expect(wrapper.text()).toContain("No records yet");
+  });
+
+  it("shows a filter-specific empty state when a source filter matches nothing", async () => {
+    recordsRef.value = [];
+    filterRef.value = "stripe";
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    expect(wrapper.text()).toContain("No stripe records");
+    expect(wrapper.text()).toContain("Try a different filter.");
+  });
+
+  it("shows a filter-specific empty state for the errors filter", async () => {
+    recordsRef.value = [];
+    filterRef.value = "errors";
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    expect(wrapper.text()).toContain("No errors records");
+    expect(wrapper.text()).toContain("Try a different filter.");
   });
 
   it("renders a badge for each record", async () => {

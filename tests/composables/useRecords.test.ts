@@ -16,8 +16,69 @@ import {
   formatSourceLabel,
   sourceTypeIcon,
   fetchRecordStats,
+  buildFetchUrl,
+  RECORD_FILTER_OPTIONS,
   triggerRecordExportDownload,
 } from "../../app/composables/useRecords";
+import { SOURCE_TYPES } from "../../shared/utils/sourceTypes";
+
+describe("RECORD_FILTER_OPTIONS", () => {
+  it("exposes every shared source type as a selectable filter", () => {
+    const optionValues = RECORD_FILTER_OPTIONS.map((option) => option.value);
+    for (const sourceType of SOURCE_TYPES) {
+      expect(optionValues).toContain(sourceType);
+    }
+  });
+
+  it("keeps the 'all' and 'errors' pseudo-filters alongside the source types", () => {
+    const optionValues = RECORD_FILTER_OPTIONS.map((option) => option.value);
+    expect(optionValues).toContain("all");
+    expect(optionValues).toContain("errors");
+    expect(optionValues).toHaveLength(SOURCE_TYPES.length + 2);
+  });
+
+  it("gives every option a non-empty label", () => {
+    for (const option of RECORD_FILTER_OPTIONS) {
+      expect(option.label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps source type values disjoint from the pseudo-filters", () => {
+    const optionValues = RECORD_FILTER_OPTIONS.map((option) => option.value);
+    expect(new Set(optionValues).size).toBe(optionValues.length);
+    expect(SOURCE_TYPES).not.toContain("all");
+    expect(SOURCE_TYPES).not.toContain("errors");
+  });
+});
+
+describe("buildFetchUrl", () => {
+  it("omits query params for the 'all' filter", () => {
+    expect(buildFetchUrl("all")).toBe("/api/records");
+  });
+
+  it("maps the 'errors' filter to a status query", () => {
+    expect(buildFetchUrl("errors")).toBe(
+      "/api/records?filter%5Bstatus%5D=error",
+    );
+  });
+
+  it.each(SOURCE_TYPES)(
+    "maps the %s source type to a source query",
+    (sourceType) => {
+      expect(buildFetchUrl(sourceType)).toBe(
+        `/api/records?filter%5Bsource%5D=${sourceType}`,
+      );
+    },
+  );
+
+  it("falls back to an unfiltered list and logs for an unknown filter", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Cast past the type system to exercise the runtime guard.
+    expect(buildFetchUrl("bogus" as never)).toBe("/api/records");
+    expect(errorSpy).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+});
 
 describe("sourceTypeIcon", () => {
   it("returns the mail icon for email sources", () => {

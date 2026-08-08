@@ -1,3 +1,8 @@
+import {
+  SOURCE_TYPES,
+  isSourceType,
+  type SourceType,
+} from "#shared/utils/sourceTypes";
 import { computeElapsedBuckets } from "../utils/timeBuckets";
 import { downloadExport, type ExportOutcome } from "../utils/exportDownload";
 import { RECORDS_EXPORT_FILENAME } from "#shared/utils/export";
@@ -53,7 +58,25 @@ export function triggerRecordExportDownload(): Promise<ExportOutcome> {
   return downloadExport(RECORDS_EXPORT_URL, RECORDS_EXPORT_FILENAME);
 }
 
-export type RecordFilterValue = "all" | "webhook" | "email" | "errors";
+export type RecordFilterValue = "all" | "errors" | SourceType;
+
+type FilterOption = {
+  readonly value: RecordFilterValue;
+  readonly label: string;
+};
+
+// Driven from the shared SOURCE_TYPES contract so every type the API filters on
+// is reachable in the UI and the two lists can never drift apart. Labels mirror
+// the raw type value (no pluralization) to keep this list the single source of
+// truth — no second hand-maintained label map to drift.
+export const RECORD_FILTER_OPTIONS: readonly FilterOption[] = [
+  { value: "all", label: "all" },
+  ...SOURCE_TYPES.map((sourceType) => ({
+    value: sourceType,
+    label: sourceType,
+  })),
+  { value: "errors", label: "errors" },
+];
 
 type FetchFilters = {
   source?: string;
@@ -65,14 +88,18 @@ function buildQueryParams(filter: RecordFilterValue): FetchFilters {
     return { status: "error" };
   }
 
-  if (filter === "webhook" || filter === "email") {
+  if (isSourceType(filter)) {
     return { source: filter };
+  }
+
+  if (filter !== "all") {
+    console.error("[useRecords] unknown filter, showing all records:", filter);
   }
 
   return {};
 }
 
-function buildFetchUrl(filter: RecordFilterValue): string {
+export function buildFetchUrl(filter: RecordFilterValue): string {
   const filters = buildQueryParams(filter);
   const params = new URLSearchParams();
 

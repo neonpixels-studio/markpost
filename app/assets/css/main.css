@@ -577,6 +577,7 @@ html.dark .field-label .num {
 /* ---------- segmented control ---------- */
 .seg {
   display: inline-flex;
+  flex-wrap: wrap;
   padding: 3px;
   background: var(--bg-2);
   border: 1px solid var(--line);

@@ -9,10 +9,17 @@ vi.mock("../../../../server/db", () => ({
   getDb: () => ({ insert: insertMock, select: selectMock }),
 }));
 
-// drizzle-orm eq/and used by validateSourceOwnership; mock them as pass-throughs
+// drizzle-orm eq/and used by validateSourceOwnership; isNotNull/ilike used by
+// the filePath collision lookup. Mock them all as pass-throughs.
 vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
   and: (...conditions: unknown[]) => ({ conditions }),
+  isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
+  ilike: (column: unknown, pattern: unknown) => ({
+    op: "ilike",
+    column,
+    pattern,
+  }),
 }));
 
 // The Hobby plan cap check is a separate concern with its own test coverage
@@ -78,6 +85,25 @@ function stubSelectSourceResult(rows: unknown[]) {
   const from = vi.fn(() => ({ where }));
   selectMock.mockReturnValue({ from });
   return { from, where };
+}
+
+// fetchFilenameTemplate resolves at `.where().limit()`; the filePath collision
+// lookup resolves at `.where()`. The markdown pipeline (html present, no
+// client filePath) runs the settings select first, then the collision select.
+function stubHtmlPipelineSelects(
+  filenameTemplate: string,
+  collisionRows: unknown[],
+) {
+  const settingsLimit = vi.fn(() => Promise.resolve([{ filenameTemplate }]));
+  const settingsWhere = vi.fn(() => ({ limit: settingsLimit }));
+  const settingsFrom = vi.fn(() => ({ where: settingsWhere }));
+
+  const collisionWhere = vi.fn(() => Promise.resolve(collisionRows));
+  const collisionFrom = vi.fn(() => ({ where: collisionWhere }));
+
+  selectMock
+    .mockReturnValueOnce({ from: settingsFrom })
+    .mockReturnValueOnce({ from: collisionFrom });
 }
 
 beforeEach(() => {
@@ -339,6 +365,49 @@ describe("POST /api/records", () => {
         links: { self: `/api/records/${sampleRecordWithExtras.uuid}` },
       },
     });
+  });
+
+  it("disambiguates a generated filePath that collides with an existing record", async () => {
+    stubHtmlPipelineSelects("{{date}}-{{slug}}.md", [
+      { filePath: "2026-06-14-deploy-succeeded.md" },
+    ]);
+    const { values } = stubInsertResult([sampleRecord]);
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        title: "Deploy succeeded",
+        html: "<p>All green</p>",
+        created: "2026-06-14T00:00:00.000Z",
+      }),
+    );
+
+    await handler(buildEvent(userId));
+
+    const insertedValues = (
+      values.mock.calls[0] as [Record<string, unknown>]
+    )[0];
+    expect(insertedValues.filePath).toBe("2026-06-14-deploy-succeeded-2.md");
+  });
+
+  it("preserves a client-supplied filePath even when html is present", async () => {
+    stubHtmlPipelineSelects("{{date}}-{{slug}}.md", [
+      { filePath: "custom/path.md" },
+    ]);
+    const { values } = stubInsertResult([sampleRecord]);
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        title: "Deploy succeeded",
+        html: "<p>All green</p>",
+        filePath: "custom/path.md",
+        created: "2026-06-14T00:00:00.000Z",
+      }),
+    );
+
+    await handler(buildEvent(userId));
+
+    const insertedValues = (
+      values.mock.calls[0] as [Record<string, unknown>]
+    )[0];
+    expect(insertedValues.filePath).toBe("custom/path.md");
   });
 
   it("throws a 422 when status is not a valid enum value", async () => {
