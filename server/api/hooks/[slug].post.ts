@@ -14,6 +14,11 @@ import {
 } from "../../utils/signatureVerifier";
 import { writeEvent } from "../../utils/eventWriter";
 import { recordWebhookHit } from "../../utils/webhookThrottle";
+import {
+  assertBodyWithinLimit,
+  assertContentLengthWithinLimit,
+  CONTENT_LENGTH_HEADER,
+} from "../../utils/webhookBodyLimit";
 import { SHARED_SECRET_HEADER } from "#shared/utils/webhookSecrets";
 
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
@@ -355,11 +360,20 @@ async function writeBestEffortSideEffects(
 
 export default defineEventHandler(async (event) => {
   try {
+    // Reject an oversized delivery by its declared Content-Length first: the
+    // check is slug-independent and leaks nothing, so it sheds a flood of
+    // oversized bodies before the source lookup, the body buffer, signature
+    // verification, or the throttle. The post-read byte check below backstops a
+    // missing or dishonest header.
+    assertContentLengthWithinLimit(getHeader(event, CONTENT_LENGTH_HEADER));
+
     const slug = getRouterParam(event, "slug");
     const source = await resolveAndValidateSource(slug);
 
     const rawBodyText = await readRawBody(event);
     const rawBody = rawBodyText ?? "";
+
+    assertBodyWithinLimit(rawBody);
 
     // Verify the signature before spending throttle budget: HMAC verification
     // is cheap and stateless, so checking it first stops an attacker who only

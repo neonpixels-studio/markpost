@@ -73,6 +73,8 @@ A generated secret (GitHub/Zapier/Shortcuts) is revealed exactly once, in the re
 
 Sources created before this verification model existed (`provider` left `null`) keep working unauthenticated rather than being retroactively broken — enabling verification is opt-in for new sources, not a forced migration for old ones.
 
+**Payload size cap.** Ingest rejects any delivery whose body exceeds `MAX_WEBHOOK_BODY_BYTES` (1 MiB) with a `413`, checked by `Content-Length` before buffering and again on the decoded body about to be stored (see `server/utils/webhookBodyLimit.ts`). The rate limit caps request count, not size, so this is what stops a single oversized body from bloating storage and memory on an endpoint that only needs a slug to reach.
+
 **Rotating a secret.** `POST /api/sources/:uuid/rotate-secret` rotates a leaked or lost secret in place — the `endpointSlug` is preserved, so the provider's existing webhook URL keeps working and only the secret has to be re-pasted. It never changes the source's `provider`; `PATCH /api/sources/:uuid` still deliberately ignores `provider`/`providerSecret` (that endpoint is for `routeFolder`/`fieldMapping` only). Behaviour mirrors source creation per provider:
 
 - **GitHub** — generates a new HMAC secret and reveals the plaintext exactly once in the response (paste it into the GitHub webhook's Secret field). Sending a `providerSecret` is rejected — the value is server-generated.
