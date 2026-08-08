@@ -8,7 +8,9 @@ import { parseWebhookPayload, type UserSettings } from "../../utils/markdown";
 import { ensureUniqueFilePath } from "../../utils/filePathCollision";
 import { assertWithinRecordLimit } from "../../utils/planLimits";
 import {
+  GITHUB_PROVIDER,
   GITHUB_SIGNATURE_HEADER,
+  normalizeProvider,
   STRIPE_SIGNATURE_HEADER,
   verifyProviderSignature,
 } from "../../utils/signatureVerifier";
@@ -41,43 +43,33 @@ type UserSettingsRow = {
   filenameTemplate: string;
 };
 
-function notFoundError(): ApiError {
+const NON_OBJECT_BODY_DETAIL =
+  "Webhook body must be a JSON object. Send a JSON object payload with Content-Type: application/json.";
+
+function apiError(httpStatus: number, title: string, detail: string): ApiError {
   return new ApiError(
-    [
-      {
-        status: "404",
-        title: "Not Found",
-        detail: "No source was found for the given slug.",
-      },
-    ],
-    404,
+    [{ status: String(httpStatus), title, detail }],
+    httpStatus,
   );
+}
+
+function notFoundError(): ApiError {
+  return apiError(404, "Not Found", "No source was found for the given slug.");
 }
 
 function signatureError(reason: string): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "401",
-        title: "Unauthorized",
-        detail: reason,
-      },
-    ],
-    401,
-  );
+  return apiError(401, "Unauthorized", reason);
+}
+
+function badRequestError(detail: string): ApiError {
+  return apiError(400, "Bad Request", detail);
 }
 
 function throttledError(): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "429",
-        title: "Too Many Requests",
-        detail:
-          "This webhook source is receiving too many requests. Slow down and try again shortly.",
-      },
-    ],
+  return apiError(
     429,
+    "Too Many Requests",
+    "This webhook source is receiving too many requests. Slow down and try again shortly.",
   );
 }
 
@@ -142,16 +134,7 @@ async function insertWebhookRecord(
     .returning();
 
   if (!created) {
-    throw new ApiError(
-      [
-        {
-          status: "500",
-          title: "Internal Server Error",
-          detail: "Failed to insert record",
-        },
-      ],
-      500,
-    );
+    throw apiError(500, "Internal Server Error", "Failed to insert record");
   }
 
   return created;
@@ -198,11 +181,7 @@ function buildProviderHeaders(
   };
 }
 
-function parseBodyToPayload(rawBody: string): Record<string, unknown> {
-  if (!rawBody) {
-    return {};
-  }
-
+function asJsonObject(rawBody: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(rawBody);
 
@@ -211,14 +190,65 @@ function parseBodyToPayload(rawBody: string): Record<string, unknown> {
       typeof parsed !== "object" ||
       Array.isArray(parsed)
     ) {
-      return {};
+      return null;
     }
 
     return parsed as Record<string, unknown>;
   } catch {
-    // Non-JSON body: treat as empty payload; the parser will use defaults
-    return {};
+    return null;
   }
+}
+
+// GitHub's webhook "Content type" defaults to application/x-www-form-urlencoded,
+// which delivers the JSON payload URL-encoded under a `payload` form field. The
+// HMAC in X-Hub-Signature-256 is computed over that raw form body, so the
+// signature still verifies — we only have to unwrap `payload` before parsing.
+// Gated to GitHub sources so a generic form-encoded body from any other source
+// is still rejected rather than silently unwrapping a `payload` field.
+function githubFormPayload(rawBody: string): Record<string, unknown> | null {
+  const encoded = new URLSearchParams(rawBody).get("payload");
+  return encoded ? asJsonObject(encoded) : null;
+}
+
+function parseWebhookBody(
+  source: SourceRow,
+  rawBody: string,
+): Record<string, unknown> | null {
+  const directObject = asJsonObject(rawBody);
+
+  if (directObject) {
+    return directObject;
+  }
+
+  // normalizeProvider is the single normalization boundary for provider identity
+  // (see signatureVerifier.ts) — compare through it so a stored `"GitHub"` still
+  // dispatches to the form-encoded unwrap it just verified the signature against.
+  if (normalizeProvider(source.provider) === GITHUB_PROVIDER) {
+    return githubFormPayload(rawBody);
+  }
+
+  return null;
+}
+
+// Fail loud on anything that isn't a JSON object. Accepted: a raw JSON object
+// body (Stripe, Zapier, Apple Shortcuts, and GitHub when set to
+// Content-Type: application/json) or, for GitHub sources, its default
+// form-encoded `payload` wrapper. Everything else — a plain-text/other
+// form-encoded body, a JSON scalar/array, or an empty body — is rejected with a
+// 400; each would otherwise be coerced to {} and ingested as a blank "Untitled"
+// record with a 202, hiding a misconfigured integration. (An empty body throws
+// in JSON.parse, so asJsonObject already returns null for it.)
+function requireJsonObjectBody(
+  source: SourceRow,
+  rawBody: string,
+): Record<string, unknown> {
+  const payload = parseWebhookBody(source, rawBody);
+
+  if (!payload) {
+    throw badRequestError(NON_OBJECT_BODY_DETAIL);
+  }
+
+  return payload;
 }
 
 async function resolveAndValidateSource(
@@ -280,8 +310,10 @@ async function enforceThrottle(
   throw throttledError();
 }
 
-async function buildAndInsertRecord(source: SourceRow, rawBody: string) {
-  const payload = parseBodyToPayload(rawBody);
+async function buildAndInsertRecord(
+  source: SourceRow,
+  payload: Record<string, unknown>,
+) {
   const webhookPayload = applyFieldMapping(
     payload,
     source.fieldMapping,
@@ -391,9 +423,16 @@ export default defineEventHandler(async (event) => {
     // It is also the cheaper guard, so it sheds load before the subscription
     // lookup and monthly COUNT that assertWithinRecordLimit runs.
     await enforceThrottle(event, source);
+
+    // Validate the body before the plan-limit check: a malformed delivery will
+    // never create a record, so it must not consume the user's plan-limit budget
+    // (assertWithinRecordLimit's subscription lookup + monthly COUNT). Kept after
+    // enforceThrottle so a slug-only flood of junk bodies still counts against the
+    // throttle window (see the reasoning on enforceThrottle above).
+    const payload = requireJsonObjectBody(source, rawBody);
     await assertWithinRecordLimit(source.userId);
 
-    const record = await buildAndInsertRecord(source, rawBody);
+    const record = await buildAndInsertRecord(source, payload);
     await writeBestEffortSideEffects(source, record);
 
     setResponseStatus(event, 202);
