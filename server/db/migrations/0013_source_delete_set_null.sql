@@ -1,0 +1,2 @@
+ALTER TABLE "records" DROP CONSTRAINT "records_source_id_sources_uuid_fk";--> statement-breakpoint
+ALTER TABLE "records" ADD CONSTRAINT "records_source_id_sources_uuid_fk" FOREIGN KEY ("source_id") REFERENCES "public"."sources"("uuid") ON DELETE set null ON UPDATE no action;

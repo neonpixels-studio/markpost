@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import { events, records, sources, subscriptions } from "../server/db/schema";
+
+const RECORDS_SOURCE_FK = "records_source_id_sources_uuid_fk";
+
+function recordsSourceForeignKey() {
+  const foreignKeys = getTableConfig(records).foreignKeys;
+  return foreignKeys.find((key) => key.getName() === RECORDS_SOURCE_FK);
+}
 
 describe("records schema", () => {
   it("includes a userId column", () => {
@@ -23,6 +31,16 @@ describe("records schema", () => {
   it("includes a nullable source column", () => {
     expect(records.source).toBeDefined();
     expect(records.source.notNull).toBe(false);
+  });
+
+  // Regression for #168: deleting a source that has ingested records used to
+  // raise a Postgres 23503 FK violation (surfaced as a 500) because the
+  // source_id FK was ON DELETE NO ACTION. SET NULL lets the delete succeed
+  // and orphans the records (the records list already tolerates NULL sourceId).
+  it("source_id foreign key deletes with ON DELETE SET NULL", () => {
+    const foreignKey = recordsSourceForeignKey();
+    expect(foreignKey).toBeDefined();
+    expect(foreignKey?.onDelete).toBe("set null");
   });
 
   it("status column defaults to pending and is not nullable", () => {
