@@ -138,7 +138,9 @@ export const records = pgTable(
       .references(() => users.userId, { onDelete: "cascade" }),
     title: text("title").notNull(),
     content: text("content").notNull(),
-    sourceId: uuid("source_id").references(() => sources.uuid),
+    sourceId: uuid("source_id").references(() => sources.uuid, {
+      onDelete: "set null",
+    }),
     source: text("source"),
     status: text("status").notNull().default("pending"),
     filePath: text("file_path"),
