@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull, not } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   subscriptions,
@@ -54,6 +54,28 @@ export async function findSubscriptionByStripeCustomerId(
   return row ?? null;
 }
 
+// Stripe does not guarantee event ordering, so a stale
+// `customer.subscription.updated` can arrive after the `deleted` event that
+// canceled the row. A Stripe subscription that has reached `canceled` is
+// terminal and never transitions back, so any upsert that would revive the
+// same canceled subscription is out-of-order and must be ignored. Mirrors the
+// `onlyIfSubscriptionId` guard on updateSubscriptionByStripeCustomerId: the
+// update only applies when the existing row is not a canceled copy of this
+// same subscription. A resubscribe (new stripeSubscriptionId) still applies.
+function buildRevivalGuard(stripeSubscriptionId: string) {
+  // isNotNull keeps the match NULL-safe: without it a canceled row whose
+  // stripeSubscriptionId is NULL makes the equality (and thus the whole guard)
+  // evaluate to SQL UNKNOWN, which Postgres treats as false in a WHERE clause
+  // and would silently block every future upsert for that customer.
+  const revivesCanceledSubscription = and(
+    eq(subscriptions.status, "canceled"),
+    isNotNull(subscriptions.stripeSubscriptionId),
+    eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId),
+  );
+
+  return not(revivesCanceledSubscription!);
+}
+
 export async function upsertSubscription(
   input: UpsertSubscriptionInput,
 ): Promise<void> {
@@ -78,6 +100,7 @@ export async function upsertSubscription(
         stripeSubscriptionId: input.stripeSubscriptionId,
         updatedAt: new Date(),
       },
+      setWhere: buildRevivalGuard(input.stripeSubscriptionId),
     });
 }
 
