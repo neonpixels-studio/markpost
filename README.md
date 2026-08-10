@@ -102,12 +102,12 @@ Billing is handled via [Stripe](https://stripe.com). The integration consists of
 
 ### Required environment variables
 
-| Variable                     | Description                                                                                                                   |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `STRIPE_SECRET_KEY`          | Stripe secret key (from [Dashboard → API Keys](https://dashboard.stripe.com/apikeys)). Server-only.                           |
-| `STRIPE_WEBHOOK_SECRET`      | Webhook signing secret (from [Dashboard → Webhooks → your endpoint → Signing secret](https://dashboard.stripe.com/webhooks)). |
-| `STRIPE_PRO_PRICE_ID`        | Stripe price ID for the monthly Pro plan.                                                                                     |
-| `STRIPE_PRO_ANNUAL_PRICE_ID` | Stripe price ID for the annual Pro plan (optional; falls back to monthly).                                                    |
+| Variable                     | Description                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `STRIPE_SECRET_KEY`          | Stripe secret key (from [Dashboard → API Keys](https://dashboard.stripe.com/apikeys)). Server-only. A standard secret key covers this; a restricted key must grant **customers read** in addition to **subscriptions read/write**, since account deletion reads the customer to prove the key can see it before treating a subscription sweep as complete. |
+| `STRIPE_WEBHOOK_SECRET`      | Webhook signing secret (from [Dashboard → Webhooks → your endpoint → Signing secret](https://dashboard.stripe.com/webhooks)).                                                                                                                                                                                                                              |
+| `STRIPE_PRO_PRICE_ID`        | Stripe price ID for the monthly Pro plan.                                                                                                                                                                                                                                                                                                                  |
+| `STRIPE_PRO_ANNUAL_PRICE_ID` | Stripe price ID for the annual Pro plan (optional; falls back to monthly).                                                                                                                                                                                                                                                                                 |
 
 ### Setting up the Stripe webhook
 

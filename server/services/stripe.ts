@@ -226,7 +226,7 @@ function failKeyCannotSeeCustomer(customerId: string, cause: unknown): never {
 // be deleted while it still bills under the correct key. A retrieve succeeding
 // (even a deleted-customer object) proves visibility; a resource_missing means
 // the key can't see the account — fail loud. Any other retrieve error
-// propagates unchanged.
+// (network/5xx) still aborts the delete, logged with the customer id.
 async function assertKeyCanSeeCustomer(
   gateway: SubscriptionGateway,
   customerId: string,
@@ -237,6 +237,10 @@ async function assertKeyCanSeeCustomer(
     if (isResourceMissingError(error)) {
       failKeyCannotSeeCustomer(customerId, error);
     }
+    console.error("[stripe] customer visibility check failed", {
+      customerId,
+      error,
+    });
     throw error;
   }
 }
@@ -354,6 +358,19 @@ export async function sweepCustomerSubscriptions(
       startingAfter = nextCursor(page);
     } while (startingAfter);
   } catch (error) {
+    // Stripe validates the customer filter on list, so a key that can't see the
+    // customer may surface here as resource_missing rather than an empty page —
+    // the wrong-key blind spot. Only diagnose it that way when nothing was seen:
+    // a resource_missing after earlier pages canceled (customer deleted mid-sweep,
+    // an unresolvable cursor) is a genuine race, not a bad key. Classify before
+    // the partial-progress log so the wrong-key case doesn't emit a misleading
+    // "partial progress" line for a sweep that canceled nothing. (Safe because
+    // nextCursor derives the cursor from the last row, so an empty first page
+    // can't be followed by a page-2 resource_missing.)
+    if (!sawAnySubscription && isResourceMissingError(error)) {
+      failKeyCannotSeeCustomer(customerId, error);
+    }
+
     // Surface what was already canceled before the pagination/list failure
     // rather than losing it with the stack.
     console.error("[stripe] sweep aborted mid-pagination; partial progress", {
@@ -362,15 +379,6 @@ export async function sweepCustomerSubscriptions(
       failedSubscriptionIds,
       error,
     });
-
-    // Stripe validates the customer filter on list, so a key that can't see the
-    // customer may surface here as resource_missing rather than an empty page —
-    // the wrong-key blind spot. Only diagnose it that way when nothing was seen:
-    // a resource_missing after earlier pages canceled (customer deleted mid-sweep,
-    // an unresolvable cursor) is a genuine race, not a bad key.
-    if (!sawAnySubscription && isResourceMissingError(error)) {
-      failKeyCannotSeeCustomer(customerId, error);
-    }
     throw error;
   }
 

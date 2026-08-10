@@ -270,37 +270,51 @@ describe("sweepCustomerSubscriptions", () => {
     // Stripe validates the customer filter on list, so a wrong key can surface
     // as resource_missing on list rather than an empty page — still the
     // wrong-key blind spot, not a generic sweep failure.
+    const missing = resourceMissingError("No such customer: 'cus_test123'");
     const { gateway, cancel } = buildGateway([], {
-      list: vi
-        .fn()
-        .mockRejectedValueOnce(
-          resourceMissingError("No such customer: 'cus_test123'"),
-        ),
+      list: vi.fn().mockRejectedValueOnce(missing),
     });
 
-    await expect(
-      sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
-    ).rejects.toThrow("Stripe key cannot see customer");
+    const error = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect((error as Error).message).toContain(
+      "Stripe key cannot see customer",
+    );
+    // The raw Stripe error must survive as `cause` — it's the only link to
+    // "No such customer" once the message is flattened at the wire boundary.
+    expect((error as Error).cause).toBe(missing);
     expect(cancel).not.toHaveBeenCalled();
   });
 
-  it("fails loud when an empty sweep can't prove the key sees the customer", async () => {
+  it("fails loud (and logs a greppable line) when an empty sweep can't prove the key sees the customer", async () => {
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const missing = resourceMissingError("No such customer: 'cus_test123'");
     const { gateway, list, cancel } = buildGateway([page([])], {
-      retrieveCustomer: vi
-        .fn()
-        .mockRejectedValueOnce(
-          resourceMissingError("No such customer: 'cus_test123'"),
-        ),
+      retrieveCustomer: vi.fn().mockRejectedValueOnce(missing),
     });
 
-    await expect(
-      sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
-    ).rejects.toThrow("Stripe key cannot see customer");
+    const error = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID).catch(
+      (caught: unknown) => caught,
+    );
+
     // An empty result under a key that can't see the customer must never read as
     // "no billing": the sweep lists, finds nothing, then refuses on the failed
     // visibility proof rather than canceling/returning success.
+    expect((error as Error).message).toContain(
+      "Stripe key cannot see customer",
+    );
+    expect((error as Error).cause).toBe(missing);
     expect(list).toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
+    // Ops grep this line to distinguish a wrong key from a Stripe outage.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("key cannot see customer"),
+      expect.objectContaining({ customerId: CUSTOMER_ID }),
+    );
   });
 
   it("skips the visibility check when the sweep saw a subscription", async () => {
