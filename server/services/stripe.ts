@@ -206,13 +206,25 @@ function isAlreadyCanceledError(error: unknown): boolean {
   );
 }
 
+// A customer this key can't see means billing may still be live under the
+// correct key — never delete the account on top of it. Logs distinctly (so the
+// misconfiguration is greppable) and throws a descriptive error; the live
+// boundary (cancelSubscriptionsForCustomer) sanitizes it before the wire.
+function failKeyCannotSeeCustomer(customerId: string): never {
+  console.error(
+    "[stripe] key cannot see customer; refusing to treat billing as canceled",
+    { customerId },
+  );
+  throw new Error(KEY_CANNOT_SEE_CUSTOMER_MESSAGE);
+}
+
 // Prove the key/mode can actually see this customer before trusting an empty
-// sweep. A wrong test/live or rotated key returns an *empty* subscription list
-// (no error) for a customer it can't see, which the sweep would otherwise read
-// as "no billing" and let the account be deleted while it still bills under the
-// correct key. A retrieve succeeding (even a deleted-customer object) proves
-// visibility; a resource_missing means the key can't see the account — fail
-// loud. Any other retrieve error propagates unchanged.
+// sweep. A wrong test/live or rotated key can't see a customer it doesn't own,
+// which an empty sweep would otherwise read as "no billing" and let the account
+// be deleted while it still bills under the correct key. A retrieve succeeding
+// (even a deleted-customer object) proves visibility; a resource_missing means
+// the key can't see the account — fail loud. Any other retrieve error
+// propagates unchanged.
 async function assertKeyCanSeeCustomer(
   gateway: SubscriptionGateway,
   customerId: string,
@@ -221,11 +233,7 @@ async function assertKeyCanSeeCustomer(
     await gateway.retrieveCustomer(customerId);
   } catch (error) {
     if (isResourceMissingError(error)) {
-      console.error(
-        "[stripe] key cannot see customer; refusing to treat billing as canceled",
-        { customerId },
-      );
-      throw new Error(KEY_CANNOT_SEE_CUSTOMER_MESSAGE);
+      failKeyCannotSeeCustomer(customerId);
     }
     throw error;
   }
@@ -344,6 +352,12 @@ export async function sweepCustomerSubscriptions(
       startingAfter = nextCursor(page);
     } while (startingAfter);
   } catch (error) {
+    // Stripe validates the customer filter on list, so a key that can't see the
+    // customer may surface here as resource_missing rather than an empty page —
+    // treat that as the wrong-key blind spot too, not a generic failure.
+    if (isResourceMissingError(error)) {
+      failKeyCannotSeeCustomer(customerId);
+    }
     // Surface what was already canceled before the pagination/list failure
     // rather than losing it with the stack.
     console.error("[stripe] sweep aborted mid-pagination; partial progress", {
@@ -356,10 +370,11 @@ export async function sweepCustomerSubscriptions(
   }
 
   // Any subscription returned proves the key can see the customer. Only an empty
-  // sweep is ambiguous — a wrong test/live or rotated key returns no rows for a
-  // customer it can't see, which must not read as "no billing". Prove visibility
-  // before trusting it; a key that can see even one subscription needs no extra
-  // round trip and isn't blocked by a transient retrieve failure.
+  // sweep is ambiguous — a wrong test/live or rotated key that returns no rows
+  // (rather than erroring) for a customer it can't see must not read as "no
+  // billing". Prove visibility before trusting it; a key that can see even one
+  // subscription needs no extra round trip and isn't blocked by a transient
+  // retrieve failure.
   if (!sawAnySubscription) {
     await assertKeyCanSeeCustomer(gateway, customerId);
   }

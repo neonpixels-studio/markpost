@@ -51,6 +51,12 @@ function buildGateway(
   list: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
 } {
+  if (overrides.list && pages.length > 0) {
+    throw new Error(
+      "buildGateway: pass pages OR a list override, not both — the pages would be silently discarded",
+    );
+  }
+
   const list = overrides.list ?? vi.fn();
   if (!overrides.list) {
     pages.forEach((result) => list.mockResolvedValueOnce(result));
@@ -260,6 +266,24 @@ describe("sweepCustomerSubscriptions", () => {
     expect(retrieveCustomer).not.toHaveBeenCalled();
   });
 
+  it("fails loud when listing itself reports the customer is unseeable", async () => {
+    // Stripe validates the customer filter on list, so a wrong key can surface
+    // as resource_missing on list rather than an empty page — still the
+    // wrong-key blind spot, not a generic sweep failure.
+    const { gateway, cancel } = buildGateway([], {
+      list: vi
+        .fn()
+        .mockRejectedValueOnce(
+          resourceMissingError("No such customer: 'cus_test123'"),
+        ),
+    });
+
+    await expect(
+      sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
+    ).rejects.toThrow("Stripe key cannot see customer");
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it("fails loud when an empty sweep can't prove the key sees the customer", async () => {
     const { gateway, list, cancel } = buildGateway([page([])], {
       retrieveCustomer: vi
@@ -317,7 +341,7 @@ describe("sweepCustomerSubscriptions", () => {
   it("treats a deleted-customer object as visible and proceeds", async () => {
     // A retrieve that returns a { deleted: true } object still proves the key
     // can see the account, so the empty sweep is trustworthy and proceeds.
-    const { gateway } = buildGateway([page([])], {
+    const { gateway, retrieveCustomer } = buildGateway([page([])], {
       retrieveCustomer: vi.fn(() =>
         Promise.resolve({
           id: CUSTOMER_ID,
@@ -329,6 +353,10 @@ describe("sweepCustomerSubscriptions", () => {
 
     const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
 
+    // The visibility proof must actually run (and tolerate the deleted object)
+    // for this to pass — not merely return a zero count.
+    expect(retrieveCustomer).toHaveBeenCalledWith(CUSTOMER_ID);
+    expect(retrieveCustomer).toHaveBeenCalledTimes(1);
     expect(result.canceledCount).toBe(0);
   });
 
