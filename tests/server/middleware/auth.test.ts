@@ -86,6 +86,28 @@ describe("auth middleware", () => {
     });
   });
 
+  describe("public webhook paths", () => {
+    const publicPaths = [
+      "/api/hooks/some-slug",
+      "/api/billing/webhook",
+      "/api/webhooks/clerk",
+    ];
+
+    it.each(publicPaths)(
+      "bypasses token/session auth for %s (verified by its own signature)",
+      async (path) => {
+        const event = buildEvent(path);
+
+        await expect(handler(event)).resolves.toBeUndefined();
+
+        expect(event.context.userId).toBeUndefined();
+        expect(mockGetHeader).not.toHaveBeenCalled();
+        expect(mockVerifyToken).not.toHaveBeenCalled();
+        expect(selectMock).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   describe("missing token", () => {
     it("throws 401 when the Authorization header is absent", async () => {
       mockGetHeader.mockReturnValue(undefined);

@@ -60,6 +60,9 @@ async function authenticateViaClerk(token: string): Promise<string | null> {
 
 const HOOKS_PATH_PREFIX = "/api/hooks/";
 const BILLING_WEBHOOK_PATH = "/api/billing/webhook";
+// Clerk signs this webhook with a Svix signature (verified in the handler), not
+// a bearer token, so it must bypass the token/session auth below.
+const CLERK_WEBHOOK_PATH = "/api/webhooks/clerk";
 
 export default defineEventHandler(async (event) => {
   if (!event.path.startsWith("/api/")) {
@@ -71,6 +74,10 @@ export default defineEventHandler(async (event) => {
   }
 
   if (event.path === BILLING_WEBHOOK_PATH) {
+    return;
+  }
+
+  if (event.path === CLERK_WEBHOOK_PATH) {
     return;
   }
 
