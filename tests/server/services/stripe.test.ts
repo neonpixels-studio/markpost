@@ -24,8 +24,21 @@ function page(
   } as unknown as Stripe.ApiList<Stripe.Subscription>;
 }
 
+function customer(id: string): Stripe.Customer {
+  return { id, object: "customer" } as unknown as Stripe.Customer;
+}
+
+function resourceMissingError(message: string): Stripe.errors.StripeError {
+  return new Stripe.errors.StripeInvalidRequestError({
+    message,
+    code: "resource_missing",
+    type: "invalid_request_error",
+  });
+}
+
 function buildGateway(pages: Stripe.ApiList<Stripe.Subscription>[]): {
   gateway: SubscriptionGateway;
+  retrieveCustomer: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
 } {
@@ -36,7 +49,14 @@ function buildGateway(pages: Stripe.ApiList<Stripe.Subscription>[]): {
     Promise.resolve(subscription(id, "canceled")),
   );
 
-  return { gateway: { list, cancel }, list, cancel };
+  const retrieveCustomer = vi.fn(() => Promise.resolve(customer(CUSTOMER_ID)));
+
+  return {
+    gateway: { retrieveCustomer, list, cancel },
+    retrieveCustomer,
+    list,
+    cancel,
+  };
 }
 
 describe("sweepCustomerSubscriptions", () => {
@@ -217,11 +237,75 @@ describe("sweepCustomerSubscriptions", () => {
 
   it("propagates a failure listing subscriptions", async () => {
     const list = vi.fn().mockRejectedValueOnce(new Error("list exploded"));
-    const gateway: SubscriptionGateway = { list, cancel: vi.fn() };
+    const gateway: SubscriptionGateway = {
+      retrieveCustomer: vi.fn(() => Promise.resolve(customer(CUSTOMER_ID))),
+      list,
+      cancel: vi.fn(),
+    };
 
     await expect(
       sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
     ).rejects.toThrow("list exploded");
+  });
+
+  it("fails loud without listing when the key cannot see the customer", async () => {
+    const { gateway, list, cancel } = buildGateway([page([])]);
+    gateway.retrieveCustomer = vi
+      .fn()
+      .mockRejectedValueOnce(
+        resourceMissingError("No such customer: 'cus_test123'"),
+      );
+
+    await expect(
+      sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
+    ).rejects.toThrow("Stripe key cannot see customer");
+    // A wrong-key empty list must never read as "no billing": the sweep must
+    // not proceed to list or cancel anything.
+    expect(list).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("proceeds past a genuinely-gone subscription once the key sees the customer", async () => {
+    // Customer visible under the correct key, only a canceled subscription
+    // remains: this is a real "already gone" case and must proceed cleanly.
+    const { gateway, retrieveCustomer, cancel } = buildGateway([
+      page([subscription("sub_canceled", "canceled")]),
+    ]);
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(retrieveCustomer).toHaveBeenCalledWith(CUSTOMER_ID);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(result.canceledCount).toBe(0);
+    expect(result.failedSubscriptionIds).toEqual([]);
+  });
+
+  it("treats a deleted-customer object as visible and proceeds", async () => {
+    // A retrieve that returns a { deleted: true } object still proves the key
+    // can see the account, so the sweep is trustworthy and proceeds.
+    const { gateway } = buildGateway([page([])]);
+    gateway.retrieveCustomer = vi.fn(() =>
+      Promise.resolve({
+        id: CUSTOMER_ID,
+        object: "customer",
+        deleted: true,
+      } as unknown as Stripe.DeletedCustomer),
+    );
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(result.canceledCount).toBe(0);
+  });
+
+  it("propagates a non-missing customer retrieve error unchanged", async () => {
+    const { gateway } = buildGateway([page([])]);
+    gateway.retrieveCustomer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network down"));
+
+    await expect(
+      sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
+    ).rejects.toThrow("network down");
   });
 
   it("surfaces partial progress when a later page fails to list", async () => {
@@ -234,7 +318,11 @@ describe("sweepCustomerSubscriptions", () => {
       .mockResolvedValueOnce(first)
       .mockRejectedValueOnce(new Error("page 2 exploded"));
     const cancel = vi.fn().mockResolvedValue(subscription("sub_1", "canceled"));
-    const gateway: SubscriptionGateway = { list, cancel };
+    const gateway: SubscriptionGateway = {
+      retrieveCustomer: vi.fn(() => Promise.resolve(customer(CUSTOMER_ID))),
+      list,
+      cancel,
+    };
 
     await expect(
       sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
