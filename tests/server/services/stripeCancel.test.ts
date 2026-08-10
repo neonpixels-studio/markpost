@@ -66,15 +66,18 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
     expect(listMock).toHaveBeenCalledWith(
       expect.objectContaining({ customer: CUSTOMER_ID, status: "all" }),
     );
-    expect(retrieveCustomerMock).toHaveBeenCalledWith(CUSTOMER_ID);
+    // A returned subscription proves visibility, so no customer retrieve.
+    expect(retrieveCustomerMock).not.toHaveBeenCalled();
     expect(cancelMock).toHaveBeenCalledWith("sub_live");
     expect(result.canceledCount).toBe(1);
   });
 
   it("fails loud, sanitized, when the key cannot see the customer", async () => {
-    // A wrong test/live or rotated key returns resource_missing on retrieve; the
-    // sweep must refuse rather than let a still-billing account be deleted, and
-    // must not leak the raw Stripe error (no statusCode on the wire).
+    // An empty sweep under a wrong test/live or rotated key: the customer
+    // retrieve returns resource_missing, so the sweep must refuse rather than
+    // let a still-billing account be deleted, and must not leak the raw Stripe
+    // error (no statusCode on the wire).
+    listMock.mockResolvedValue({ data: [], has_more: false });
     retrieveCustomerMock.mockRejectedValueOnce(
       new StripeErrorStub(
         "No such customer: 'cus_live123'",
@@ -86,7 +89,7 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
       (caught: unknown) => caught,
     );
 
-    expect(listMock).not.toHaveBeenCalled();
+    expect(listMock).toHaveBeenCalled();
     expect(cancelMock).not.toHaveBeenCalled();
     expect((error as Error).message).toBe("Stripe subscription sweep failed");
     expect((error as { statusCode?: number }).statusCode).toBeUndefined();

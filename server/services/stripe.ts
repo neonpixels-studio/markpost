@@ -189,12 +189,12 @@ function isResourceMissingError(error: unknown): boolean {
 // so the key/mode is proven — resource_missing here is a genuine race, not the
 // wrong-key blind spot assertKeyCanSeeCustomer guards against.
 function isAlreadyCanceledError(error: unknown): boolean {
-  if (isResourceMissingError(error)) {
-    return true;
-  }
-
   if (!(error instanceof Stripe.errors.StripeError)) {
     return false;
+  }
+
+  if (error.code === "resource_missing") {
+    return true;
   }
 
   // rawType comes from the API payload (survives a minifying bundle); type is
@@ -206,7 +206,7 @@ function isAlreadyCanceledError(error: unknown): boolean {
   );
 }
 
-// Prove the key/mode can actually see this customer before trusting a clean
+// Prove the key/mode can actually see this customer before trusting an empty
 // sweep. A wrong test/live or rotated key returns an *empty* subscription list
 // (no error) for a customer it can't see, which the sweep would otherwise read
 // as "no billing" and let the account be deleted while it still bills under the
@@ -315,10 +315,10 @@ function nextCursor(page: Stripe.ApiList<Stripe.Subscription>): string | null {
 }
 
 // Sweep every subscription Stripe holds for the customer and cancel each
-// non-terminal one, paginating until exhausted. First proves the key can see
-// the customer (assertKeyCanSeeCustomer) so a wrong-key empty list never reads
-// as "no billing". Isolated from the live client (takes a SubscriptionGateway)
-// so it can be unit-tested without Stripe.
+// non-terminal one, paginating until exhausted. If the sweep finds nothing, it
+// proves the key can see the customer (assertKeyCanSeeCustomer) so a wrong-key
+// empty result never reads as "no billing". Isolated from the live client
+// (takes a SubscriptionGateway) so it can be unit-tested without Stripe.
 export async function sweepCustomerSubscriptions(
   gateway: SubscriptionGateway,
   customerId: string,
@@ -326,10 +326,7 @@ export async function sweepCustomerSubscriptions(
   let canceledCount = 0;
   const failedSubscriptionIds: string[] = [];
   let startingAfter: string | null = null;
-
-  // Guard the wrong-key blind spot before listing: if the key can't see the
-  // customer, an empty list is meaningless and must not read as "no billing".
-  await assertKeyCanSeeCustomer(gateway, customerId);
+  let sawAnySubscription = false;
 
   try {
     do {
@@ -340,6 +337,7 @@ export async function sweepCustomerSubscriptions(
         ...(startingAfter ? { starting_after: startingAfter } : {}),
       });
 
+      sawAnySubscription = sawAnySubscription || page.data.length > 0;
       const outcome = await cancelPage(gateway, page.data);
       canceledCount += outcome.canceledCount;
       failedSubscriptionIds.push(...outcome.failedSubscriptionIds);
@@ -355,6 +353,15 @@ export async function sweepCustomerSubscriptions(
       error,
     });
     throw error;
+  }
+
+  // Any subscription returned proves the key can see the customer. Only an empty
+  // sweep is ambiguous — a wrong test/live or rotated key returns no rows for a
+  // customer it can't see, which must not read as "no billing". Prove visibility
+  // before trusting it; a key that can see even one subscription needs no extra
+  // round trip and isn't blocked by a transient retrieve failure.
+  if (!sawAnySubscription) {
+    await assertKeyCanSeeCustomer(gateway, customerId);
   }
 
   return { canceledCount, failedSubscriptionIds };
