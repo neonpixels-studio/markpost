@@ -393,4 +393,35 @@ describe("sweepCustomerSubscriptions", () => {
       expect.objectContaining({ canceledCount: 1 }),
     );
   });
+
+  it("does not misread a mid-pagination resource_missing as a wrong key", async () => {
+    // Page 1 canceled a subscription, proving the key sees the customer. A
+    // resource_missing on page 2 (customer deleted mid-sweep, bad cursor) is a
+    // race, not the wrong-key blind spot — surface the raw error and keep the
+    // partial-progress audit trail rather than crying "key cannot see customer".
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const first = page([subscription("sub_1", "active")], true);
+    const { gateway } = buildGateway([], {
+      list: vi
+        .fn()
+        .mockResolvedValueOnce(first)
+        .mockRejectedValueOnce(
+          resourceMissingError("No such customer: 'cus_test123'"),
+        ),
+      cancel: vi.fn().mockResolvedValue(subscription("sub_1", "canceled")),
+    });
+
+    const error = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect((error as Error).message).toContain("No such customer");
+    expect((error as Error).message).not.toContain("Stripe key cannot see");
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("partial progress"),
+      expect.objectContaining({ canceledCount: 1 }),
+    );
+  });
 });

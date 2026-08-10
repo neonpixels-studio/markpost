@@ -189,12 +189,12 @@ function isResourceMissingError(error: unknown): boolean {
 // so the key/mode is proven — resource_missing here is a genuine race, not the
 // wrong-key blind spot assertKeyCanSeeCustomer guards against.
 function isAlreadyCanceledError(error: unknown): boolean {
-  if (!(error instanceof Stripe.errors.StripeError)) {
-    return false;
+  if (isResourceMissingError(error)) {
+    return true;
   }
 
-  if (error.code === "resource_missing") {
-    return true;
+  if (!(error instanceof Stripe.errors.StripeError)) {
+    return false;
   }
 
   // rawType comes from the API payload (survives a minifying bundle); type is
@@ -210,12 +210,14 @@ function isAlreadyCanceledError(error: unknown): boolean {
 // correct key — never delete the account on top of it. Logs distinctly (so the
 // misconfiguration is greppable) and throws a descriptive error; the live
 // boundary (cancelSubscriptionsForCustomer) sanitizes it before the wire.
-function failKeyCannotSeeCustomer(customerId: string): never {
+function failKeyCannotSeeCustomer(customerId: string, cause: unknown): never {
+  // Carry the raw Stripe error (e.g. "No such customer: 'cus_x'") so triage can
+  // tell a wrong key from a bad cursor without re-deriving it.
   console.error(
     "[stripe] key cannot see customer; refusing to treat billing as canceled",
-    { customerId },
+    { customerId, error: cause },
   );
-  throw new Error(KEY_CANNOT_SEE_CUSTOMER_MESSAGE);
+  throw new Error(KEY_CANNOT_SEE_CUSTOMER_MESSAGE, { cause });
 }
 
 // Prove the key/mode can actually see this customer before trusting an empty
@@ -233,7 +235,7 @@ async function assertKeyCanSeeCustomer(
     await gateway.retrieveCustomer(customerId);
   } catch (error) {
     if (isResourceMissingError(error)) {
-      failKeyCannotSeeCustomer(customerId);
+      failKeyCannotSeeCustomer(customerId, error);
     }
     throw error;
   }
@@ -352,12 +354,6 @@ export async function sweepCustomerSubscriptions(
       startingAfter = nextCursor(page);
     } while (startingAfter);
   } catch (error) {
-    // Stripe validates the customer filter on list, so a key that can't see the
-    // customer may surface here as resource_missing rather than an empty page —
-    // treat that as the wrong-key blind spot too, not a generic failure.
-    if (isResourceMissingError(error)) {
-      failKeyCannotSeeCustomer(customerId);
-    }
     // Surface what was already canceled before the pagination/list failure
     // rather than losing it with the stack.
     console.error("[stripe] sweep aborted mid-pagination; partial progress", {
@@ -366,6 +362,15 @@ export async function sweepCustomerSubscriptions(
       failedSubscriptionIds,
       error,
     });
+
+    // Stripe validates the customer filter on list, so a key that can't see the
+    // customer may surface here as resource_missing rather than an empty page —
+    // the wrong-key blind spot. Only diagnose it that way when nothing was seen:
+    // a resource_missing after earlier pages canceled (customer deleted mid-sweep,
+    // an unresolvable cursor) is a genuine race, not a bad key.
+    if (!sawAnySubscription && isResourceMissingError(error)) {
+      failKeyCannotSeeCustomer(customerId, error);
+    }
     throw error;
   }
 
