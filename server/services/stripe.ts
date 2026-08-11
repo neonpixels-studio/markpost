@@ -134,6 +134,14 @@ const SCHEDULE_MANAGED_CANCEL_MESSAGE =
 // verbatim (see utils/errors.ts); this keeps the raw Stripe text off the wire.
 const STRIPE_SWEEP_FAILED_MESSAGE = "Stripe subscription sweep failed";
 
+// Raised when the customer can't be retrieved with the configured API key.
+// Stripe never deletes subscription objects, so a `resource_missing` almost
+// always means a test/live or rotated-key mismatch rather than a truly-gone
+// account — trusting an empty sweep in that case would delete an account whose
+// subscription is still billing under the real key.
+const CUSTOMER_NOT_VISIBLE_MESSAGE =
+  "Stripe customer not visible to the configured API key";
+
 // The narrow slice of the Stripe subscriptions API the sweep depends on, so the
 // cancellation logic can be unit-tested with a fake in place of a live client.
 export type SubscriptionGateway = {
@@ -145,6 +153,13 @@ export type SubscriptionGateway = {
   // schedule-managed subscription rejects a direct cancel, so the sweep
   // releases the schedule and retries the cancel (see releaseManagingSchedule).
   releaseSchedule: (scheduleId: string) => Promise<Stripe.SubscriptionSchedule>;
+  // Confirms the configured key can actually see the account before the sweep
+  // trusts an empty/complete result as "nothing billable" (see
+  // assertCustomerVisible). A deleted customer still resolves here — only a key
+  // that can't see the account at all throws resource_missing.
+  retrieveCustomer: (
+    customerId: string,
+  ) => Promise<Stripe.Customer | Stripe.DeletedCustomer>;
 };
 
 export type CustomerCancelResult = {
@@ -166,7 +181,39 @@ function toSubscriptionGateway(stripe: Stripe): SubscriptionGateway {
     cancel: (subscriptionId) => stripe.subscriptions.cancel(subscriptionId),
     releaseSchedule: (scheduleId) =>
       stripe.subscriptionSchedules.release(scheduleId),
+    retrieveCustomer: (customerId) => stripe.customers.retrieve(customerId),
   };
+}
+
+function isResourceMissingError(error: unknown): boolean {
+  return (
+    error instanceof Stripe.errors.StripeError &&
+    error.code === "resource_missing"
+  );
+}
+
+// Guards the sweep against a wrong-key blind spot: if the configured key can't
+// retrieve the customer, an empty subscription list (or a resource_missing on
+// cancel) means "invisible to this key", not "already canceled". Fail loud so
+// the caller never deletes an account whose subscription is still billing under
+// the real key. A non-resource_missing failure (network, 5xx, auth) propagates
+// unchanged so it also fails closed rather than being mistaken for visibility.
+async function assertCustomerVisible(
+  gateway: SubscriptionGateway,
+  customerId: string,
+): Promise<void> {
+  try {
+    await gateway.retrieveCustomer(customerId);
+  } catch (error) {
+    if (isResourceMissingError(error)) {
+      console.error(
+        "[stripe] customer not visible to the configured key; refusing to treat billing as canceled",
+        { customerId },
+      );
+      throw new Error(CUSTOMER_NOT_VISIBLE_MESSAGE);
+    }
+    throw error;
+  }
 }
 
 // A subscription's `schedule` is the managing schedule id (or the expanded
@@ -205,6 +252,9 @@ function isTerminalStatus(status: Stripe.Subscription.Status): boolean {
 // A cancel can race a concurrent cancellation (webhook, portal). Stripe reports
 // an already-gone or already-canceled subscription as resource_missing or an
 // invalid_request naming the canceled status; both mean the goal is met.
+// resource_missing is only trusted as "already gone" here because the sweep has
+// already proven the key can see the account (see assertCustomerVisible) — on a
+// wrong key that check fails loud first, so this branch never masks a mismatch.
 function isAlreadyCanceledError(error: unknown): boolean {
   if (!(error instanceof Stripe.errors.StripeError)) {
     return false;
@@ -387,6 +437,11 @@ export async function sweepCustomerSubscriptions(
   let canceledCount = 0;
   const failedSubscriptionIds: string[] = [];
   let startingAfter: string | null = null;
+
+  // Prove the key can see the account before trusting anything the sweep finds
+  // (an empty list, a resource_missing cancel). A wrong test/live or rotated key
+  // would otherwise report "nothing billable" for an account still being charged.
+  await assertCustomerVisible(gateway, customerId);
 
   try {
     do {

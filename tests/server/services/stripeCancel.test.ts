@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const listMock = vi.fn();
 const cancelMock = vi.fn();
 const releaseScheduleMock = vi.fn();
+const retrieveCustomerMock = vi.fn();
 
 // Errors here extend StripeErrorStub, so the service's classifiers
 // (isAlreadyCanceledError / isScheduleManagedCancelError) do run against them;
@@ -23,6 +24,7 @@ vi.mock("stripe", () => {
   class StripeStub {
     subscriptions = { list: listMock, cancel: cancelMock };
     subscriptionSchedules = { release: releaseScheduleMock };
+    customers = { retrieve: retrieveCustomerMock };
     static errors = {
       StripeError: StripeErrorStub,
       StripeInvalidRequestError: StripeInvalidRequestErrorStub,
@@ -39,6 +41,7 @@ const CUSTOMER_ID = "cus_live123";
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
+  retrieveCustomerMock.mockResolvedValue({ id: CUSTOMER_ID });
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
@@ -62,6 +65,29 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
     );
     expect(cancelMock).toHaveBeenCalledWith("sub_live");
     expect(result.canceledCount).toBe(1);
+  });
+
+  it("maps the visibility guard onto stripe.customers.retrieve", async () => {
+    listMock.mockResolvedValue({ data: [], has_more: false });
+
+    await cancelSubscriptionsForCustomer(CUSTOMER_ID);
+
+    expect(retrieveCustomerMock).toHaveBeenCalledWith(CUSTOMER_ID);
+  });
+
+  it("fails loud without listing when the key can't see the customer", async () => {
+    const missing = new StripeInvalidRequestErrorStub(
+      `No such customer: '${CUSTOMER_ID}'`,
+    );
+    (missing as unknown as { code: string }).code = "resource_missing";
+    retrieveCustomerMock.mockRejectedValueOnce(missing);
+
+    const error = await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect((error as Error).message).toBe("Stripe subscription sweep failed");
+    expect(listMock).not.toHaveBeenCalled();
   });
 
   it("sanitizes a Stripe failure so no statusCode-bearing error escapes", async () => {

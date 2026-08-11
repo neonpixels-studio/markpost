@@ -42,11 +42,20 @@ function page(
   } as unknown as Stripe.ApiList<Stripe.Subscription>;
 }
 
+function resourceMissingError(message: string): Stripe.errors.StripeError {
+  return new Stripe.errors.StripeInvalidRequestError({
+    message,
+    code: "resource_missing",
+    type: "invalid_request_error",
+  });
+}
+
 function buildGateway(pages: Stripe.ApiList<Stripe.Subscription>[]): {
   gateway: SubscriptionGateway;
   list: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   releaseSchedule: ReturnType<typeof vi.fn>;
+  retrieveCustomer: ReturnType<typeof vi.fn>;
 } {
   const list = vi.fn();
   pages.forEach((result) => list.mockResolvedValueOnce(result));
@@ -59,11 +68,16 @@ function buildGateway(pages: Stripe.ApiList<Stripe.Subscription>[]): {
     Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
   );
 
+  const retrieveCustomer = vi.fn((customerId: string) =>
+    Promise.resolve({ id: customerId } as Stripe.Customer),
+  );
+
   return {
-    gateway: { list, cancel, releaseSchedule },
+    gateway: { list, cancel, releaseSchedule, retrieveCustomer },
     list,
     cancel,
     releaseSchedule,
+    retrieveCustomer,
   };
 }
 
@@ -152,16 +166,61 @@ describe("sweepCustomerSubscriptions", () => {
     expect(result.canceledCount).toBe(2);
   });
 
-  it("tolerates a subscription already gone (resource_missing)", async () => {
+  it("confirms the customer is visible before sweeping subscriptions", async () => {
+    const { gateway, retrieveCustomer, list } = buildGateway([page([])]);
+
+    await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(retrieveCustomer).toHaveBeenCalledWith(CUSTOMER_ID);
+    expect(retrieveCustomer.mock.invocationCallOrder[0]).toBeLessThan(
+      list.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("fails loud and never lists when the key can't see the customer (resource_missing on retrieve)", async () => {
+    const { gateway, list, cancel, retrieveCustomer } = buildGateway([
+      page([subscription("sub_active", "active")]),
+    ]);
+    retrieveCustomer.mockRejectedValueOnce(
+      resourceMissingError(`No such customer: '${CUSTOMER_ID}'`),
+    );
+
+    await expect(
+      sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
+    ).rejects.toThrow("not visible");
+    expect(list).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("propagates a non-resource_missing customer retrieve failure (fails closed)", async () => {
+    const { gateway, list, retrieveCustomer } = buildGateway([page([])]);
+    retrieveCustomer.mockRejectedValueOnce(new Error("stripe 503"));
+
+    await expect(
+      sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
+    ).rejects.toThrow("stripe 503");
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("proceeds when the customer is visible but already deleted", async () => {
+    const { gateway, retrieveCustomer } = buildGateway([page([])]);
+    retrieveCustomer.mockResolvedValueOnce({
+      id: CUSTOMER_ID,
+      deleted: true,
+    } as Stripe.DeletedCustomer);
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(result.canceledCount).toBe(0);
+    expect(result.failedSubscriptionIds).toEqual([]);
+  });
+
+  it("tolerates a subscription already gone (resource_missing) once the customer is visible", async () => {
     const { gateway, cancel } = buildGateway([
       page([subscription("sub_racing", "active")]),
     ]);
     cancel.mockRejectedValueOnce(
-      new Stripe.errors.StripeInvalidRequestError({
-        message: "No such subscription: 'sub_racing'",
-        code: "resource_missing",
-        type: "invalid_request_error",
-      }),
+      resourceMissingError("No such subscription: 'sub_racing'"),
     );
 
     const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
@@ -405,6 +464,7 @@ describe("sweepCustomerSubscriptions", () => {
       list,
       cancel: vi.fn(),
       releaseSchedule: vi.fn(),
+      retrieveCustomer: vi.fn().mockResolvedValue({ id: CUSTOMER_ID }),
     };
 
     await expect(
@@ -426,6 +486,7 @@ describe("sweepCustomerSubscriptions", () => {
       list,
       cancel,
       releaseSchedule: vi.fn(),
+      retrieveCustomer: vi.fn().mockResolvedValue({ id: CUSTOMER_ID }),
     };
 
     await expect(
