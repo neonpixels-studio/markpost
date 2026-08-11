@@ -256,12 +256,12 @@ function isTerminalStatus(status: Stripe.Subscription.Status): boolean {
 // already proven the key can see the account (see assertCustomerVisible) — on a
 // wrong key that check fails loud first, so this branch never masks a mismatch.
 function isAlreadyCanceledError(error: unknown): boolean {
-  if (!(error instanceof Stripe.errors.StripeError)) {
-    return false;
+  if (isResourceMissingError(error)) {
+    return true;
   }
 
-  if (error.code === "resource_missing") {
-    return true;
+  if (!(error instanceof Stripe.errors.StripeError)) {
+    return false;
   }
 
   // rawType comes from the API payload (survives a minifying bundle); type is

@@ -202,6 +202,22 @@ describe("sweepCustomerSubscriptions", () => {
     expect(list).not.toHaveBeenCalled();
   });
 
+  it("does not mistake a non-resource_missing Stripe retrieve error for an invisible customer", async () => {
+    const { gateway, list, retrieveCustomer } = buildGateway([page([])]);
+    retrieveCustomer.mockRejectedValueOnce(
+      new Stripe.errors.StripeInvalidRequestError({
+        message: "Too many requests",
+        code: "rate_limit",
+        type: "invalid_request_error",
+      }),
+    );
+
+    await expect(
+      sweepCustomerSubscriptions(gateway, CUSTOMER_ID),
+    ).rejects.toThrow("Too many requests");
+    expect(list).not.toHaveBeenCalled();
+  });
+
   it("proceeds when the customer is visible but already deleted", async () => {
     const { gateway, retrieveCustomer } = buildGateway([page([])]);
     retrieveCustomer.mockResolvedValueOnce({
