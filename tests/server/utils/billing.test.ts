@@ -12,9 +12,17 @@ vi.mock("../../../server/db", () => ({
   }),
 }));
 
+type ConditionNode =
+  | { type: "eq"; column: unknown; value: unknown }
+  | { type: "isNotNull"; column: unknown }
+  | { type: "and"; conditions: ConditionNode[] }
+  | { type: "not"; condition: ConditionNode };
+
 vi.mock("drizzle-orm", () => ({
-  and: (...conditions: unknown[]) => ({ and: conditions }),
-  eq: (column: unknown, value: unknown) => ({ eq: { column, value } }),
+  and: (...conditions: ConditionNode[]) => ({ type: "and", conditions }),
+  eq: (column: unknown, value: unknown) => ({ type: "eq", column, value }),
+  isNotNull: (column: unknown) => ({ type: "isNotNull", column }),
+  not: (condition: ConditionNode) => ({ type: "not", condition }),
 }));
 
 const {
@@ -28,6 +36,39 @@ const {
   calculateTrialProgress,
   TRIAL_PERIOD_DAYS,
 } = await import("../../../server/utils/billing");
+
+const { subscriptions } = await import("../../../server/db/schema");
+
+type GuardRow = { status: string; stripeSubscriptionId: string | null };
+
+function resolveColumnValue(column: unknown, row: GuardRow): unknown {
+  if (column === subscriptions.status) {
+    return row.status;
+  }
+  if (column === subscriptions.stripeSubscriptionId) {
+    return row.stripeSubscriptionId;
+  }
+  throw new Error("guard referenced an unexpected column");
+}
+
+// Evaluates the setWhere condition tree built by upsertSubscription against a
+// hypothetical existing row, so the ordering guard can be asserted behaviorally
+// (true = the upsert would apply, false = it is skipped).
+function evaluateCondition(node: ConditionNode, row: GuardRow): boolean {
+  if (node.type === "eq") {
+    return resolveColumnValue(node.column, row) === node.value;
+  }
+  if (node.type === "isNotNull") {
+    return resolveColumnValue(node.column, row) !== null;
+  }
+  if (node.type === "and") {
+    return node.conditions.every((child) => evaluateCondition(child, row));
+  }
+  if (node.type === "not") {
+    return !evaluateCondition(node.condition, row);
+  }
+  throw new Error("guard produced an unknown condition node");
+}
 
 const SAMPLE_SUBSCRIPTION = {
   id: "sub-uuid-1",
@@ -157,6 +198,73 @@ describe("upsertSubscription", () => {
 
     const callArgs = chain.values.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(callArgs.trialEndsAt).toBe(trialDate);
+  });
+
+  async function captureUpsertGuard(
+    stripeSubscriptionId: string,
+  ): Promise<ConditionNode> {
+    const chain = makeInsertChain();
+    insertMock.mockReturnValue({ values: chain.values });
+
+    await upsertSubscription({
+      userId: "user_abc123",
+      plan: "pro",
+      status: "active",
+      trialEndsAt: null,
+      stripeCustomerId: "cus_test123",
+      stripeSubscriptionId,
+    });
+
+    const conflictArgs = chain.onConflictDoUpdate.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(conflictArgs.setWhere).toBeDefined();
+    return conflictArgs.setWhere as ConditionNode;
+  }
+
+  it("guards the upsert so a stale update cannot revive a canceled subscription", async () => {
+    const guard = await captureUpsertGuard("sub_test123");
+
+    const wouldApply = evaluateCondition(guard, {
+      status: "canceled",
+      stripeSubscriptionId: "sub_test123",
+    });
+
+    expect(wouldApply).toBe(false);
+  });
+
+  it("still applies an in-order update to a live subscription", async () => {
+    const guard = await captureUpsertGuard("sub_test123");
+
+    const wouldApply = evaluateCondition(guard, {
+      status: "active",
+      stripeSubscriptionId: "sub_test123",
+    });
+
+    expect(wouldApply).toBe(true);
+  });
+
+  it("still applies when a new subscription replaces a canceled one (resubscribe)", async () => {
+    const guard = await captureUpsertGuard("sub_new456");
+
+    const wouldApply = evaluateCondition(guard, {
+      status: "canceled",
+      stripeSubscriptionId: "sub_old123",
+    });
+
+    expect(wouldApply).toBe(true);
+  });
+
+  it("still applies when the existing canceled row has a null stripeSubscriptionId", async () => {
+    const guard = await captureUpsertGuard("sub_test123");
+
+    const wouldApply = evaluateCondition(guard, {
+      status: "canceled",
+      stripeSubscriptionId: null,
+    });
+
+    expect(wouldApply).toBe(true);
   });
 });
 

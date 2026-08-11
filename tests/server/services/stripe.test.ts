@@ -12,6 +12,24 @@ function subscription(
   return { id, status } as unknown as Stripe.Subscription;
 }
 
+function scheduledSubscription(
+  id: string,
+  scheduleId: string,
+  status: Stripe.Subscription.Status = "active",
+): Stripe.Subscription {
+  return { id, status, schedule: scheduleId } as unknown as Stripe.Subscription;
+}
+
+// The error Stripe returns when a direct cancel is refused because a schedule
+// manages the subscription — the sole trigger for the release-and-retry path.
+function scheduleManagedCancelError(): Stripe.errors.StripeInvalidRequestError {
+  return new Stripe.errors.StripeInvalidRequestError({
+    message:
+      "This subscription is managed by a schedule and cannot be canceled",
+    type: "invalid_request_error",
+  });
+}
+
 function page(
   data: Stripe.Subscription[],
   hasMore = false,
@@ -50,6 +68,7 @@ function buildGateway(
   retrieveCustomer: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
+  releaseSchedule: ReturnType<typeof vi.fn>;
 } {
   if (overrides.list && pages.length > 0) {
     throw new Error(
@@ -70,11 +89,16 @@ function buildGateway(
     overrides.retrieveCustomer ??
     vi.fn(() => Promise.resolve(customer(CUSTOMER_ID)));
 
+  const releaseSchedule = vi.fn((scheduleId: string) =>
+    Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
+  );
+
   return {
-    gateway: { retrieveCustomer, list, cancel },
+    gateway: { retrieveCustomer, list, cancel, releaseSchedule },
     retrieveCustomer,
     list,
     cancel,
+    releaseSchedule,
   };
 }
 
@@ -82,6 +106,7 @@ describe("sweepCustomerSubscriptions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
@@ -197,17 +222,172 @@ describe("sweepCustomerSubscriptions", () => {
     expect(result.failedSubscriptionIds).toEqual([]);
   });
 
-  it("records — not rethrows — a cancel Stripe refuses (schedule-managed)", async () => {
-    const { gateway } = buildGateway([
-      page([subscription("sub_scheduled", "active")]),
+  it("releases the managing schedule and retries the cancel when Stripe refuses a schedule-managed cancel", async () => {
+    const { gateway, releaseSchedule } = buildGateway([
+      page([scheduledSubscription("sub_scheduled", "sub_sched_abc")]),
     ]);
-    gateway.cancel = vi.fn().mockRejectedValueOnce(
-      new Stripe.errors.StripeInvalidRequestError({
-        message:
-          "This subscription is managed by a schedule and cannot be canceled",
-        type: "invalid_request_error",
-      }),
-    );
+    gateway.cancel = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleManagedCancelError())
+      .mockResolvedValueOnce(subscription("sub_scheduled", "canceled"));
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).toHaveBeenCalledWith("sub_sched_abc");
+    expect(gateway.cancel).toHaveBeenCalledTimes(2);
+    expect(result.canceledCount).toBe(1);
+    expect(result.failedSubscriptionIds).toEqual([]);
+  });
+
+  it("releases the schedule between the refused cancel and the retry cancel", async () => {
+    const { gateway, releaseSchedule } = buildGateway([
+      page([scheduledSubscription("sub_scheduled", "sub_sched_abc")]),
+    ]);
+    const cancel = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleManagedCancelError())
+      .mockResolvedValueOnce(subscription("sub_scheduled", "canceled"));
+    gateway.cancel = cancel;
+
+    await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    const releaseOrder = releaseSchedule.mock.invocationCallOrder[0];
+    expect(cancel.mock.invocationCallOrder[0]).toBeLessThan(releaseOrder);
+    expect(releaseOrder).toBeLessThan(cancel.mock.invocationCallOrder[1]);
+  });
+
+  it("resolves the schedule id from an expanded schedule object", async () => {
+    const expanded = {
+      id: "sub_expanded",
+      status: "active",
+      schedule: { id: "sub_sched_expanded" },
+    } as unknown as Stripe.Subscription;
+    const { gateway, releaseSchedule } = buildGateway([page([expanded])]);
+    gateway.cancel = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleManagedCancelError())
+      .mockResolvedValueOnce(subscription("sub_expanded", "canceled"));
+
+    await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).toHaveBeenCalledWith("sub_sched_expanded");
+  });
+
+  it("does not release the schedule of an already-terminal subscription", async () => {
+    const { gateway, cancel, releaseSchedule } = buildGateway([
+      page([scheduledSubscription("sub_done", "sub_sched_done", "canceled")]),
+    ]);
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(result.canceledCount).toBe(0);
+  });
+
+  it("does not release the schedule when the direct cancel succeeds", async () => {
+    const { gateway, cancel, releaseSchedule } = buildGateway([
+      page([scheduledSubscription("sub_ok", "sub_sched_ok")]),
+    ]);
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith("sub_ok");
+    expect(result.canceledCount).toBe(1);
+  });
+
+  it("does not release the schedule when the cancel fails for a non-schedule reason", async () => {
+    const { gateway, releaseSchedule } = buildGateway([
+      page([scheduledSubscription("sub_scheduled", "sub_sched_abc")]),
+    ]);
+    gateway.cancel = vi.fn().mockRejectedValueOnce(new Error("network down"));
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).not.toHaveBeenCalled();
+    expect(result.canceledCount).toBe(0);
+    expect(result.failedSubscriptionIds).toEqual(["sub_scheduled"]);
+  });
+
+  it("fails loud when the retry cancel is still refused after releasing the schedule", async () => {
+    const { gateway, releaseSchedule } = buildGateway([
+      page([scheduledSubscription("sub_scheduled", "sub_sched_abc")]),
+    ]);
+    gateway.cancel = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleManagedCancelError())
+      .mockRejectedValueOnce(scheduleManagedCancelError());
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).toHaveBeenCalledWith("sub_sched_abc");
+    expect(result.canceledCount).toBe(0);
+    expect(result.failedSubscriptionIds).toEqual(["sub_scheduled"]);
+  });
+
+  it("fails loud without retrying when the cancel is schedule-refused but no schedule id is present", async () => {
+    const { gateway, releaseSchedule } = buildGateway([
+      page([subscription("sub_no_sched", "active")]),
+    ]);
+    const cancel = vi.fn().mockRejectedValueOnce(scheduleManagedCancelError());
+    gateway.cancel = cancel;
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(result.canceledCount).toBe(0);
+    expect(result.failedSubscriptionIds).toEqual(["sub_no_sched"]);
+  });
+
+  it("counts nothing and records no failure when the retry cancel races to already-canceled", async () => {
+    const { gateway, releaseSchedule } = buildGateway([
+      page([scheduledSubscription("sub_scheduled", "sub_sched_abc")]),
+    ]);
+    gateway.cancel = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleManagedCancelError())
+      .mockRejectedValueOnce(
+        new Stripe.errors.StripeInvalidRequestError({
+          message: "A subscription with status 'canceled' may not be updated",
+          type: "invalid_request_error",
+        }),
+      );
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).toHaveBeenCalledTimes(1);
+    expect(result.canceledCount).toBe(0);
+    expect(result.failedSubscriptionIds).toEqual([]);
+  });
+
+  it("fails loud when the retry cancel fails for a transient reason after the schedule was released", async () => {
+    const { gateway, releaseSchedule } = buildGateway([
+      page([scheduledSubscription("sub_scheduled", "sub_sched_abc")]),
+    ]);
+    gateway.cancel = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleManagedCancelError())
+      .mockRejectedValueOnce(new Error("stripe 503"));
+
+    const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
+
+    expect(releaseSchedule).toHaveBeenCalledTimes(1);
+    expect(result.canceledCount).toBe(0);
+    expect(result.failedSubscriptionIds).toEqual(["sub_scheduled"]);
+  });
+
+  it("fails loud when releasing the schedule itself fails", async () => {
+    const { gateway } = buildGateway([
+      page([scheduledSubscription("sub_scheduled", "sub_sched_abc")]),
+    ]);
+    gateway.cancel = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleManagedCancelError());
+    gateway.releaseSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("release boom"));
 
     const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
 

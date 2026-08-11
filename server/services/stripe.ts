@@ -122,6 +122,13 @@ const SUBSCRIPTION_SWEEP_PAGE_SIZE = 100;
 // (e.g. "managed by a schedule and cannot be canceled").
 const ALREADY_CANCELED_MESSAGE = /status ['"]?canceled/i;
 
+// Stripe's wording when a direct cancel is refused because a subscription
+// schedule manages the subscription. The sweep releases the schedule and
+// retries only on this error, so a genuinely-active schedule (irreversible to
+// release) is never touched unless Stripe proves the cancel needs it.
+const SCHEDULE_MANAGED_CANCEL_MESSAGE =
+  /managed by a (subscription )?schedule/i;
+
 // Generic message surfaced when the sweep fails. Stripe errors carry a numeric
 // statusCode, which apiErrorHandler treats as client-facing and would leak
 // verbatim (see utils/errors.ts); this keeps the raw Stripe text off the wire.
@@ -148,6 +155,10 @@ export type SubscriptionGateway = {
     params: Stripe.SubscriptionListParams,
   ) => Promise<Stripe.ApiList<Stripe.Subscription>>;
   cancel: (subscriptionId: string) => Promise<Stripe.Subscription>;
+  // Detaches a subscription from its managing subscription_schedule. A
+  // schedule-managed subscription rejects a direct cancel, so the sweep
+  // releases the schedule and retries the cancel (see releaseManagingSchedule).
+  releaseSchedule: (scheduleId: string) => Promise<Stripe.SubscriptionSchedule>;
 };
 
 export type CustomerCancelResult = {
@@ -168,7 +179,38 @@ function toSubscriptionGateway(stripe: Stripe): SubscriptionGateway {
     retrieveCustomer: (customerId) => stripe.customers.retrieve(customerId),
     list: (params) => stripe.subscriptions.list(params),
     cancel: (subscriptionId) => stripe.subscriptions.cancel(subscriptionId),
+    releaseSchedule: (scheduleId) =>
+      stripe.subscriptionSchedules.release(scheduleId),
   };
+}
+
+// A subscription's `schedule` is the managing schedule id (or the expanded
+// object once populated), or null when nothing manages it.
+function getManagingScheduleId(
+  subscription: Stripe.Subscription,
+): string | null {
+  const schedule = subscription.schedule;
+  if (!schedule) {
+    return null;
+  }
+
+  return typeof schedule === "string" ? schedule : schedule.id;
+}
+
+// Detaches a subscription from its managing schedule so the retry cancel
+// succeeds. Only reached after Stripe refused the direct cancel for this
+// reason, so the schedule is known to be blocking; releasing is irreversible,
+// which is why the sweep never does it speculatively.
+async function releaseManagingSchedule(
+  gateway: SubscriptionGateway,
+  subscriptionId: string,
+  scheduleId: string,
+): Promise<void> {
+  await gateway.releaseSchedule(scheduleId);
+  console.info("[stripe] released subscription schedule to unblock cancel", {
+    subscriptionId,
+    scheduleId,
+  });
 }
 
 function isTerminalStatus(status: Stripe.Subscription.Status): boolean {
@@ -245,6 +287,20 @@ async function assertKeyCanSeeCustomer(
   }
 }
 
+// A direct cancel Stripe refused because a schedule manages the subscription.
+// This — not any invalid_request — is the only cancel failure the sweep answers
+// by releasing the schedule and retrying.
+function isScheduleManagedCancelError(error: unknown): boolean {
+  if (!(error instanceof Stripe.errors.StripeError)) {
+    return false;
+  }
+
+  return (
+    error.rawType === "invalid_request_error" &&
+    SCHEDULE_MANAGED_CANCEL_MESSAGE.test(error.message ?? "")
+  );
+}
+
 // Returns true when this call canceled the subscription, false when it was
 // already terminal (raced by a webhook/portal cancellation) — so the caller's
 // count reflects only subscriptions this sweep actually canceled.
@@ -266,6 +322,60 @@ async function cancelSubscription(
   }
 }
 
+// Cancel the subscription, falling back to releasing its managing schedule only
+// when Stripe refuses the direct cancel for that reason. Cancel-first keeps the
+// irreversible release off the happy path and, critically, off any subscription
+// whose cancel fails for an unrelated reason (transient 5xx, rate limit) — those
+// fail loud with the schedule intact rather than destroyed.
+async function cancelWithScheduleReleaseFallback(
+  gateway: SubscriptionGateway,
+  subscription: Stripe.Subscription,
+): Promise<boolean> {
+  try {
+    return await cancelSubscription(gateway, subscription.id);
+  } catch (error) {
+    if (!isScheduleManagedCancelError(error)) {
+      throw error;
+    }
+
+    const scheduleId = getManagingScheduleId(subscription);
+    if (!scheduleId) {
+      // Stripe refused the cancel as schedule-managed yet the subscription
+      // carries no schedule id to release; retrying would just repeat the
+      // failure, so surface the original error loudly.
+      console.error(
+        "[stripe] cancel refused as schedule-managed but no schedule id present",
+        { subscriptionId: subscription.id },
+      );
+      throw error;
+    }
+
+    await releaseManagingSchedule(gateway, subscription.id, scheduleId);
+  }
+
+  return cancelAfterScheduleRelease(gateway, subscription.id);
+}
+
+// The retry cancel after an irreversible schedule release. If it fails (a
+// transient 5xx/rate-limit landing in the gap), the schedule is already gone
+// and the subscription is still billable — a state that cannot be undone — so
+// log it distinctly before failing loud. An already-terminal race returns false
+// without throwing and is not this failure.
+async function cancelAfterScheduleRelease(
+  gateway: SubscriptionGateway,
+  subscriptionId: string,
+): Promise<boolean> {
+  try {
+    return await cancelSubscription(gateway, subscriptionId);
+  } catch (error) {
+    console.error(
+      "[stripe] subscription still active after releasing its schedule; the schedule cannot be restored",
+      { subscriptionId },
+    );
+    throw error;
+  }
+}
+
 async function cancelIfBillable(
   gateway: SubscriptionGateway,
   subscription: Stripe.Subscription,
@@ -274,7 +384,10 @@ async function cancelIfBillable(
     return 0;
   }
 
-  const canceled = await cancelSubscription(gateway, subscription.id);
+  const canceled = await cancelWithScheduleReleaseFallback(
+    gateway,
+    subscription,
+  );
   return canceled ? 1 : 0;
 }
 

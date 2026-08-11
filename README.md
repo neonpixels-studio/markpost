@@ -125,6 +125,16 @@ stripe listen --forward-to http://localhost:3000/api/billing/webhook
 
 Authentication is handled by [Clerk](https://clerk.com) via the `@clerk/nuxt` module. Server middleware at `server/middleware/auth.ts` verifies the session on every request and makes the user available at `event.context.userId` in API route handlers.
 
+### Clerk deletion webhook
+
+Deleting an account in-app (`DELETE /api/account`) cancels Stripe billing and cascade-deletes the user's data. A user removed **out-of-band** — from the Clerk Dashboard or Account Portal — bypasses that path, which would orphan their DB rows and leave live Stripe billing running. To reconcile it, `POST /api/webhooks/clerk` receives Clerk's `user.deleted` event and runs the same cancel-Stripe-then-wipe-data teardown (shared logic lives in `server/services/accountDeletion.ts`). The Svix signature on every delivery is verified against `CLERK_WEBHOOK_SIGNING_SECRET`; an invalid or missing signature is rejected with a `400` before any teardown runs. Unrecognised event types are acknowledged with a `200` no-op.
+
+To set it up: in the [Clerk Dashboard](https://dashboard.clerk.com) → **Configure → Webhooks**, add an endpoint pointing to `https://your-domain.com/api/webhooks/clerk`, subscribe it to the `user.deleted` event, and copy the endpoint's **Signing Secret** into `CLERK_WEBHOOK_SIGNING_SECRET`.
+
+| Env var                        | Where to get it                                                                                                                                   |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLERK_WEBHOOK_SIGNING_SECRET` | Signing secret for the Clerk webhook endpoint ([Dashboard → Configure → Webhooks → your endpoint → Signing Secret](https://dashboard.clerk.com)). |
+
 ## Development
 
 Start the dev server at `http://localhost:3000`:
@@ -234,6 +244,7 @@ Required repository secrets (Settings → Secrets → Actions):
 - `E2E_DATABASE_URL`
 - `NUXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
 - `NUXT_CLERK_SECRET_KEY`
+- `CLERK_WEBHOOK_SIGNING_SECRET`
 - `SENTRY_AUTH_TOKEN`
 - `SENTRY_DSN`
 - `SENTRY_ORG`
