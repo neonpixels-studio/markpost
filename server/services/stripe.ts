@@ -138,7 +138,11 @@ const STRIPE_SWEEP_FAILED_MESSAGE = "Stripe subscription sweep failed";
 // Stripe never deletes subscription objects, so a `resource_missing` almost
 // always means a test/live or rotated-key mismatch rather than a truly-gone
 // account — trusting an empty sweep in that case would delete an account whose
-// subscription is still billing under the real key.
+// subscription is still billing under the real key. Deliberate trade-off: a
+// stale/bogus stored customer id also fails closed here (account not deletable
+// until the id is corrected), which is preferred over deleting an account that
+// may still be double-billed. Distinguishing permanent misconfig from a
+// transient failure is a separate follow-up.
 const CUSTOMER_NOT_VISIBLE_MESSAGE =
   "Stripe customer not visible to the configured API key";
 
