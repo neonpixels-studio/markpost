@@ -18,6 +18,12 @@ class StripeErrorStub extends Error {}
 
 class StripeInvalidRequestErrorStub extends StripeErrorStub {
   rawType = "invalid_request_error";
+  code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
 }
 
 vi.mock("stripe", () => {
@@ -78,8 +84,8 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
   it("fails loud without listing when the key can't see the customer", async () => {
     const missing = new StripeInvalidRequestErrorStub(
       `No such customer: '${CUSTOMER_ID}'`,
+      "resource_missing",
     );
-    (missing as unknown as { code: string }).code = "resource_missing";
     retrieveCustomerMock.mockRejectedValueOnce(missing);
 
     const error = await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(

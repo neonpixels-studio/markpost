@@ -154,10 +154,14 @@ describe("sweepCustomerSubscriptions", () => {
   it("paginates until Stripe reports no more results", async () => {
     const first = page([subscription("sub_1", "active")], true);
     const second = page([subscription("sub_2", "active")], false);
-    const { gateway, list, cancel } = buildGateway([first, second]);
+    const { gateway, list, cancel, retrieveCustomer } = buildGateway([
+      first,
+      second,
+    ]);
 
     const result = await sweepCustomerSubscriptions(gateway, CUSTOMER_ID);
 
+    expect(retrieveCustomer).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledTimes(2);
     expect(list).toHaveBeenLastCalledWith(
       expect.objectContaining({ starting_after: "sub_1" }),
