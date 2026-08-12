@@ -7,13 +7,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const listMock = vi.fn();
 const cancelMock = vi.fn();
+const retrieveCustomerMock = vi.fn();
 const releaseScheduleMock = vi.fn();
 
-// Errors here extend StripeErrorStub, so the service's classifiers
-// (isAlreadyCanceledError / isScheduleManagedCancelError) do run against them;
-// keep stub messages aligned with the real Stripe wording so a stub tweak can't
-// silently change which branch a test exercises.
-class StripeErrorStub extends Error {}
+// StripeErrorStub carries a `code` so the wrong-key retrieve test can raise a
+// real resource_missing through isResourceMissingError. Errors here extend it,
+// so the service's classifiers (isAlreadyCanceledError /
+// isScheduleManagedCancelError) also run against them; keep stub messages
+// aligned with the real Stripe wording so a stub tweak can't silently change
+// which branch a test exercises.
+class StripeErrorStub extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
 
 class StripeInvalidRequestErrorStub extends StripeErrorStub {
   rawType = "invalid_request_error";
@@ -22,6 +31,7 @@ class StripeInvalidRequestErrorStub extends StripeErrorStub {
 vi.mock("stripe", () => {
   class StripeStub {
     subscriptions = { list: listMock, cancel: cancelMock };
+    customers = { retrieve: retrieveCustomerMock };
     subscriptionSchedules = { release: releaseScheduleMock };
     static errors = {
       StripeError: StripeErrorStub,
@@ -39,6 +49,12 @@ const CUSTOMER_ID = "cus_live123";
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
+  // The sweep proves key visibility first; default it to a visible customer so
+  // each test opts into the wrong-key path explicitly.
+  retrieveCustomerMock.mockResolvedValue({
+    id: CUSTOMER_ID,
+    object: "customer",
+  });
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
@@ -60,8 +76,33 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
     expect(listMock).toHaveBeenCalledWith(
       expect.objectContaining({ customer: CUSTOMER_ID, status: "all" }),
     );
+    // A returned subscription proves visibility, so no customer retrieve.
+    expect(retrieveCustomerMock).not.toHaveBeenCalled();
     expect(cancelMock).toHaveBeenCalledWith("sub_live");
     expect(result.canceledCount).toBe(1);
+  });
+
+  it("fails loud, sanitized, when the key cannot see the customer", async () => {
+    // An empty sweep under a wrong test/live or rotated key: the customer
+    // retrieve returns resource_missing, so the sweep must refuse rather than
+    // let a still-billing account be deleted, and must not leak the raw Stripe
+    // error (no statusCode on the wire).
+    listMock.mockResolvedValue({ data: [], has_more: false });
+    retrieveCustomerMock.mockRejectedValueOnce(
+      new StripeErrorStub(
+        "No such customer: 'cus_live123'",
+        "resource_missing",
+      ),
+    );
+
+    const error = await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(listMock).toHaveBeenCalled();
+    expect(cancelMock).not.toHaveBeenCalled();
+    expect((error as Error).message).toBe("Stripe subscription sweep failed");
+    expect((error as { statusCode?: number }).statusCode).toBeUndefined();
   });
 
   it("sanitizes a Stripe failure so no statusCode-bearing error escapes", async () => {
