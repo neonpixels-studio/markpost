@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Stripe from "stripe";
 import type { SubscriptionGateway } from "../../../server/services/stripe";
-import { sweepCustomerSubscriptions } from "../../../server/services/stripe";
+import {
+  sweepCustomerSubscriptions,
+  sweepCustomerSubscriptionSchedules,
+} from "../../../server/services/stripe";
 
 const CUSTOMER_ID = "cus_test123";
 
@@ -42,6 +45,25 @@ function page(
   } as unknown as Stripe.ApiList<Stripe.Subscription>;
 }
 
+function schedule(
+  id: string,
+  status: Stripe.SubscriptionSchedule.Status,
+): Stripe.SubscriptionSchedule {
+  return { id, status } as unknown as Stripe.SubscriptionSchedule;
+}
+
+function schedulePage(
+  data: Stripe.SubscriptionSchedule[],
+  hasMore = false,
+): Promise<Stripe.ApiList<Stripe.SubscriptionSchedule>> {
+  return Promise.resolve({
+    object: "list",
+    data,
+    has_more: hasMore,
+    url: "/v1/subscription_schedules",
+  } as unknown as Stripe.ApiList<Stripe.SubscriptionSchedule>);
+}
+
 function customer(id: string): Stripe.Customer {
   return { id, object: "customer" } as unknown as Stripe.Customer;
 }
@@ -58,6 +80,8 @@ type GatewayOverrides = {
   list?: ReturnType<typeof vi.fn>;
   cancel?: ReturnType<typeof vi.fn>;
   retrieveCustomer?: ReturnType<typeof vi.fn>;
+  listSchedules?: ReturnType<typeof vi.fn>;
+  cancelSchedule?: ReturnType<typeof vi.fn>;
 };
 
 function buildGateway(
@@ -69,6 +93,8 @@ function buildGateway(
   list: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   releaseSchedule: ReturnType<typeof vi.fn>;
+  listSchedules: ReturnType<typeof vi.fn>;
+  cancelSchedule: ReturnType<typeof vi.fn>;
 } {
   if (overrides.list && pages.length > 0) {
     throw new Error(
@@ -93,12 +119,33 @@ function buildGateway(
     Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
   );
 
+  // Default to an empty schedule list so the subscription-sweep tests exercise
+  // the schedule pass as a no-op; the schedule-sweep tests pass explicit
+  // overrides.
+  const listSchedules =
+    overrides.listSchedules ?? vi.fn(() => schedulePage([]));
+
+  const cancelSchedule =
+    overrides.cancelSchedule ??
+    vi.fn((scheduleId: string) =>
+      Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
+    );
+
   return {
-    gateway: { retrieveCustomer, list, cancel, releaseSchedule },
+    gateway: {
+      retrieveCustomer,
+      list,
+      cancel,
+      releaseSchedule,
+      listSchedules,
+      cancelSchedule,
+    },
     retrieveCustomer,
     list,
     cancel,
     releaseSchedule,
+    listSchedules,
+    cancelSchedule,
   };
 }
 
@@ -616,6 +663,196 @@ describe("sweepCustomerSubscriptions", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("partial progress"),
       expect.objectContaining({ canceledCount: 1 }),
+    );
+  });
+});
+
+// The error Stripe returns when a schedule cancel is refused because the
+// schedule already reached a terminal state between the list and the cancel.
+function scheduleAlreadyTerminalError(): Stripe.errors.StripeInvalidRequestError {
+  return new Stripe.errors.StripeInvalidRequestError({
+    message:
+      "This subscription schedule cannot be canceled because it is in the `canceled` state.",
+    type: "invalid_request_error",
+  });
+}
+
+describe("sweepCustomerSubscriptionSchedules", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  it("finds and cancels a not_started schedule that has no subscription yet", async () => {
+    const listSchedules = vi.fn(() =>
+      schedulePage([schedule("sub_sched_pending", "not_started")]),
+    );
+    const { gateway, cancelSchedule } = buildGateway([], { listSchedules });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(listSchedules).toHaveBeenCalledWith(
+      expect.objectContaining({ customer: CUSTOMER_ID }),
+    );
+    expect(cancelSchedule).toHaveBeenCalledWith("sub_sched_pending");
+    expect(result.canceledScheduleCount).toBe(1);
+    expect(result.failedScheduleIds).toEqual([]);
+  });
+
+  it("leaves active and terminal schedules alone", async () => {
+    const listSchedules = vi.fn(() =>
+      schedulePage([
+        schedule("sub_sched_active", "active"),
+        schedule("sub_sched_completed", "completed"),
+        schedule("sub_sched_released", "released"),
+        schedule("sub_sched_canceled", "canceled"),
+        schedule("sub_sched_pending", "not_started"),
+      ]),
+    );
+    const { gateway, cancelSchedule } = buildGateway([], { listSchedules });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(cancelSchedule).toHaveBeenCalledTimes(1);
+    expect(cancelSchedule).toHaveBeenCalledWith("sub_sched_pending");
+    expect(result.canceledScheduleCount).toBe(1);
+  });
+
+  it("cancels nothing when the customer has no schedules", async () => {
+    const listSchedules = vi.fn(() => schedulePage([]));
+    const { gateway, cancelSchedule } = buildGateway([], { listSchedules });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(cancelSchedule).not.toHaveBeenCalled();
+    expect(result.canceledScheduleCount).toBe(0);
+  });
+
+  it("paginates until Stripe reports no more schedules", async () => {
+    const listSchedules = vi
+      .fn()
+      .mockReturnValueOnce(
+        schedulePage([schedule("sub_sched_1", "not_started")], true),
+      )
+      .mockReturnValueOnce(
+        schedulePage([schedule("sub_sched_2", "not_started")], false),
+      );
+    const { gateway, cancelSchedule } = buildGateway([], { listSchedules });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(listSchedules).toHaveBeenCalledTimes(2);
+    expect(listSchedules).toHaveBeenLastCalledWith(
+      expect.objectContaining({ starting_after: "sub_sched_1" }),
+    );
+    expect(cancelSchedule).toHaveBeenCalledWith("sub_sched_2");
+    expect(result.canceledScheduleCount).toBe(2);
+  });
+
+  it("tolerates a schedule already gone (resource_missing)", async () => {
+    const listSchedules = vi.fn(() =>
+      schedulePage([schedule("sub_sched_racing", "not_started")]),
+    );
+    const cancelSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(
+        resourceMissingError(
+          "No such subscription_schedule: 'sub_sched_racing'",
+        ),
+      );
+    const { gateway } = buildGateway([], { listSchedules, cancelSchedule });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(result.canceledScheduleCount).toBe(0);
+    expect(result.failedScheduleIds).toEqual([]);
+  });
+
+  it("tolerates a schedule that raced to terminal between list and cancel", async () => {
+    const listSchedules = vi.fn(() =>
+      schedulePage([schedule("sub_sched_racing", "not_started")]),
+    );
+    const cancelSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleAlreadyTerminalError());
+    const { gateway } = buildGateway([], { listSchedules, cancelSchedule });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(result.canceledScheduleCount).toBe(0);
+    expect(result.failedScheduleIds).toEqual([]);
+  });
+
+  it("records an unexpected schedule cancel failure instead of aborting", async () => {
+    const listSchedules = vi.fn(() =>
+      schedulePage([
+        schedule("sub_sched_bad", "not_started"),
+        schedule("sub_sched_good", "not_started"),
+      ]),
+    );
+    const cancelSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce({ id: "sub_sched_good" });
+    const { gateway } = buildGateway([], { listSchedules, cancelSchedule });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(cancelSchedule).toHaveBeenCalledWith("sub_sched_good");
+    expect(result.canceledScheduleCount).toBe(1);
+    expect(result.failedScheduleIds).toEqual(["sub_sched_bad"]);
+  });
+
+  it("fails loud when Stripe reports has_more with an empty schedule page", async () => {
+    const listSchedules = vi.fn(() => schedulePage([], true));
+    const { gateway } = buildGateway([], { listSchedules });
+
+    await expect(
+      sweepCustomerSubscriptionSchedules(gateway, CUSTOMER_ID),
+    ).rejects.toThrow("has_more with an empty");
+  });
+
+  it("surfaces partial progress when a later schedule page fails to list", async () => {
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const listSchedules = vi
+      .fn()
+      .mockReturnValueOnce(
+        schedulePage([schedule("sub_sched_1", "not_started")], true),
+      )
+      .mockRejectedValueOnce(new Error("schedule page 2 exploded"));
+    const { gateway } = buildGateway([], { listSchedules });
+
+    await expect(
+      sweepCustomerSubscriptionSchedules(gateway, CUSTOMER_ID),
+    ).rejects.toThrow("schedule page 2 exploded");
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("partial progress"),
+      expect.objectContaining({ canceledScheduleCount: 1 }),
     );
   });
 });

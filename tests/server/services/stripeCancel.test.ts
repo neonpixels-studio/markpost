@@ -9,6 +9,8 @@ const listMock = vi.fn();
 const cancelMock = vi.fn();
 const retrieveCustomerMock = vi.fn();
 const releaseScheduleMock = vi.fn();
+const listSchedulesMock = vi.fn();
+const cancelScheduleMock = vi.fn();
 
 // StripeErrorStub carries a `code` so the wrong-key retrieve test can raise a
 // real resource_missing through isResourceMissingError. Errors here extend it,
@@ -32,7 +34,11 @@ vi.mock("stripe", () => {
   class StripeStub {
     subscriptions = { list: listMock, cancel: cancelMock };
     customers = { retrieve: retrieveCustomerMock };
-    subscriptionSchedules = { release: releaseScheduleMock };
+    subscriptionSchedules = {
+      release: releaseScheduleMock,
+      list: listSchedulesMock,
+      cancel: cancelScheduleMock,
+    };
     static errors = {
       StripeError: StripeErrorStub,
       StripeInvalidRequestError: StripeInvalidRequestErrorStub,
@@ -55,6 +61,11 @@ beforeEach(() => {
     id: CUSTOMER_ID,
     object: "customer",
   });
+  // Default to no schedules so the subscription-focused tests exercise the
+  // schedule pass as a no-op; the schedule test opts in explicitly.
+  listSchedulesMock.mockResolvedValue({ data: [], has_more: false });
+  cancelScheduleMock.mockResolvedValue({ id: "sub_sched", status: "canceled" });
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
@@ -138,6 +149,40 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
     expect(releaseScheduleMock).toHaveBeenCalledWith("sub_sched_live");
     expect(cancelMock).toHaveBeenCalledTimes(2);
     expect(result.canceledCount).toBe(1);
+  });
+
+  it("maps the schedule sweep onto stripe.subscriptionSchedules.list and .cancel", async () => {
+    // A not_started schedule carries no subscription, so subscriptions.list is
+    // empty; the schedule sweep must still find and cancel it.
+    listMock.mockResolvedValue({ data: [], has_more: false });
+    listSchedulesMock.mockResolvedValue({
+      data: [{ id: "sub_sched_pending", status: "not_started" }],
+      has_more: false,
+    });
+
+    const result = await cancelSubscriptionsForCustomer(CUSTOMER_ID);
+
+    expect(listSchedulesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ customer: CUSTOMER_ID }),
+    );
+    expect(cancelScheduleMock).toHaveBeenCalledWith("sub_sched_pending");
+    expect(result.canceledScheduleCount).toBe(1);
+  });
+
+  it("fails loud, sanitized, when a schedule cancel fails", async () => {
+    listMock.mockResolvedValue({ data: [], has_more: false });
+    listSchedulesMock.mockResolvedValue({
+      data: [{ id: "sub_sched_pending", status: "not_started" }],
+      has_more: false,
+    });
+    cancelScheduleMock.mockRejectedValueOnce(new Error("schedule cancel boom"));
+
+    const error = await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect((error as Error).message).toBe("Stripe subscription sweep failed");
+    expect((error as { statusCode?: number }).statusCode).toBeUndefined();
   });
 
   it("attempts every subscription then fails loud when one cancel fails", async () => {
