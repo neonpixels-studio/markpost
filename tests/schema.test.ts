@@ -3,10 +3,16 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import { events, records, sources, subscriptions } from "../server/db/schema";
 
 const RECORDS_SOURCE_FK = "records_source_id_sources_uuid_fk";
+const EVENTS_SOURCE_FK = "events_source_id_sources_uuid_fk";
 
 function recordsSourceForeignKey() {
   const foreignKeys = getTableConfig(records).foreignKeys;
   return foreignKeys.find((key) => key.getName() === RECORDS_SOURCE_FK);
+}
+
+function eventsSourceForeignKey() {
+  const foreignKeys = getTableConfig(events).foreignKeys;
+  return foreignKeys.find((key) => key.getName() === EVENTS_SOURCE_FK);
 }
 
 describe("records schema", () => {
@@ -155,6 +161,16 @@ describe("events schema", () => {
     expect(events.sourceId).toBeDefined();
     expect(events.sourceId.name).toBe("source_id");
     expect(events.sourceId.notNull).toBe(false);
+  });
+
+  // Regression for #183: events.source_id had no FK, so deleting a source left
+  // rows pointing at a gone sources.uuid and event-to-source lookups silently
+  // returned nothing. The FK with ON DELETE SET NULL nulls the reference on
+  // delete instead (mirrors the records.source_id FK).
+  it("source_id foreign key deletes with ON DELETE SET NULL", () => {
+    const foreignKey = eventsSourceForeignKey();
+    expect(foreignKey).toBeDefined();
+    expect(foreignKey?.onDelete).toBe("set null");
   });
 });
 
