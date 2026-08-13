@@ -82,20 +82,58 @@ type GatewayOverrides = {
   retrieveCustomer?: ReturnType<typeof vi.fn>;
   listSchedules?: ReturnType<typeof vi.fn>;
   cancelSchedule?: ReturnType<typeof vi.fn>;
+  retrieveSchedule?: ReturnType<typeof vi.fn>;
 };
+
+type GatewayMocks = {
+  retrieveCustomer: ReturnType<typeof vi.fn>;
+  cancel: ReturnType<typeof vi.fn>;
+  releaseSchedule: ReturnType<typeof vi.fn>;
+  listSchedules: ReturnType<typeof vi.fn>;
+  cancelSchedule: ReturnType<typeof vi.fn>;
+  retrieveSchedule: ReturnType<typeof vi.fn>;
+};
+
+// Resolves every gateway method except `list` (which needs pagination wiring) to
+// its override or a sensible default. Kept out of buildGateway so that stays a
+// small, low-branch assembler.
+function buildGatewayMethods(overrides: GatewayOverrides): GatewayMocks {
+  return {
+    cancel:
+      overrides.cancel ??
+      vi.fn((id: string) => Promise.resolve(subscription(id, "canceled"))),
+    retrieveCustomer:
+      overrides.retrieveCustomer ??
+      vi.fn(() => Promise.resolve(customer(CUSTOMER_ID))),
+    releaseSchedule: vi.fn((scheduleId: string) =>
+      Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
+    ),
+    // Default to an empty schedule list so the subscription-sweep tests exercise
+    // the schedule pass as a no-op; the schedule-sweep tests override it.
+    listSchedules: overrides.listSchedules ?? vi.fn(() => schedulePage([])),
+    cancelSchedule:
+      overrides.cancelSchedule ??
+      vi.fn((scheduleId: string) =>
+        Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
+      ),
+    // Only reached when a schedule cancel is refused (invalid_request); the
+    // status-based tolerance re-reads the schedule. Default to a canceled
+    // schedule so a refused cancel reads as already resolved unless overridden.
+    retrieveSchedule:
+      overrides.retrieveSchedule ??
+      vi.fn((scheduleId: string) =>
+        Promise.resolve(schedule(scheduleId, "canceled")),
+      ),
+  };
+}
 
 function buildGateway(
   pages: Stripe.ApiList<Stripe.Subscription>[],
   overrides: GatewayOverrides = {},
 ): {
   gateway: SubscriptionGateway;
-  retrieveCustomer: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
-  cancel: ReturnType<typeof vi.fn>;
-  releaseSchedule: ReturnType<typeof vi.fn>;
-  listSchedules: ReturnType<typeof vi.fn>;
-  cancelSchedule: ReturnType<typeof vi.fn>;
-} {
+} & GatewayMocks {
   if (overrides.list && pages.length > 0) {
     throw new Error(
       "buildGateway: pass pages OR a list override, not both — the pages would be silently discarded",
@@ -107,45 +145,12 @@ function buildGateway(
     pages.forEach((result) => list.mockResolvedValueOnce(result));
   }
 
-  const cancel =
-    overrides.cancel ??
-    vi.fn((id: string) => Promise.resolve(subscription(id, "canceled")));
-
-  const retrieveCustomer =
-    overrides.retrieveCustomer ??
-    vi.fn(() => Promise.resolve(customer(CUSTOMER_ID)));
-
-  const releaseSchedule = vi.fn((scheduleId: string) =>
-    Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
-  );
-
-  // Default to an empty schedule list so the subscription-sweep tests exercise
-  // the schedule pass as a no-op; the schedule-sweep tests pass explicit
-  // overrides.
-  const listSchedules =
-    overrides.listSchedules ?? vi.fn(() => schedulePage([]));
-
-  const cancelSchedule =
-    overrides.cancelSchedule ??
-    vi.fn((scheduleId: string) =>
-      Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
-    );
+  const methods = buildGatewayMethods(overrides);
 
   return {
-    gateway: {
-      retrieveCustomer,
-      list,
-      cancel,
-      releaseSchedule,
-      listSchedules,
-      cancelSchedule,
-    },
-    retrieveCustomer,
+    gateway: { list, ...methods },
     list,
-    cancel,
-    releaseSchedule,
-    listSchedules,
-    cancelSchedule,
+    ...methods,
   };
 }
 
@@ -667,12 +672,12 @@ describe("sweepCustomerSubscriptions", () => {
   });
 });
 
-// The error Stripe returns when a schedule cancel is refused because the
-// schedule already reached a terminal state between the list and the cancel.
-function scheduleAlreadyTerminalError(): Stripe.errors.StripeInvalidRequestError {
+// A generic invalid_request Stripe raises when a schedule cancel is refused.
+// The tolerance is status-based (re-reads the schedule), not prose-based, so the
+// exact wording is irrelevant — the test controls the retrieved status instead.
+function scheduleCancelRefusedError(): Stripe.errors.StripeInvalidRequestError {
   return new Stripe.errors.StripeInvalidRequestError({
-    message:
-      "This subscription schedule cannot be canceled because it is in the `canceled` state.",
+    message: "Cannot cancel this subscription schedule",
     type: "invalid_request_error",
   });
 }
@@ -785,14 +790,108 @@ describe("sweepCustomerSubscriptionSchedules", () => {
     expect(result.failedScheduleIds).toEqual([]);
   });
 
-  it("tolerates a schedule that raced to terminal between list and cancel", async () => {
+  it("tolerates a refused cancel when a re-read shows the schedule reached a terminal state", async () => {
     const listSchedules = vi.fn(() =>
       schedulePage([schedule("sub_sched_racing", "not_started")]),
     );
     const cancelSchedule = vi
       .fn()
-      .mockRejectedValueOnce(scheduleAlreadyTerminalError());
-    const { gateway } = buildGateway([], { listSchedules, cancelSchedule });
+      .mockRejectedValueOnce(scheduleCancelRefusedError());
+    // The re-read decides tolerance by status, not by the error's wording.
+    const retrieveSchedule = vi.fn(() =>
+      Promise.resolve(schedule("sub_sched_racing", "released")),
+    );
+    const { gateway } = buildGateway([], {
+      listSchedules,
+      cancelSchedule,
+      retrieveSchedule,
+    });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(retrieveSchedule).toHaveBeenCalledWith("sub_sched_racing");
+    expect(result.canceledScheduleCount).toBe(0);
+    expect(result.failedScheduleIds).toEqual([]);
+  });
+
+  it("tolerates a refused cancel when the schedule activated into a live subscription", async () => {
+    // A schedule that activated between list and cancel is now `active`; its
+    // subscription is caught by the subscription sweep, so the refused schedule
+    // cancel is not a failure.
+    const listSchedules = vi.fn(() =>
+      schedulePage([schedule("sub_sched_racing", "not_started")]),
+    );
+    const cancelSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleCancelRefusedError());
+    const retrieveSchedule = vi.fn(() =>
+      Promise.resolve(schedule("sub_sched_racing", "active")),
+    );
+    const { gateway } = buildGateway([], {
+      listSchedules,
+      cancelSchedule,
+      retrieveSchedule,
+    });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(result.canceledScheduleCount).toBe(0);
+    expect(result.failedScheduleIds).toEqual([]);
+  });
+
+  it("fails loud on a refused cancel when a re-read shows the schedule is still pending", async () => {
+    // The cancel was refused for a real reason (not a terminal race): the
+    // schedule is still not_started, so it must land in failedScheduleIds rather
+    // than be swallowed.
+    const listSchedules = vi.fn(() =>
+      schedulePage([schedule("sub_sched_stuck", "not_started")]),
+    );
+    const cancelSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleCancelRefusedError());
+    const retrieveSchedule = vi.fn(() =>
+      Promise.resolve(schedule("sub_sched_stuck", "not_started")),
+    );
+    const { gateway } = buildGateway([], {
+      listSchedules,
+      cancelSchedule,
+      retrieveSchedule,
+    });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(result.canceledScheduleCount).toBe(0);
+    expect(result.failedScheduleIds).toEqual(["sub_sched_stuck"]);
+  });
+
+  it("tolerates a refused cancel when the re-read shows the schedule is already gone", async () => {
+    const listSchedules = vi.fn(() =>
+      schedulePage([schedule("sub_sched_racing", "not_started")]),
+    );
+    const cancelSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(scheduleCancelRefusedError());
+    const retrieveSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(
+        resourceMissingError(
+          "No such subscription_schedule: 'sub_sched_racing'",
+        ),
+      );
+    const { gateway } = buildGateway([], {
+      listSchedules,
+      cancelSchedule,
+      retrieveSchedule,
+    });
 
     const result = await sweepCustomerSubscriptionSchedules(
       gateway,

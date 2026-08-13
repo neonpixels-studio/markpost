@@ -11,6 +11,7 @@ const retrieveCustomerMock = vi.fn();
 const releaseScheduleMock = vi.fn();
 const listSchedulesMock = vi.fn();
 const cancelScheduleMock = vi.fn();
+const retrieveScheduleMock = vi.fn();
 
 // StripeErrorStub carries a `code` so the wrong-key retrieve test can raise a
 // real resource_missing through isResourceMissingError. Errors here extend it,
@@ -38,6 +39,7 @@ vi.mock("stripe", () => {
       release: releaseScheduleMock,
       list: listSchedulesMock,
       cancel: cancelScheduleMock,
+      retrieve: retrieveScheduleMock,
     };
     static errors = {
       StripeError: StripeErrorStub,
@@ -65,6 +67,10 @@ beforeEach(() => {
   // schedule pass as a no-op; the schedule test opts in explicitly.
   listSchedulesMock.mockResolvedValue({ data: [], has_more: false });
   cancelScheduleMock.mockResolvedValue({ id: "sub_sched", status: "canceled" });
+  retrieveScheduleMock.mockResolvedValue({
+    id: "sub_sched",
+    status: "canceled",
+  });
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -167,6 +173,20 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
     );
     expect(cancelScheduleMock).toHaveBeenCalledWith("sub_sched_pending");
     expect(result.canceledScheduleCount).toBe(1);
+  });
+
+  it("sweeps schedules before subscriptions to close the activation window", async () => {
+    // A not_started schedule that activates between the two passes is left with a
+    // live subscription the later subscription pass catches — but only if
+    // schedules run first. Pin the order so a swap can't silently reopen the gap.
+    listMock.mockResolvedValue({ data: [], has_more: false });
+    listSchedulesMock.mockResolvedValue({ data: [], has_more: false });
+
+    await cancelSubscriptionsForCustomer(CUSTOMER_ID);
+
+    expect(listSchedulesMock.mock.invocationCallOrder[0]).toBeLessThan(
+      listMock.mock.invocationCallOrder[0],
+    );
   });
 
   it("fails loud, sanitized, when a schedule cancel fails", async () => {
