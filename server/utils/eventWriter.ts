@@ -1,5 +1,6 @@
 import { getDb } from "../db";
 import { events, EVENT_KINDS, type EventKind } from "../db/schema";
+import { maybePruneEventsForUser } from "./eventRetention";
 
 export type WriteEventInput = {
   userId: string;
@@ -34,4 +35,9 @@ export async function writeEvent(input: WriteEventInput): Promise<void> {
     recordUuid: input.recordUuid ?? null,
     sourceId: input.sourceId ?? null,
   });
+
+  // Opportunistically enforce retention so the highest-write table stays
+  // bounded without a scheduled job (see eventRetention.ts). Best-effort — it
+  // never throws, so it cannot fail the event that was just written.
+  await maybePruneEventsForUser(input.userId);
 }
