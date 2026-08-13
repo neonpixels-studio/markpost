@@ -4,6 +4,7 @@ import { apiTokens } from "../db/schema";
 import { hashToken, isApiToken, isTokenExpired } from "../utils/tokens";
 import { ensureUserRegistered } from "../utils/auth";
 import { getClerkClient } from "../utils/clerk";
+import { throwUnauthorized } from "../utils/errors";
 
 const BEARER_PREFIX = /^Bearer\s+/i;
 
@@ -86,7 +87,7 @@ export default defineEventHandler(async (event) => {
     "",
   );
   if (!rawToken) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+    throwUnauthorized();
   }
 
   const viaApiToken = isApiToken(rawToken);
@@ -95,7 +96,7 @@ export default defineEventHandler(async (event) => {
     : await authenticateViaClerk(rawToken);
 
   if (!userId) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+    throwUnauthorized();
   }
 
   // Only the Clerk path can carry a brand-new identity; an API token can only

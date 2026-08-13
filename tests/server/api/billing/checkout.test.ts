@@ -41,7 +41,18 @@ function stubRequireUser(returnedUserId: string | undefined) {
   vi.stubGlobal("requireUser", (event: H3Event) => {
     const contextUserId = (event.context as { userId?: string }).userId;
     if (!contextUserId) {
-      throw mockCreateError({ statusCode: 401, statusMessage: "Unauthorized" });
+      throw mockCreateError({
+        statusCode: 401,
+        data: {
+          errors: [
+            {
+              status: "401",
+              title: "Unauthorized",
+              detail: "Authentication is required to access this resource.",
+            },
+          ],
+        },
+      });
     }
 
     return returnedUserId ?? contextUserId;
@@ -74,7 +85,11 @@ describe("POST /api/billing/checkout", () => {
     });
     expect(mockCreateError).toHaveBeenCalledWith({
       statusCode: 401,
-      statusMessage: "Unauthorized",
+      data: {
+        errors: [
+          expect.objectContaining({ status: "401", title: "Unauthorized" }),
+        ],
+      },
     });
   });
 

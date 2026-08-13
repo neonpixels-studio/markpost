@@ -3,6 +3,21 @@ import type { H3Event } from "h3";
 import { generateRawToken, hashToken } from "../../../server/utils/tokens";
 import { stubFailingUpdate, spyConsoleError } from "../helpers";
 
+// Hand-written (not derived from unauthorizedError()) so the assertion fails if
+// the production envelope shape or copy ever drifts.
+const expectedUnauthorizedEnvelope = {
+  statusCode: 401,
+  data: {
+    errors: [
+      {
+        status: "401",
+        title: "Unauthorized",
+        detail: "Authentication is required to access this resource.",
+      },
+    ],
+  },
+};
+
 const selectMock = vi.fn();
 const updateMock = vi.fn();
 
@@ -113,10 +128,9 @@ describe("auth middleware", () => {
       mockGetHeader.mockReturnValue(undefined);
 
       await expect(handler(buildEvent())).rejects.toThrow();
-      expect(mockCreateError).toHaveBeenCalledWith({
-        statusCode: 401,
-        statusMessage: "Unauthorized",
-      });
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedUnauthorizedEnvelope,
+      );
     });
   });
 
@@ -183,10 +197,9 @@ describe("auth middleware", () => {
       stubSelectResult([]);
 
       await expect(handler(buildEvent())).rejects.toThrow();
-      expect(mockCreateError).toHaveBeenCalledWith({
-        statusCode: 401,
-        statusMessage: "Unauthorized",
-      });
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedUnauthorizedEnvelope,
+      );
     });
 
     it("throws 401 for a revoked mp_live_ token", async () => {
@@ -196,10 +209,9 @@ describe("auth middleware", () => {
       stubSelectResult([]);
 
       await expect(handler(buildEvent())).rejects.toThrow();
-      expect(mockCreateError).toHaveBeenCalledWith({
-        statusCode: 401,
-        statusMessage: "Unauthorized",
-      });
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedUnauthorizedEnvelope,
+      );
     });
 
     it("authenticates a token with a NULL expiresAt (legacy, no expiry)", async () => {
@@ -237,10 +249,9 @@ describe("auth middleware", () => {
       stubSelectResult([{ id: tokenId, userId, expiresAt: past }]);
 
       await expect(handler(buildEvent())).rejects.toThrow();
-      expect(mockCreateError).toHaveBeenCalledWith({
-        statusCode: 401,
-        statusMessage: "Unauthorized",
-      });
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedUnauthorizedEnvelope,
+      );
     });
 
     it("does not update lastUsedAt for an expired token", async () => {
@@ -299,10 +310,9 @@ describe("auth middleware", () => {
       mockVerifyToken.mockRejectedValue(new Error("Invalid token"));
 
       await expect(handler(buildEvent())).rejects.toThrow();
-      expect(mockCreateError).toHaveBeenCalledWith({
-        statusCode: 401,
-        statusMessage: "Unauthorized",
-      });
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedUnauthorizedEnvelope,
+      );
     });
 
     it("does not query the database for Clerk JWTs", async () => {
