@@ -84,6 +84,8 @@ describe("DELETE /api/account", () => {
     mockCancelSubscriptionsForCustomer.mockResolvedValue({
       canceledCount: 1,
       failedSubscriptionIds: [],
+      canceledScheduleCount: 0,
+      failedScheduleIds: [],
     });
   });
 

@@ -58,6 +58,8 @@ describe("reconcileAccountDeletion", () => {
     mockCancelSubscriptionsForCustomer.mockResolvedValue({
       canceledCount: 1,
       failedSubscriptionIds: [],
+      canceledScheduleCount: 0,
+      failedScheduleIds: [],
     });
   });
 
