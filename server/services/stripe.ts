@@ -629,6 +629,9 @@ async function cancelScheduleIfPending(
   }
 
   try {
+    // A resolved subscriptionSchedules.cancel is authoritative — it can only
+    // return once the schedule is canceled — so no status re-check is needed
+    // here (unlike cancelIfBillable, whose subscription cancel can race).
     await gateway.cancelSchedule(schedule.id);
     return true;
   } catch (error) {
@@ -686,13 +689,17 @@ async function cancelSchedulePage(
 // after account deletion and bill a customer who no longer exists. Isolated from
 // the live client (takes a SubscriptionGateway) so it can be unit-tested without
 // Stripe. It runs before the subscription sweep, so it's the first call to hit a
-// customer this key can't see — Stripe validates the `customer` filter on
-// listSchedules and surfaces that as resource_missing, which is classified here
-// as the wrong-key blind spot (failKeyCannotSeeCustomer) rather than a generic
-// partial-progress abort, keeping that diagnosis greppable. It carries no
-// empty-result visibility check of its own: compose it via
-// cancelSubscriptionsForCustomer, where an empty subscription sweep does the
-// customer retrieve, rather than paying a second retrieve on the empty path here.
+// customer this key can't see. If Stripe validates the `customer` filter on
+// listSchedules (as it does on subscriptions.list) and surfaces that as
+// resource_missing, this classifies it as the wrong-key blind spot
+// (failKeyCannotSeeCustomer) rather than a generic partial-progress abort. The
+// actual safety net is the subscription sweep's empty-result retrieveCustomer
+// check in cancelSubscriptionsForCustomer, which catches the wrong key even if
+// listSchedules returns an empty list instead of erroring; this branch just
+// keeps that diagnosis greppable when the error does surface here. It carries no
+// empty-result visibility check of its own — that lives in the subscription
+// sweep, so composing via cancelSubscriptionsForCustomer avoids a second
+// customer retrieve on the empty path here.
 export async function sweepCustomerSubscriptionSchedules(
   gateway: SubscriptionGateway,
   customerId: string,
@@ -742,27 +749,61 @@ export async function sweepCustomerSubscriptionSchedules(
 // schedule that has already activated is left with a live subscription the
 // subscription sweep then cancels — closing the window where a schedule
 // activates between the two passes.
+//
+// A schedule-pass failure must NOT skip the subscription pass: a key lacking
+// subscription_schedules access (or a transient list error) would otherwise
+// leave every live subscription uncanceled — the exact orphaned-billing this
+// exists to stop. So both passes run and the failure is re-raised at the end,
+// keeping fail-loud. The one exception is the wrong-key case: running the
+// subscription pass against a customer this key can't see is pointless, so that
+// short-circuits.
 async function sweepCustomerBilling(
   gateway: SubscriptionGateway,
   customerId: string,
 ): Promise<CustomerCancelResult> {
-  const scheduleResult = await sweepCustomerSubscriptionSchedules(
-    gateway,
-    customerId,
-  );
+  let scheduleResult: ScheduleSweepResult = {
+    canceledScheduleCount: 0,
+    failedScheduleIds: [],
+  };
+  let scheduleError: unknown = null;
+
+  try {
+    scheduleResult = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      customerId,
+    );
+  } catch (error) {
+    if (isKeyCannotSeeCustomerError(error)) {
+      throw error;
+    }
+    scheduleError = error;
+  }
 
   try {
     const subscriptionResult = await sweepCustomerSubscriptions(
       gateway,
       customerId,
     );
+    if (scheduleError) {
+      // Subscriptions are canceled now; still fail loud on the schedule pass.
+      throw scheduleError;
+    }
     return { ...subscriptionResult, ...scheduleResult };
   } catch (error) {
-    // The schedule pass already ran; surface what it accomplished before the
-    // subscription pass failed rather than losing it in the top-level log.
+    // Surface what the schedule pass accomplished before this failure rather
+    // than losing it in the top-level log.
     logScheduleProgressBeforeFailure(customerId, scheduleResult);
     throw error;
   }
+}
+
+// The wrong-key sentinel raised by failKeyCannotSeeCustomer. Identified by its
+// message (it's a plain Error carrying the raw Stripe error as `cause`), so the
+// billing sweep can short-circuit rather than run a doomed subscription pass.
+function isKeyCannotSeeCustomerError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message === KEY_CANNOT_SEE_CUSTOMER_MESSAGE
+  );
 }
 
 function logScheduleProgressBeforeFailure(

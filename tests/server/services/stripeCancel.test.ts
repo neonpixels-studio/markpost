@@ -67,9 +67,11 @@ beforeEach(() => {
   // schedule pass as a no-op; the schedule test opts in explicitly.
   listSchedulesMock.mockResolvedValue({ data: [], has_more: false });
   cancelScheduleMock.mockResolvedValue({ id: "sub_sched", status: "canceled" });
+  // Default the re-read to a still-pending schedule so a refused cancel fails
+  // loud unless a test opts into the tolerance path explicitly.
   retrieveScheduleMock.mockResolvedValue({
     id: "sub_sched",
-    status: "canceled",
+    status: "not_started",
   });
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -190,6 +192,9 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
   });
 
   it("fails loud, sanitized, when a schedule cancel fails", async () => {
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     listMock.mockResolvedValue({ data: [], has_more: false });
     listSchedulesMock.mockResolvedValue({
       data: [{ id: "sub_sched_pending", status: "not_started" }],
@@ -203,6 +208,11 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
 
     expect((error as Error).message).toBe("Stripe subscription sweep failed");
     expect((error as { statusCode?: number }).statusCode).toBeUndefined();
+    // The failed schedule id must reach the "sweep incomplete" audit log.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("sweep incomplete"),
+      expect.objectContaining({ failedScheduleIds: ["sub_sched_pending"] }),
+    );
   });
 
   it("attempts every subscription then fails loud when one cancel fails", async () => {
@@ -247,6 +257,28 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
       expect.stringContaining("key cannot see customer"),
       expect.objectContaining({ customerId: CUSTOMER_ID }),
     );
+  });
+
+  it("still cancels subscriptions when the schedule pass fails for a non-wrong-key reason", async () => {
+    // A transient schedule-list failure (or a key lacking schedule access) must
+    // not skip the subscription pass — that would leave live subscriptions
+    // billing a deleted account. Subscriptions are canceled; the run still fails
+    // loud on the schedule error.
+    listSchedulesMock.mockRejectedValueOnce(
+      new Error("schedule list exploded"),
+    );
+    listMock.mockResolvedValue({
+      data: [{ id: "sub_live", status: "active" }],
+      has_more: false,
+    });
+    cancelMock.mockResolvedValue({ id: "sub_live", status: "canceled" });
+
+    const error = await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(cancelMock).toHaveBeenCalledWith("sub_live");
+    expect((error as Error).message).toBe("Stripe subscription sweep failed");
   });
 
   it("logs schedule progress when the subscription pass fails after schedules ran", async () => {

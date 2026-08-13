@@ -117,12 +117,13 @@ function buildGatewayMethods(overrides: GatewayOverrides): GatewayMocks {
         Promise.resolve({ id: scheduleId } as Stripe.SubscriptionSchedule),
       ),
     // Only reached when a schedule cancel is refused (invalid_request); the
-    // status-based tolerance re-reads the schedule. Default to a canceled
-    // schedule so a refused cancel reads as already resolved unless overridden.
+    // status-based tolerance re-reads the schedule. Default to a still-pending
+    // schedule so a refused cancel fails loud unless a test opts into tolerance
+    // by overriding the re-read.
     retrieveSchedule:
       overrides.retrieveSchedule ??
       vi.fn((scheduleId: string) =>
-        Promise.resolve(schedule(scheduleId, "canceled")),
+        Promise.resolve(schedule(scheduleId, "not_started")),
       ),
   };
 }
@@ -728,6 +729,29 @@ describe("sweepCustomerSubscriptionSchedules", () => {
 
     expect(cancelSchedule).toHaveBeenCalledTimes(1);
     expect(cancelSchedule).toHaveBeenCalledWith("sub_sched_pending");
+    expect(result.canceledScheduleCount).toBe(1);
+  });
+
+  it("sweeps an unrecognized pre-active status rather than skipping it", async () => {
+    // The set is defined by its inverse (active/terminal), so any future
+    // pre-active status Stripe adds is swept. Guards against a "simplify to
+    // === not_started" change silently dropping the guarantee.
+    const listSchedules = vi.fn(() =>
+      schedulePage([
+        schedule(
+          "sub_sched_future",
+          "pending_activation" as Stripe.SubscriptionSchedule.Status,
+        ),
+      ]),
+    );
+    const { gateway, cancelSchedule } = buildGateway([], { listSchedules });
+
+    const result = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    );
+
+    expect(cancelSchedule).toHaveBeenCalledWith("sub_sched_future");
     expect(result.canceledScheduleCount).toBe(1);
   });
 
