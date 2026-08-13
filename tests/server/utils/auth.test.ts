@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { H3Event } from "h3";
 import { createMockCreateError } from "../helpers";
 
 const selectMock = vi.fn();
@@ -11,8 +12,12 @@ vi.mock("../../../server/db", () => ({
 const runtimeConfig = { disableSignups: "" };
 const mockCreateError = createMockCreateError();
 
-const { signupsDisabled, ensureUserRegistered } =
+const { signupsDisabled, ensureUserRegistered, requireUser } =
   await import("../../../server/utils/auth");
+
+function buildEvent(contextUserId?: string): H3Event {
+  return { context: { userId: contextUserId } } as unknown as H3Event;
+}
 
 const userId = "user_abc123";
 
@@ -42,6 +47,29 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("requireUser", () => {
+  it("returns the userId from the event context when present", () => {
+    expect(requireUser(buildEvent(userId))).toBe(userId);
+  });
+
+  it("throws a 401 carrying the JSON:API { errors: [...] } envelope when absent", () => {
+    expect(() => requireUser(buildEvent(undefined))).toThrow();
+
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 401,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "401",
+            title: "Unauthorized",
+            detail: "Authentication is required to access this resource.",
+          }),
+        ],
+      },
+    });
+  });
 });
 
 describe("signupsDisabled", () => {

@@ -2,11 +2,12 @@ import type { H3Event } from "h3";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { users } from "../db/schema";
+import { throwUnauthorized } from "./errors";
 
 export function requireUser(event: H3Event): string {
   const userId = event.context.userId as string | undefined;
   if (!userId) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+    throwUnauthorized();
   }
   return userId;
 }
