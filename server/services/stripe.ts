@@ -156,6 +156,17 @@ const STRIPE_SWEEP_FAILED_MESSAGE = "Stripe subscription sweep failed";
 const KEY_CANNOT_SEE_CUSTOMER_MESSAGE =
   "Stripe key cannot see customer; refusing to treat billing as canceled";
 
+// The wrong-key sentinel, given an identity (not just a message) so callers can
+// recognize it with instanceof rather than matching prose — the same
+// status/type-over-text discipline the schedule tolerance uses. cancelSubscriptions-
+// ForCustomer still sanitizes it to STRIPE_SWEEP_FAILED_MESSAGE before the wire.
+class KeyCannotSeeCustomerError extends Error {
+  constructor(cause: unknown) {
+    super(KEY_CANNOT_SEE_CUSTOMER_MESSAGE, { cause });
+    this.name = "KeyCannotSeeCustomerError";
+  }
+}
+
 // The narrow slice of the Stripe API the sweep depends on, so the cancellation
 // logic can be unit-tested with a fake in place of a live client. retrieveCustomer
 // proves the key/mode can actually see the account before a clean sweep is
@@ -306,7 +317,7 @@ function failKeyCannotSeeCustomer(customerId: string, cause: unknown): never {
     "[stripe] key cannot see customer; refusing to treat billing as canceled",
     { customerId, error: cause },
   );
-  throw new Error(KEY_CANNOT_SEE_CUSTOMER_MESSAGE, { cause });
+  throw new KeyCannotSeeCustomerError(cause);
 }
 
 // Prove the key/mode can actually see this customer before trusting an empty
@@ -761,6 +772,9 @@ async function sweepCustomerBilling(
   gateway: SubscriptionGateway,
   customerId: string,
 ): Promise<CustomerCancelResult> {
+  // If the schedule sweep throws (including a mid-pagination abort), this default
+  // is what survives — the sweep already logged its own "partial progress" line
+  // with any ids it touched, so they aren't lost even though this holds {0, []}.
   let scheduleResult: ScheduleSweepResult = {
     canceledScheduleCount: 0,
     failedScheduleIds: [],
@@ -786,6 +800,9 @@ async function sweepCustomerBilling(
     );
     if (scheduleError) {
       // Subscriptions are canceled now; still fail loud on the schedule pass.
+      // Surface any subscription-pass failures first — rethrowing scheduleError
+      // skips the top-level "sweep incomplete" log, so this is their only trail.
+      logSubscriptionProgressBeforeFailure(customerId, subscriptionResult);
       throw scheduleError;
     }
     return { ...subscriptionResult, ...scheduleResult };
@@ -797,13 +814,28 @@ async function sweepCustomerBilling(
   }
 }
 
-// The wrong-key sentinel raised by failKeyCannotSeeCustomer. Identified by its
-// message (it's a plain Error carrying the raw Stripe error as `cause`), so the
-// billing sweep can short-circuit rather than run a doomed subscription pass.
-function isKeyCannotSeeCustomerError(error: unknown): boolean {
-  return (
-    error instanceof Error && error.message === KEY_CANNOT_SEE_CUSTOMER_MESSAGE
+function logSubscriptionProgressBeforeFailure(
+  customerId: string,
+  subscriptionResult: SubscriptionSweepResult,
+): void {
+  const touchedAnySubscription =
+    subscriptionResult.canceledCount > 0 ||
+    subscriptionResult.failedSubscriptionIds.length > 0;
+  if (!touchedAnySubscription) {
+    return;
+  }
+
+  console.error(
+    "[stripe] schedule pass failed after the subscription pass; subscription progress",
+    { customerId, ...subscriptionResult },
   );
+}
+
+// The wrong-key sentinel raised by failKeyCannotSeeCustomer, recognized by type
+// so the billing sweep can short-circuit rather than run a doomed subscription
+// pass against a customer this key can't see.
+function isKeyCannotSeeCustomerError(error: unknown): boolean {
+  return error instanceof KeyCannotSeeCustomerError;
 }
 
 function logScheduleProgressBeforeFailure(

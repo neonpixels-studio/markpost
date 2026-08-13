@@ -281,6 +281,31 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
     expect((error as Error).message).toBe("Stripe subscription sweep failed");
   });
 
+  it("surfaces subscription-pass failures when the schedule pass also failed", async () => {
+    // Schedule pass fails (non-wrong-key) and the subscription pass records a
+    // failed cancel without throwing. Rethrowing the schedule error skips the
+    // top-level "sweep incomplete" log, so the failed subscription id must be
+    // surfaced here or an operator never learns it's still billing.
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    listSchedulesMock.mockRejectedValueOnce(
+      new Error("schedule list exploded"),
+    );
+    listMock.mockResolvedValue({
+      data: [{ id: "sub_live", status: "active" }],
+      has_more: false,
+    });
+    cancelMock.mockRejectedValueOnce(new Error("cancel boom"));
+
+    await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(() => undefined);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("subscription progress"),
+      expect.objectContaining({ failedSubscriptionIds: ["sub_live"] }),
+    );
+  });
+
   it("logs schedule progress when the subscription pass fails after schedules ran", async () => {
     // The schedule pass canceled a pending schedule; the later subscription pass
     // then throws. The already-canceled schedule must be surfaced, not lost.
