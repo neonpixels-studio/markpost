@@ -355,6 +355,8 @@ function isScheduleManagedCancelError(error: unknown): boolean {
 // is no longer sweepable — terminal, or active with a subscription the
 // subscription sweep then cancels — has met the goal (no future billing) and is
 // tolerated; one still pending was refused for a real reason and must fail loud.
+// Never throws: an unreadable re-read returns false so the caller fails loud with
+// the original cancel error, which explains why the cancel was refused.
 async function isScheduleAlreadyResolved(
   gateway: SubscriptionGateway,
   scheduleId: string,
@@ -371,28 +373,30 @@ async function isScheduleAlreadyResolved(
     return false;
   }
 
-  const current = await retrieveScheduleOrNull(gateway, scheduleId);
-  if (!current) {
-    return true;
-  }
-
-  return !isSweepableSchedule(current);
+  return isScheduleNoLongerSweepable(gateway, scheduleId);
 }
 
-// Re-reads a schedule, returning null when it's already gone (resource_missing).
-// Any other retrieve failure propagates so an unconfirmed state fails loud rather
-// than silently tolerating a cancel that may not have taken.
-async function retrieveScheduleOrNull(
+// Re-reads a schedule to decide, by status, whether a refused cancel is already
+// resolved. A resource_missing re-read means it's gone (resolved). Any other
+// re-read failure can't confirm the state, so returns false (not resolved) and
+// logs the re-read error rather than throwing it — the caller then fails loud
+// with the original cancel error, keeping that as the surfaced cause.
+async function isScheduleNoLongerSweepable(
   gateway: SubscriptionGateway,
   scheduleId: string,
-): Promise<Stripe.SubscriptionSchedule | null> {
+): Promise<boolean> {
   try {
-    return await gateway.retrieveSchedule(scheduleId);
+    const current = await gateway.retrieveSchedule(scheduleId);
+    return !isSweepableSchedule(current);
   } catch (error) {
     if (isResourceMissingError(error)) {
-      return null;
+      return true;
     }
-    throw error;
+    console.error(
+      "[stripe] could not re-read schedule to classify a refused cancel",
+      { scheduleId, error },
+    );
+    return false;
   }
 }
 
@@ -681,10 +685,14 @@ async function cancelSchedulePage(
 // so it never appears in subscriptions.list; without this it would activate
 // after account deletion and bill a customer who no longer exists. Isolated from
 // the live client (takes a SubscriptionGateway) so it can be unit-tested without
-// Stripe. Deliberately carries no empty-result visibility check of its own:
-// compose it via sweepCustomerBilling, where the subscription sweep proves the
-// key can see the customer, rather than paying a second customer retrieve on the
-// empty path here. Not a standalone entry point — call sweepCustomerBilling.
+// Stripe. It runs before the subscription sweep, so it's the first call to hit a
+// customer this key can't see — Stripe validates the `customer` filter on
+// listSchedules and surfaces that as resource_missing, which is classified here
+// as the wrong-key blind spot (failKeyCannotSeeCustomer) rather than a generic
+// partial-progress abort, keeping that diagnosis greppable. It carries no
+// empty-result visibility check of its own: compose it via
+// cancelSubscriptionsForCustomer, where an empty subscription sweep does the
+// customer retrieve, rather than paying a second retrieve on the empty path here.
 export async function sweepCustomerSubscriptionSchedules(
   gateway: SubscriptionGateway,
   customerId: string,
@@ -692,6 +700,7 @@ export async function sweepCustomerSubscriptionSchedules(
   let canceledScheduleCount = 0;
   const failedScheduleIds: string[] = [];
   let startingAfter: string | null = null;
+  let sawAnySchedule = false;
 
   try {
     do {
@@ -701,12 +710,22 @@ export async function sweepCustomerSubscriptionSchedules(
         ...(startingAfter ? { starting_after: startingAfter } : {}),
       });
 
+      sawAnySchedule = sawAnySchedule || page.data.length > 0;
       const outcome = await cancelSchedulePage(gateway, page.data);
       canceledScheduleCount += outcome.canceledScheduleCount;
       failedScheduleIds.push(...outcome.failedScheduleIds);
       startingAfter = nextCursor(page, "subscription schedule");
     } while (startingAfter);
   } catch (error) {
+    // A resource_missing before any schedule was seen means the key can't see
+    // this customer (wrong test/live or rotated key) — the same blind spot the
+    // subscription sweep guards, now reachable here because schedules list first.
+    // Classify it before the partial-progress log so it isn't mislabeled as a
+    // partial abort for a sweep that did nothing.
+    if (!sawAnySchedule && isResourceMissingError(error)) {
+      failKeyCannotSeeCustomer(customerId, error);
+    }
+
     console.error(
       "[stripe] schedule sweep aborted mid-pagination; partial progress",
       { customerId, canceledScheduleCount, failedScheduleIds, error },

@@ -223,4 +223,67 @@ describe("cancelSubscriptionsForCustomer (live wiring)", () => {
     expect(cancelMock).toHaveBeenCalledWith("sub_good");
     expect((error as Error).message).toBe("Stripe subscription sweep failed");
   });
+
+  it("fails loud as a wrong key when listing schedules can't see the customer", async () => {
+    // Schedules list first, so a key that can't see the customer surfaces here as
+    // resource_missing and must be classified as the wrong-key blind spot.
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    listSchedulesMock.mockRejectedValueOnce(
+      new StripeErrorStub(
+        "No such customer: 'cus_live123'",
+        "resource_missing",
+      ),
+    );
+
+    const error = await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect((error as Error).message).toBe("Stripe subscription sweep failed");
+    expect(listMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("key cannot see customer"),
+      expect.objectContaining({ customerId: CUSTOMER_ID }),
+    );
+  });
+
+  it("logs schedule progress when the subscription pass fails after schedules ran", async () => {
+    // The schedule pass canceled a pending schedule; the later subscription pass
+    // then throws. The already-canceled schedule must be surfaced, not lost.
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    listSchedulesMock.mockResolvedValue({
+      data: [{ id: "sub_sched_pending", status: "not_started" }],
+      has_more: false,
+    });
+    listMock.mockRejectedValueOnce(new Error("subscription list exploded"));
+
+    await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(() => undefined);
+
+    expect(cancelScheduleMock).toHaveBeenCalledWith("sub_sched_pending");
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("schedule progress"),
+      expect.objectContaining({ canceledScheduleCount: 1 }),
+    );
+  });
+
+  it("does not log schedule progress when the schedule pass touched nothing", async () => {
+    // Guard: with no schedules to cancel, a subscription-pass failure must not
+    // emit the schedule-progress line.
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    listSchedulesMock.mockResolvedValue({ data: [], has_more: false });
+    listMock.mockRejectedValueOnce(new Error("subscription list exploded"));
+
+    await cancelSubscriptionsForCustomer(CUSTOMER_ID).catch(() => undefined);
+
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("schedule progress"),
+      expect.anything(),
+    );
+  });
 });

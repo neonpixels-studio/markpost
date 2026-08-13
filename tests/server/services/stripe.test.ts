@@ -954,4 +954,53 @@ describe("sweepCustomerSubscriptionSchedules", () => {
       expect.objectContaining({ canceledScheduleCount: 1 }),
     );
   });
+
+  it("fails loud as a wrong key when listing schedules reports the customer is unseeable", async () => {
+    // Schedules list before subscriptions, so a wrong test/live or rotated key
+    // surfaces here first as resource_missing. It must be classified as the
+    // wrong-key blind spot (greppable), not a generic partial-progress abort.
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const missing = resourceMissingError("No such customer: 'cus_test123'");
+    const listSchedules = vi.fn().mockRejectedValueOnce(missing);
+    const { gateway, cancelSchedule } = buildGateway([], { listSchedules });
+
+    const error = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    ).catch((caught: unknown) => caught);
+
+    expect((error as Error).message).toContain(
+      "Stripe key cannot see customer",
+    );
+    expect((error as Error).cause).toBe(missing);
+    expect(cancelSchedule).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("key cannot see customer"),
+      expect.objectContaining({ customerId: CUSTOMER_ID }),
+    );
+  });
+
+  it("does not misread a mid-pagination schedule resource_missing as a wrong key", async () => {
+    // Page 1 was seen, proving the key sees the customer; a resource_missing on
+    // page 2 is a race (deleted mid-sweep / bad cursor), not the wrong-key blind
+    // spot — surface the raw error, not "key cannot see customer".
+    const missing = resourceMissingError("No such customer: 'cus_test123'");
+    const listSchedules = vi
+      .fn()
+      .mockReturnValueOnce(
+        schedulePage([schedule("sub_sched_1", "not_started")], true),
+      )
+      .mockRejectedValueOnce(missing);
+    const { gateway } = buildGateway([], { listSchedules });
+
+    const error = await sweepCustomerSubscriptionSchedules(
+      gateway,
+      CUSTOMER_ID,
+    ).catch((caught: unknown) => caught);
+
+    expect((error as Error).message).toContain("No such customer");
+    expect((error as Error).message).not.toContain("Stripe key cannot see");
+  });
 });
