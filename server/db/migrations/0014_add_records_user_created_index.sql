@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "records_user_id_created_at_idx" ON "records" USING btree ("user_id","created_at" DESC NULLS FIRST,"uuid" DESC NULLS FIRST);
