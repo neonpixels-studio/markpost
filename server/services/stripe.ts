@@ -134,21 +134,23 @@ const SCHEDULE_MANAGED_CANCEL_MESSAGE =
 // verbatim (see utils/errors.ts); this keeps the raw Stripe text off the wire.
 const STRIPE_SWEEP_FAILED_MESSAGE = "Stripe subscription sweep failed";
 
-// Raised when the customer can't be retrieved with the configured API key.
-// Stripe never deletes subscription objects, so a `resource_missing` almost
-// always means a test/live or rotated-key mismatch rather than a truly-gone
-// account — trusting an empty sweep in that case would delete an account whose
-// subscription is still billing under the real key. Deliberate trade-off: a
-// stale/bogus stored customer id also fails closed here (account not deletable
-// until the id is corrected), which is preferred over deleting an account that
-// may still be double-billed. Distinguishing permanent misconfig from a
-// transient failure is a separate follow-up.
-const CUSTOMER_NOT_VISIBLE_MESSAGE =
-  "Stripe customer not visible to the configured API key";
+// Stripe never deletes customer or subscription objects, so a clean sweep can
+// mean the key genuinely has no live billing OR that this key can't see the
+// customer at all (wrong test/live mode, or a rotated key from another account).
+// A resource_missing on retrieving the customer means the account is invisible
+// to this key and may still be billing under the right one — fail loud rather
+// than let a still-billing account be deleted.
+const KEY_CANNOT_SEE_CUSTOMER_MESSAGE =
+  "Stripe key cannot see customer; refusing to treat billing as canceled";
 
-// The narrow slice of the Stripe subscriptions API the sweep depends on, so the
-// cancellation logic can be unit-tested with a fake in place of a live client.
+// The narrow slice of the Stripe API the sweep depends on, so the cancellation
+// logic can be unit-tested with a fake in place of a live client. retrieveCustomer
+// proves the key/mode can actually see the account before a clean sweep is
+// trusted (see assertKeyCanSeeCustomer).
 export type SubscriptionGateway = {
+  retrieveCustomer: (
+    customerId: string,
+  ) => Promise<Stripe.Customer | Stripe.DeletedCustomer>;
   list: (
     params: Stripe.SubscriptionListParams,
   ) => Promise<Stripe.ApiList<Stripe.Subscription>>;
@@ -157,13 +159,6 @@ export type SubscriptionGateway = {
   // schedule-managed subscription rejects a direct cancel, so the sweep
   // releases the schedule and retries the cancel (see releaseManagingSchedule).
   releaseSchedule: (scheduleId: string) => Promise<Stripe.SubscriptionSchedule>;
-  // Confirms the configured key can actually see the account before the sweep
-  // trusts an empty/complete result as "nothing billable" (see
-  // assertCustomerVisible). A deleted customer still resolves here — only a key
-  // that can't see the account at all throws resource_missing.
-  retrieveCustomer: (
-    customerId: string,
-  ) => Promise<Stripe.Customer | Stripe.DeletedCustomer>;
 };
 
 export type CustomerCancelResult = {
@@ -181,43 +176,12 @@ type CancelAttempt = {
 
 function toSubscriptionGateway(stripe: Stripe): SubscriptionGateway {
   return {
+    retrieveCustomer: (customerId) => stripe.customers.retrieve(customerId),
     list: (params) => stripe.subscriptions.list(params),
     cancel: (subscriptionId) => stripe.subscriptions.cancel(subscriptionId),
     releaseSchedule: (scheduleId) =>
       stripe.subscriptionSchedules.release(scheduleId),
-    retrieveCustomer: (customerId) => stripe.customers.retrieve(customerId),
   };
-}
-
-function isResourceMissingError(error: unknown): boolean {
-  return (
-    error instanceof Stripe.errors.StripeError &&
-    error.code === "resource_missing"
-  );
-}
-
-// Guards the sweep against a wrong-key blind spot: if the configured key can't
-// retrieve the customer, an empty subscription list (or a resource_missing on
-// cancel) means "invisible to this key", not "already canceled". Fail loud so
-// the caller never deletes an account whose subscription is still billing under
-// the real key. A non-resource_missing failure (network, 5xx, auth) propagates
-// unchanged so it also fails closed rather than being mistaken for visibility.
-async function assertCustomerVisible(
-  gateway: SubscriptionGateway,
-  customerId: string,
-): Promise<void> {
-  try {
-    await gateway.retrieveCustomer(customerId);
-  } catch (error) {
-    if (isResourceMissingError(error)) {
-      console.error(
-        "[stripe] customer not visible to the configured key; refusing to treat billing as canceled",
-        { customerId },
-      );
-      throw new Error(CUSTOMER_NOT_VISIBLE_MESSAGE);
-    }
-    throw error;
-  }
 }
 
 // A subscription's `schedule` is the managing schedule id (or the expanded
@@ -253,12 +217,19 @@ function isTerminalStatus(status: Stripe.Subscription.Status): boolean {
   return TERMINAL_SUBSCRIPTION_STATUSES.has(status);
 }
 
+function isResourceMissingError(error: unknown): boolean {
+  return (
+    error instanceof Stripe.errors.StripeError &&
+    error.code === "resource_missing"
+  );
+}
+
 // A cancel can race a concurrent cancellation (webhook, portal). Stripe reports
 // an already-gone or already-canceled subscription as resource_missing or an
-// invalid_request naming the canceled status; both mean the goal is met.
-// resource_missing is only trusted as "already gone" here because the sweep has
-// already proven the key can see the account (see assertCustomerVisible) — on a
-// wrong key that check fails loud first, so this branch never masks a mismatch.
+// invalid_request naming the canceled status; both mean the goal is met. This
+// is only reached for a subscription already returned by list under this key,
+// so the key/mode is proven — resource_missing here is a genuine race, not the
+// wrong-key blind spot assertKeyCanSeeCustomer guards against.
 function isAlreadyCanceledError(error: unknown): boolean {
   if (isResourceMissingError(error)) {
     return true;
@@ -275,6 +246,45 @@ function isAlreadyCanceledError(error: unknown): boolean {
     error.rawType === "invalid_request_error" &&
     ALREADY_CANCELED_MESSAGE.test(message)
   );
+}
+
+// A customer this key can't see means billing may still be live under the
+// correct key — never delete the account on top of it. Logs distinctly (so the
+// misconfiguration is greppable) and throws a descriptive error; the live
+// boundary (cancelSubscriptionsForCustomer) sanitizes it before the wire.
+function failKeyCannotSeeCustomer(customerId: string, cause: unknown): never {
+  // Carry the raw Stripe error (e.g. "No such customer: 'cus_x'") so triage can
+  // tell a wrong key from a bad cursor without re-deriving it.
+  console.error(
+    "[stripe] key cannot see customer; refusing to treat billing as canceled",
+    { customerId, error: cause },
+  );
+  throw new Error(KEY_CANNOT_SEE_CUSTOMER_MESSAGE, { cause });
+}
+
+// Prove the key/mode can actually see this customer before trusting an empty
+// sweep. A wrong test/live or rotated key can't see a customer it doesn't own,
+// which an empty sweep would otherwise read as "no billing" and let the account
+// be deleted while it still bills under the correct key. A retrieve succeeding
+// (even a deleted-customer object) proves visibility; a resource_missing means
+// the key can't see the account — fail loud. Any other retrieve error
+// (network/5xx) still aborts the delete, logged with the customer id.
+async function assertKeyCanSeeCustomer(
+  gateway: SubscriptionGateway,
+  customerId: string,
+): Promise<void> {
+  try {
+    await gateway.retrieveCustomer(customerId);
+  } catch (error) {
+    if (isResourceMissingError(error)) {
+      failKeyCannotSeeCustomer(customerId, error);
+    }
+    console.error("[stripe] customer visibility check failed", {
+      customerId,
+      error,
+    });
+    throw error;
+  }
 }
 
 // A direct cancel Stripe refused because a schedule manages the subscription.
@@ -432,7 +442,9 @@ function nextCursor(page: Stripe.ApiList<Stripe.Subscription>): string | null {
 }
 
 // Sweep every subscription Stripe holds for the customer and cancel each
-// non-terminal one, paginating until exhausted. Isolated from the live client
+// non-terminal one, paginating until exhausted. If the sweep finds nothing, it
+// proves the key can see the customer (assertKeyCanSeeCustomer) so a wrong-key
+// empty result never reads as "no billing". Isolated from the live client
 // (takes a SubscriptionGateway) so it can be unit-tested without Stripe.
 export async function sweepCustomerSubscriptions(
   gateway: SubscriptionGateway,
@@ -441,11 +453,7 @@ export async function sweepCustomerSubscriptions(
   let canceledCount = 0;
   const failedSubscriptionIds: string[] = [];
   let startingAfter: string | null = null;
-
-  // Prove the key can see the account before trusting anything the sweep finds
-  // (an empty list, a resource_missing cancel). A wrong test/live or rotated key
-  // would otherwise report "nothing billable" for an account still being charged.
-  await assertCustomerVisible(gateway, customerId);
+  let sawAnySubscription = false;
 
   try {
     do {
@@ -456,12 +464,26 @@ export async function sweepCustomerSubscriptions(
         ...(startingAfter ? { starting_after: startingAfter } : {}),
       });
 
+      sawAnySubscription = sawAnySubscription || page.data.length > 0;
       const outcome = await cancelPage(gateway, page.data);
       canceledCount += outcome.canceledCount;
       failedSubscriptionIds.push(...outcome.failedSubscriptionIds);
       startingAfter = nextCursor(page);
     } while (startingAfter);
   } catch (error) {
+    // Stripe validates the customer filter on list, so a key that can't see the
+    // customer may surface here as resource_missing rather than an empty page —
+    // the wrong-key blind spot. Only diagnose it that way when nothing was seen:
+    // a resource_missing after earlier pages canceled (customer deleted mid-sweep,
+    // an unresolvable cursor) is a genuine race, not a bad key. Classify before
+    // the partial-progress log so the wrong-key case doesn't emit a misleading
+    // "partial progress" line for a sweep that canceled nothing. (Safe because
+    // nextCursor derives the cursor from the last row, so an empty first page
+    // can't be followed by a page-2 resource_missing.)
+    if (!sawAnySubscription && isResourceMissingError(error)) {
+      failKeyCannotSeeCustomer(customerId, error);
+    }
+
     // Surface what was already canceled before the pagination/list failure
     // rather than losing it with the stack.
     console.error("[stripe] sweep aborted mid-pagination; partial progress", {
@@ -471,6 +493,16 @@ export async function sweepCustomerSubscriptions(
       error,
     });
     throw error;
+  }
+
+  // Any subscription returned proves the key can see the customer. Only an empty
+  // sweep is ambiguous — a wrong test/live or rotated key that returns no rows
+  // (rather than erroring) for a customer it can't see must not read as "no
+  // billing". Prove visibility before trusting it; a key that can see even one
+  // subscription needs no extra round trip and isn't blocked by a transient
+  // retrieve failure.
+  if (!sawAnySubscription) {
+    await assertKeyCanSeeCustomer(gateway, customerId);
   }
 
   return { canceledCount, failedSubscriptionIds };
