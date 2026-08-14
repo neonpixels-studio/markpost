@@ -245,7 +245,11 @@ describe("PUT /api/settings", () => {
     });
     expect(mockCreateError).toHaveBeenCalledWith({
       statusCode: 401,
-      statusMessage: "Unauthorized",
+      data: {
+        errors: [
+          expect.objectContaining({ status: "401", title: "Unauthorized" }),
+        ],
+      },
     });
   });
 

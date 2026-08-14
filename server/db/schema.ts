@@ -150,7 +150,25 @@ export const records = pgTable(
     errorMessage: text("error_message"),
   },
   (table) => [
+    // records_user_id_idx is a strict leading-column prefix of the composite
+    // below, so the composite already serves every plain user_id lookup. It is
+    // kept for now (dropping an index is out of scope for "add an index") and
+    // flagged as a follow-up removal candidate, not left redundant by oversight.
     index("records_user_id_idx").on(table.userId),
+    // Composite backing the two hottest record paths: the inbox list
+    // (server/api/records/index.get.ts) filters by user_id and orders by
+    // (created_at desc, uuid desc), and countRecordsCreatedThisMonth
+    // (server/utils/recordUsage.ts) runs a user_id + created_at >= monthStart
+    // COUNT on every webhook ingest. Without it both fall back to a sort/heap
+    // scan as records grow. created_at and uuid are descending with NULLS FIRST
+    // (Postgres' default for DESC, which is what the bare `desc()` ORDER BY
+    // emits) so the planner can walk the index in the inbox's exact order and
+    // skip the Sort node; a DESC NULLS LAST index would not match that pathkey.
+    index("records_user_id_created_at_idx").on(
+      table.userId,
+      table.createdAt.desc().nullsFirst(),
+      table.uuid.desc().nullsFirst(),
+    ),
     index("records_status_idx").on(table.status),
     // Trigram GIN indexes back the ILIKE `%term%` search in
     // server/api/records/index.get.ts so title/content search stays fast at

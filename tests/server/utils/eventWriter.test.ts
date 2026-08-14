@@ -12,6 +12,14 @@ vi.mock("../../../server/db", () => ({
 
 vi.mock("drizzle-orm", () => ({}));
 
+// Retention is covered in eventRetention.test.ts; stub it here so writeEvent's
+// insert behaviour is asserted in isolation, free of the prune probability.
+const maybePruneEventsForUserMock = vi.fn(() => Promise.resolve());
+vi.mock("../../../server/utils/eventRetention", () => ({
+  maybePruneEventsForUser: (userId: string) =>
+    maybePruneEventsForUserMock(userId),
+}));
+
 describe("validateEventKind", () => {
   it("accepts ok", () => {
     expect(validateEventKind("ok")).toBe("ok");
@@ -43,6 +51,7 @@ describe("validateEventKind", () => {
 describe("writeEvent", () => {
   beforeEach(() => {
     insertMock.mockReset();
+    maybePruneEventsForUserMock.mockClear();
   });
 
   afterEach(() => {
@@ -67,6 +76,7 @@ describe("writeEvent", () => {
       recordUuid: null,
       sourceId: null,
     });
+    expect(maybePruneEventsForUserMock).toHaveBeenCalledWith("user_abc");
   });
 
   it("inserts an event row with optional recordUuid and sourceId", async () => {

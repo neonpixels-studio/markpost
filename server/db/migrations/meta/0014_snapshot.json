@@ -1,6 +1,6 @@
 {
-  "id": "927d875b-6c5f-4b0f-813f-6a14dc6e7839",
-  "prevId": "fb69e144-c273-473d-865c-30ba36bf5cde",
+  "id": "fb69e144-c273-473d-865c-30ba36bf5cde",
+  "prevId": "979bf208-6834-4fb6-91b6-ff8c84f44105",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -178,15 +178,6 @@
         }
       },
       "foreignKeys": {
-        "events_source_id_sources_uuid_fk": {
-          "name": "events_source_id_sources_uuid_fk",
-          "tableFrom": "events",
-          "tableTo": "sources",
-          "columnsFrom": ["source_id"],
-          "columnsTo": ["uuid"],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "events_user_id_users_user_id_fk": {
           "name": "events_user_id_users_user_id_fk",
           "tableFrom": "events",

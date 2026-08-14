@@ -78,11 +78,12 @@ async function cancelBillingForUser(userId: string): Promise<boolean> {
   }
 
   try {
-    const { canceledCount } =
+    const { canceledCount, canceledScheduleCount } =
       await cancelSubscriptionsForCustomer(stripeCustomerId);
     console.info("[account] canceled Stripe subscriptions on account delete", {
       userId,
       canceledCount,
+      canceledScheduleCount,
     });
   } catch (error) {
     console.error("[account] Stripe subscription sweep failed", {

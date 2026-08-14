@@ -1,9 +1,34 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { events, records, sources, subscriptions } from "../server/db/schema";
 
 const RECORDS_SOURCE_FK = "records_source_id_sources_uuid_fk";
 const EVENTS_SOURCE_FK = "events_source_id_sources_uuid_fk";
+const RECORDS_USER_CREATED_INDEX = "records_user_id_created_at_idx";
+// Resolved from the repo root (vitest's cwd), matching the convention in
+// scripts/check-migration-snapshots.ts: import.meta.url is not a plain file://
+// URL under vitest's SSR transform, so a URL-relative path throws here.
+const MIGRATIONS_DIR = join(process.cwd(), "server/db/migrations");
+
+// Locate the migration by content, not by number: a rebase behind another
+// branch that also lands 0014 renumbers this file, and pinning the name would
+// then fail with a misleading ENOENT.
+function migrationCreatingUserCreatedIndex(): string {
+  const sqlFiles = readdirSync(MIGRATIONS_DIR).filter((name) =>
+    name.endsWith(".sql"),
+  );
+  const match = sqlFiles
+    .map((name) => readFileSync(join(MIGRATIONS_DIR, name), "utf8"))
+    .find((sql) => sql.includes(RECORDS_USER_CREATED_INDEX));
+  if (!match) {
+    throw new Error(
+      `No migration in ${MIGRATIONS_DIR} creates ${RECORDS_USER_CREATED_INDEX}`,
+    );
+  }
+  return match;
+}
 
 function recordsSourceForeignKey() {
   const foreignKeys = getTableConfig(records).foreignKeys;
@@ -13,6 +38,13 @@ function recordsSourceForeignKey() {
 function eventsSourceForeignKey() {
   const foreignKeys = getTableConfig(events).foreignKeys;
   return foreignKeys.find((key) => key.getName() === EVENTS_SOURCE_FK);
+}
+
+function recordsUserCreatedIndex() {
+  const { indexes } = getTableConfig(records);
+  return indexes.find(
+    (index) => index.config.name === RECORDS_USER_CREATED_INDEX,
+  );
 }
 
 describe("records schema", () => {
@@ -47,6 +79,37 @@ describe("records schema", () => {
     const foreignKey = recordsSourceForeignKey();
     expect(foreignKey).toBeDefined();
     expect(foreignKey?.onDelete).toBe("set null");
+  });
+
+  // See records_user_id_created_at_idx in schema.ts for why the columns and
+  // their nulls ordering are what they are.
+  it("has a composite (user_id, created_at desc, uuid desc) index", () => {
+    const index = recordsUserCreatedIndex();
+    expect(index).toBeDefined();
+    expect(index?.config.unique).toBe(false);
+
+    const columns = (index?.config.columns ?? []).map((column) => ({
+      name: (column as { name: string }).name,
+      order: (column as { indexConfig?: { order?: string } }).indexConfig
+        ?.order,
+      nulls: (column as { indexConfig?: { nulls?: string } }).indexConfig
+        ?.nulls,
+    }));
+    expect(columns).toEqual([
+      { name: "user_id", order: "asc", nulls: "last" },
+      { name: "created_at", order: "desc", nulls: "first" },
+      { name: "uuid", order: "desc", nulls: "first" },
+    ]);
+  });
+
+  // The unit test above only proves schema.ts is correct; this guards the
+  // migration that actually creates the index in the database against drift,
+  // including the load-bearing NULLS FIRST (see schema.ts) and the target table.
+  it("ships a migration creating the composite index with NULLS FIRST", () => {
+    const migration = migrationCreatingUserCreatedIndex();
+    expect(migration).toContain(
+      'ON "records" USING btree ("user_id","created_at" DESC NULLS FIRST,"uuid" DESC NULLS FIRST)',
+    );
   });
 
   it("status column defaults to pending and is not nullable", () => {

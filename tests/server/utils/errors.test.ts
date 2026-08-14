@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiErrorHandler } from "../../../server/utils/errors";
+import {
+  ApiError,
+  apiErrorHandler,
+  throwUnauthorized,
+  unauthorizedError,
+} from "../../../server/utils/errors";
 import type { ApiError as ApiErrorObject } from "../../../server/types/api.types";
 
 const mockCreateError = vi.fn((options: object) => {
@@ -65,6 +70,57 @@ describe("ApiError", () => {
   it("accepts boundary statusCode values 400 and 599", () => {
     expect(() => new ApiError(sampleErrors, 400)).not.toThrow();
     expect(() => new ApiError(sampleErrors, 599)).not.toThrow();
+  });
+});
+
+describe("unauthorizedError", () => {
+  it("is an ApiError carrying the 401 JSON:API envelope shape", () => {
+    const apiError = unauthorizedError();
+
+    expect(apiError).toBeInstanceOf(ApiError);
+    expect(apiError.statusCode).toBe(401);
+    expect(apiError.errors).toEqual([
+      {
+        status: "401",
+        title: "Unauthorized",
+        detail: "Authentication is required to access this resource.",
+      },
+    ]);
+  });
+
+  it("routes a 401 through apiErrorHandler as a { errors: [...] } body", () => {
+    expect(() => apiErrorHandler(unauthorizedError())).toThrow();
+
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 401,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "401",
+            detail: "Authentication is required to access this resource.",
+          }),
+        ],
+      },
+    });
+  });
+});
+
+describe("throwUnauthorized", () => {
+  it("throws the 401 JSON:API envelope through apiErrorHandler", () => {
+    expect(() => throwUnauthorized()).toThrow();
+
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 401,
+      data: {
+        errors: [
+          {
+            status: "401",
+            title: "Unauthorized",
+            detail: "Authentication is required to access this resource.",
+          },
+        ],
+      },
+    });
   });
 });
 
