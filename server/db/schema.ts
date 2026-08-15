@@ -198,7 +198,9 @@ export const events = pgTable(
     kind: text("kind").notNull(),
     message: text("message").notNull(),
     recordUuid: uuid("record_uuid"),
-    sourceId: uuid("source_id"),
+    sourceId: uuid("source_id").references(() => sources.uuid, {
+      onDelete: "set null",
+    }),
   },
   (table) => [index("events_user_id_ts_idx").on(table.userId, table.ts)],
 );
