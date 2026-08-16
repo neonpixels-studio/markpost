@@ -170,9 +170,9 @@ export const records = pgTable(
       table.uuid.desc().nullsFirst(),
     ),
     index("records_status_idx").on(table.status),
-    // Backs the ON DELETE SET NULL FK to sources.uuid: deleting a source has
-    // Postgres null every referencing records.source_id, which without this
-    // index means a full table scan of records per source delete.
+    // Backs the ON DELETE SET NULL FK to sources.uuid: deleting a source
+    // causes Postgres to null out every referencing records.source_id, which
+    // without this index means a full table scan of records per source delete.
     index("records_source_id_idx").on(table.sourceId),
     // Trigram GIN indexes back the ILIKE `%term%` search in
     // server/api/records/index.get.ts so title/content search stays fast at
@@ -208,9 +208,9 @@ export const events = pgTable(
   },
   (table) => [
     index("events_user_id_ts_idx").on(table.userId, table.ts),
-    // Backs the ON DELETE SET NULL FK to sources.uuid: deleting a source has
-    // Postgres null every referencing events.source_id, which without this
-    // index means a full table scan of events per source delete.
+    // Same rationale as records_source_id_idx: backs the ON DELETE SET NULL FK
+    // to sources.uuid so nulling events.source_id on a source delete does not
+    // seq-scan events.
     index("events_source_id_idx").on(table.sourceId),
   ],
 );
