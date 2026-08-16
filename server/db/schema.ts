@@ -170,6 +170,10 @@ export const records = pgTable(
       table.uuid.desc().nullsFirst(),
     ),
     index("records_status_idx").on(table.status),
+    // Backs the ON DELETE SET NULL FK to sources.uuid: deleting a source has
+    // Postgres null every referencing records.source_id, which without this
+    // index means a full table scan of records per source delete.
+    index("records_source_id_idx").on(table.sourceId),
     // Trigram GIN indexes back the ILIKE `%term%` search in
     // server/api/records/index.get.ts so title/content search stays fast at
     // scale. Requires the pg_trgm extension (enabled in migration 0011).
@@ -202,7 +206,13 @@ export const events = pgTable(
       onDelete: "set null",
     }),
   },
-  (table) => [index("events_user_id_ts_idx").on(table.userId, table.ts)],
+  (table) => [
+    index("events_user_id_ts_idx").on(table.userId, table.ts),
+    // Backs the ON DELETE SET NULL FK to sources.uuid: deleting a source has
+    // Postgres null every referencing events.source_id, which without this
+    // index means a full table scan of events per source delete.
+    index("events_source_id_idx").on(table.sourceId),
+  ],
 );
 
 export const userSettings = pgTable("user_settings", {
