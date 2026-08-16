@@ -328,6 +328,95 @@ describe("POST /api/hooks/[slug]", () => {
       expect(insertedValues.filePath).toBe("2026-01-01-hello-2.md");
     });
 
+    it("retries with a suffixed path instead of 500ing when a concurrent insert claimed the path (23505)", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      // First lookup sees nothing taken, so the clean path is inserted; the
+      // insert loses the race to a concurrent writer (23505). The retry's
+      // collision lookup now sees the winning row and suffixes.
+      stubSourceAndSettings([sampleSource]);
+      const retryCollisionWhere = vi.fn(() =>
+        Promise.resolve([{ filePath: "2026-01-01-hello.md" }]),
+      );
+      const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
+      selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = vi
+        .fn()
+        .mockRejectedValueOnce(uniqueViolation)
+        .mockResolvedValueOnce([sampleRecord]);
+      const values = vi.fn(() => ({ returning }));
+      insertMock.mockReturnValue({ values });
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(values).toHaveBeenCalledTimes(2);
+      const secondInsert = (
+        values.mock.calls[1] as [Record<string, unknown>]
+      )[0];
+      expect(secondInsert.filePath).toBe("2026-01-01-hello-2.md");
+    });
+
+    it("resolves the retry off the original stem (…-3, not …-2-2) when the path was already suffixed", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      // Request-time collision: the pre-insert lookup sees "2026-01-01-hello.md",
+      // so the first insert uses the already-suffixed "…-hello-2.md". It then
+      // loses the race (another writer took "…-hello-2.md" too). The retry must
+      // re-resolve from the ORIGINAL "…-hello.md", whose prefix sees both taken
+      // rows, landing on "…-hello-3.md" — never nesting to "…-hello-2-2.md".
+      stubSourceAndSettings([sampleSource], DEFAULT_FILENAME_TEMPLATE, [
+        { filePath: "2026-01-01-hello.md" },
+      ]);
+      const retryCollisionWhere = vi.fn(() =>
+        Promise.resolve([
+          { filePath: "2026-01-01-hello.md" },
+          { filePath: "2026-01-01-hello-2.md" },
+        ]),
+      );
+      const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
+      selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = vi
+        .fn()
+        .mockRejectedValueOnce(uniqueViolation)
+        .mockResolvedValueOnce([sampleRecord]);
+      const values = vi.fn(() => ({ returning }));
+      insertMock.mockReturnValue({ values });
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      const firstInsert = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+      const secondInsert = (
+        values.mock.calls[1] as [Record<string, unknown>]
+      )[0];
+      expect(firstInsert.filePath).toBe("2026-01-01-hello-2.md");
+      expect(secondInsert.filePath).toBe("2026-01-01-hello-3.md");
+    });
+
     it("keeps the generated filePath when nothing collides", async () => {
       const rawBody = JSON.stringify({
         title: "Hello",

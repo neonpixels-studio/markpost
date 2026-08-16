@@ -15,10 +15,10 @@ vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
   and: (...conditions: unknown[]) => ({ conditions }),
   isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
-  ilike: (column: unknown, pattern: unknown) => ({
-    op: "ilike",
-    column,
-    pattern,
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    op: "sql",
+    strings,
+    values,
   }),
 }));
 
@@ -390,6 +390,83 @@ describe("POST /api/records", () => {
       values.mock.calls[0] as [Record<string, unknown>]
     )[0];
     expect(insertedValues.filePath).toBe("2026-06-14-deploy-succeeded-2.md");
+  });
+
+  it("returns 409 (not 500) when a client-supplied filePath collides (23505)", async () => {
+    // A client-asserted path is never silently rewritten; the collision is a 409.
+    const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+      code: "23505",
+      constraint: "records_user_id_file_path_lower_unique",
+    });
+    const returning = vi.fn(() => Promise.reject(uniqueViolation));
+    const values = vi.fn(() => ({ returning }));
+    insertMock.mockReturnValue({ values });
+
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        title: "Deploy",
+        content: "done",
+        filePath: "custom/path.md",
+      }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    // Never retried with a rewritten path — one insert attempt only.
+    expect(values).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-suffixes a server-generated filePath on a concurrent-insert 23505", async () => {
+    // html present, no client filePath: the path is generated, so a collision is
+    // resolved to the next free suffix and retried rather than 409ing.
+    const settingsLimit = vi.fn(() =>
+      Promise.resolve([{ filenameTemplate: "{{date}}-{{slug}}.md" }]),
+    );
+    const settingsFrom = vi.fn(() => ({
+      where: vi.fn(() => ({ limit: settingsLimit })),
+    }));
+    // First collision lookup (pre-insert) sees nothing; the retry lookup sees the
+    // winning row so the resolver hands back "2026-06-14-deploy-succeeded-2.md".
+    const firstCollisionFrom = vi.fn(() => ({
+      where: vi.fn(() => Promise.resolve([])),
+    }));
+    const retryCollisionFrom = vi.fn(() => ({
+      where: vi.fn(() =>
+        Promise.resolve([{ filePath: "2026-06-14-deploy-succeeded.md" }]),
+      ),
+    }));
+    selectMock
+      .mockReturnValueOnce({ from: settingsFrom })
+      .mockReturnValueOnce({ from: firstCollisionFrom })
+      .mockReturnValueOnce({ from: retryCollisionFrom });
+
+    const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+      code: "23505",
+      constraint: "records_user_id_file_path_lower_unique",
+    });
+    const returning = vi
+      .fn()
+      .mockRejectedValueOnce(uniqueViolation)
+      .mockResolvedValue([sampleRecord]);
+    const values = vi.fn(() => ({ returning }));
+    insertMock.mockReturnValue({ values });
+
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        title: "Deploy succeeded",
+        html: "<p>All green</p>",
+        created: "2026-06-14T00:00:00.000Z",
+      }),
+    );
+
+    await handler(buildEvent(userId));
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 201);
+    const firstInsert = (values.mock.calls[0] as [Record<string, unknown>])[0];
+    const secondInsert = (values.mock.calls[1] as [Record<string, unknown>])[0];
+    expect(firstInsert.filePath).toBe("2026-06-14-deploy-succeeded.md");
+    expect(secondInsert.filePath).toBe("2026-06-14-deploy-succeeded-2.md");
   });
 
   it("preserves a client-supplied filePath even when html is present", async () => {
