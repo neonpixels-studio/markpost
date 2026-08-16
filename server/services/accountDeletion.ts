@@ -2,7 +2,11 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { users } from "../db/schema";
 import { cancelSubscriptionsForCustomer } from "./stripe";
-import { findSubscriptionByUserId } from "../utils/billing";
+import {
+  findSubscriptionByUserId,
+  type SubscriptionRow,
+} from "../utils/billing";
+import { findUserStripeCustomerId } from "../utils/users";
 import { deleteClerkUser } from "../utils/clerk";
 import { ApiError } from "../utils/errors";
 
@@ -34,49 +38,13 @@ async function deleteAllUserData(userId: string): Promise<void> {
   await getDb().delete(users).where(eq(users.userId, userId));
 }
 
-// Cancel Stripe billing for the account (see cancelSubscriptionsForCustomer for
-// why by-customer, not by-stored-id). Runs before the DB delete so the customer
-// id is still on the row — it cascades away with it. A sweep failure fails the
-// whole delete closed (503) so we never remove the account while billing may
-// still be live; the user is told to retry. Returns whether a sweep actually
-// ran, so the caller can flag the (irreversible) canceled-billing but
-// account-not-deleted state if a later delete step fails.
-async function cancelBillingForUser(userId: string): Promise<boolean> {
-  const subscription = await findSubscriptionByUserId(userId);
-  // No subscription row means checkout never linked a Stripe customer; a free
-  // user delete, nothing to sweep. Warn (not error) so it doesn't cry wolf.
-  if (!subscription) {
-    console.warn("[account] no subscription row; skipping Stripe sweep", {
-      userId,
-    });
-    return false;
-  }
-
-  const { stripeCustomerId, stripeSubscriptionId } = subscription;
-
-  // A row missing its customer id should not happen (upsertSubscription always
-  // sets it). If it also carries a subscription id the row is corrupt and we
-  // can't sweep by customer — and the by-id cancel path is gone — so we can't
-  // confirm billing is dead. Fail closed rather than delete over possibly-live
-  // billing.
-  if (!stripeCustomerId && stripeSubscriptionId) {
-    console.error(
-      "[account] subscription row missing Stripe customer id; failing closed",
-      { userId },
-    );
-    throw billingUnavailableError();
-  }
-
-  // No customer id and no subscription id: nothing billable to sweep. Log at
-  // error so the broken row is visible rather than swallowed.
-  if (!stripeCustomerId) {
-    console.error(
-      "[account] subscription row missing Stripe customer id; nothing to sweep",
-      { userId },
-    );
-    return false;
-  }
-
+// Run the Stripe sweep for a resolved customer id. A failure fails the whole
+// delete closed (503) so we never remove the account while billing may still be
+// live; the user is told to retry.
+async function sweepStripeCustomer(
+  userId: string,
+  stripeCustomerId: string,
+): Promise<void> {
   try {
     const { canceledCount, canceledScheduleCount } =
       await cancelSubscriptionsForCustomer(stripeCustomerId);
@@ -92,7 +60,118 @@ async function cancelBillingForUser(userId: string): Promise<boolean> {
     });
     throw billingUnavailableError();
   }
+}
 
+// The users row and the subscriptions row should point at the same Stripe
+// customer, but a missed or out-of-order webhook could leave them disagreeing.
+// Sweeping only one would leave the other billing a deleted account, so cancel
+// every distinct id. cancelSubscriptionsForCustomer is idempotent, so the common
+// case (both equal, or only one present) costs at most one redundant no-op call.
+function distinctCustomerIds(candidates: (string | null)[]): string[] {
+  return [...new Set(candidates.filter((id): id is string => Boolean(id)))];
+}
+
+// Sweep each distinct customer id in turn. If a later id fails after an earlier
+// one was already (irreversibly) canceled, log that partial state distinctly
+// before failing closed: the account stays live but some billing is gone, so the
+// retry the caller prompts must re-run against the still-billable ids (safe —
+// cancelSubscriptionsForCustomer is idempotent).
+async function sweepCustomers(
+  userId: string,
+  customerIds: string[],
+): Promise<void> {
+  const sweptCustomerIds: string[] = [];
+  for (const customerId of customerIds) {
+    await sweepAndTrackProgress(userId, customerId, sweptCustomerIds);
+  }
+}
+
+async function sweepAndTrackProgress(
+  userId: string,
+  customerId: string,
+  sweptCustomerIds: string[],
+): Promise<void> {
+  try {
+    await sweepStripeCustomer(userId, customerId);
+    sweptCustomerIds.push(customerId);
+  } catch (error) {
+    if (sweptCustomerIds.length > 0) {
+      console.error(
+        "[account] partial Stripe sweep; some billing canceled but account not deleted",
+        { userId, sweptCustomerIds },
+      );
+    }
+    throw error;
+  }
+}
+
+// A subscription row carrying a subscription id but no customer id should not
+// happen (upsertSubscription always sets it). The stray subscription can't be
+// swept by customer — the by-id cancel path is gone — and may belong to a
+// customer we don't have, so we can't confirm billing is dead. Fail closed
+// rather than delete over possibly-live billing. This holds even when the users
+// row has an id: sweeping that customer does not vouch for the orphaned one.
+function isCorruptSubscriptionRow(
+  subscription: SubscriptionRow | null,
+): boolean {
+  return Boolean(
+    subscription?.stripeSubscriptionId && !subscription.stripeCustomerId,
+  );
+}
+
+// No customer id from either source: nothing billable to sweep. Distinguish a
+// free user (no subscription row) — warn, so it doesn't cry wolf — from a
+// subscription row that exists but carries no ids at all, which is unexpected
+// and logged at error so the broken row stays visible.
+function logNothingToSweep(userId: string, hasSubscriptionRow: boolean): void {
+  if (!hasSubscriptionRow) {
+    console.warn("[account] no subscription row; skipping Stripe sweep", {
+      userId,
+    });
+    return;
+  }
+
+  console.error(
+    "[account] subscription row missing Stripe customer id; nothing to sweep",
+    { userId },
+  );
+}
+
+// Cancel Stripe billing for the account (see cancelSubscriptionsForCustomer for
+// why by-customer, not by-stored-id). Runs before the DB delete so the customer
+// id is still on the row — it cascades away with it. Returns whether a sweep
+// actually ran, so the caller can flag the (irreversible) canceled-billing but
+// account-not-deleted state if a later delete step fails.
+//
+// The customer id is resolved from users.stripe_customer_id as well as the
+// subscriptions row. The users row is persisted at checkout completion
+// (server/api/billing/webhook.post.ts) and survives independently of the
+// subscriptions row, so it catches a customer whose checkout produced only a
+// `not_started` schedule and no subscriptions row — a case the subscriptions
+// lookup alone would miss, leaving the schedule to bill a deleted customer.
+async function cancelBillingForUser(userId: string): Promise<boolean> {
+  const persistedCustomerId = await findUserStripeCustomerId(userId);
+  const subscription = await findSubscriptionByUserId(userId);
+
+  if (isCorruptSubscriptionRow(subscription)) {
+    console.error(
+      "[account] subscription row missing Stripe customer id; failing closed",
+      { userId },
+    );
+    throw billingUnavailableError();
+  }
+
+  const customerIds = distinctCustomerIds([
+    persistedCustomerId,
+    subscription?.stripeCustomerId ?? null,
+  ]);
+
+  if (customerIds.length === 0) {
+    logNothingToSweep(userId, Boolean(subscription));
+    return false;
+  }
+
+  await sweepCustomers(userId, customerIds);
   return true;
 }
 

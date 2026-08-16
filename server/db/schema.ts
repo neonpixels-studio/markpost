@@ -12,6 +12,10 @@ import {
 
 export const users = pgTable("users", {
   userId: text("user_id").primaryKey(),
+  // Persisted at checkout completion; nullable and backfill-safe. See
+  // cancelBillingForUser (server/services/accountDeletion.ts) for why deletion
+  // resolves the Stripe customer from here first.
+  stripeCustomerId: text("stripe_customer_id"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
