@@ -7,6 +7,7 @@ import { events, records, sources, subscriptions } from "../server/db/schema";
 const RECORDS_SOURCE_FK = "records_source_id_sources_uuid_fk";
 const EVENTS_SOURCE_FK = "events_source_id_sources_uuid_fk";
 const RECORDS_USER_CREATED_INDEX = "records_user_id_created_at_idx";
+const RECORDS_DELIVERY_DEDUP_INDEX = "records_source_id_delivery_id_unique";
 // Resolved from the repo root (vitest's cwd), matching the convention in
 // scripts/check-migration-snapshots.ts: import.meta.url is not a plain file://
 // URL under vitest's SSR transform, so a URL-relative path throws here.
@@ -45,6 +46,28 @@ function recordsUserCreatedIndex() {
   return indexes.find(
     (index) => index.config.name === RECORDS_USER_CREATED_INDEX,
   );
+}
+
+function recordsDeliveryDedupIndex() {
+  const { indexes } = getTableConfig(records);
+  return indexes.find(
+    (index) => index.config.name === RECORDS_DELIVERY_DEDUP_INDEX,
+  );
+}
+
+function migrationCreatingDeliveryDedupIndex(): string {
+  const sqlFiles = readdirSync(MIGRATIONS_DIR).filter((name) =>
+    name.endsWith(".sql"),
+  );
+  const match = sqlFiles
+    .map((name) => readFileSync(join(MIGRATIONS_DIR, name), "utf8"))
+    .find((sql) => sql.includes(RECORDS_DELIVERY_DEDUP_INDEX));
+  if (!match) {
+    throw new Error(
+      `No migration in ${MIGRATIONS_DIR} creates ${RECORDS_DELIVERY_DEDUP_INDEX}`,
+    );
+  }
+  return match;
 }
 
 describe("records schema", () => {
@@ -116,6 +139,37 @@ describe("records schema", () => {
     expect(records.status).toBeDefined();
     expect(records.status.notNull).toBe(true);
     expect(records.status.default).toBe("pending");
+  });
+
+  it("includes a nullable deliveryId column mapped to delivery_id", () => {
+    expect(records.deliveryId).toBeDefined();
+    expect(records.deliveryId.name).toBe("delivery_id");
+    expect(records.deliveryId.notNull).toBe(false);
+  });
+
+  // The webhook idempotency guard's ON CONFLICT (source_id, delivery_id) target
+  // in server/api/hooks/[slug].post.ts is only valid if a UNIQUE index on
+  // exactly those columns exists. If either the column set or uniqueness drifts,
+  // Postgres raises 42P10 on every Stripe/GitHub ingest — guard both here since
+  // the hook tests mock drizzle and can't see the real index.
+  it("has a UNIQUE (source_id, delivery_id) index backing ingest idempotency", () => {
+    const index = recordsDeliveryDedupIndex();
+    expect(index).toBeDefined();
+    expect(index?.config.unique).toBe(true);
+
+    const columnNames = (index?.config.columns ?? []).map(
+      (column) => (column as { name: string }).name,
+    );
+    expect(columnNames).toEqual(["source_id", "delivery_id"]);
+  });
+
+  it("ships a migration adding delivery_id and its UNIQUE (source_id, delivery_id) index", () => {
+    const migration = migrationCreatingDeliveryDedupIndex();
+    expect(migration).toContain('ADD COLUMN "delivery_id" text');
+    expect(migration).toContain(
+      'ON "records" USING btree ("source_id","delivery_id")',
+    );
+    expect(migration).toContain("CREATE UNIQUE INDEX");
   });
 
   it("includes a nullable filePath column mapped to file_path", () => {

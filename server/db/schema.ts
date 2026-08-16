@@ -7,6 +7,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -143,6 +144,14 @@ export const records = pgTable(
     }),
     source: text("source"),
     status: text("status").notNull().default("pending"),
+    // Per-source provider delivery/event id used to make ingest idempotent:
+    // Stripe re-sends the same event `id` on retry, GitHub the same
+    // X-GitHub-Delivery. NULL for slug-only sources and any pre-idempotency
+    // row; because Postgres treats NULLs as distinct in a unique index, those
+    // never collide and only a real provider re-delivery is rejected. See the
+    // records_source_id_delivery_id_unique index below and
+    // server/utils/webhookDelivery.ts for extraction.
+    deliveryId: text("delivery_id"),
     filePath: text("file_path"),
     tags: jsonb("tags"),
     frontmatter: jsonb("frontmatter"),
@@ -180,6 +189,15 @@ export const records = pgTable(
     index("records_content_trgm_idx").using(
       "gin",
       table.content.op("gin_trgm_ops"),
+    ),
+    // Enforces webhook-ingest idempotency at the DB layer: a provider retry
+    // carrying an already-seen delivery id for the same source cannot create a
+    // second record even under a concurrent race the app-level pre-check would
+    // miss. delivery_id is NULL for slug-only sources, and Postgres treats
+    // NULLs as distinct here, so those rows are never constrained.
+    uniqueIndex("records_source_id_delivery_id_unique").on(
+      table.sourceId,
+      table.deliveryId,
     ),
   ],
 );
