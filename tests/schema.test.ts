@@ -40,24 +40,13 @@ function eventsSourceForeignKey() {
   return foreignKeys.find((key) => key.getName() === EVENTS_SOURCE_FK);
 }
 
-function recordsUserCreatedIndex() {
-  const { indexes } = getTableConfig(records);
-  return indexes.find(
-    (index) => index.config.name === RECORDS_USER_CREATED_INDEX,
+function tableIndex(table: Parameters<typeof getTableConfig>[0], name: string) {
+  return getTableConfig(table).indexes.find(
+    (index) => index.config.name === name,
   );
 }
 
-function recordsSourceIdIndex() {
-  const { indexes } = getTableConfig(records);
-  return indexes.find((index) => index.config.name === RECORDS_SOURCE_ID_INDEX);
-}
-
-function eventsSourceIdIndex() {
-  const { indexes } = getTableConfig(events);
-  return indexes.find((index) => index.config.name === EVENTS_SOURCE_ID_INDEX);
-}
-
-function indexColumnNames(index: ReturnType<typeof recordsSourceIdIndex>) {
+function indexColumnNames(index: ReturnType<typeof tableIndex>) {
   return (index?.config.columns ?? []).map(
     (column) => (column as { name: string }).name,
   );
@@ -100,7 +89,7 @@ describe("records schema", () => {
   // See records_user_id_created_at_idx in schema.ts for why the columns and
   // their nulls ordering are what they are.
   it("has a composite (user_id, created_at desc, uuid desc) index", () => {
-    const index = recordsUserCreatedIndex();
+    const index = tableIndex(records, RECORDS_USER_CREATED_INDEX);
     expect(index).toBeDefined();
     expect(index?.config.unique).toBe(false);
 
@@ -132,7 +121,7 @@ describe("records schema", () => {
   // records.source_id on a source delete; without this index that is a full
   // records scan per delete. Guards both schema.ts and the migration.
   it("has a single-column source_id index", () => {
-    const index = recordsSourceIdIndex();
+    const index = tableIndex(records, RECORDS_SOURCE_ID_INDEX);
     expect(index).toBeDefined();
     expect(index?.config.unique).toBe(false);
     expect(indexColumnNames(index)).toEqual(["source_id"]);
@@ -271,7 +260,7 @@ describe("events schema", () => {
   // events.source_id on a source delete; without this index that is a full
   // events scan per delete. Guards both schema.ts and the migration.
   it("has a single-column source_id index", () => {
-    const index = eventsSourceIdIndex();
+    const index = tableIndex(events, EVENTS_SOURCE_ID_INDEX);
     expect(index).toBeDefined();
     expect(index?.config.unique).toBe(false);
     expect(indexColumnNames(index)).toEqual(["source_id"]);
