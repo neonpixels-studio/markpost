@@ -33,7 +33,7 @@ export function recordNotFoundError(): ApiError {
 }
 
 // Raised when a write would point a record at a (user, lower(file_path)) another
-// record already owns (unique index from migration 0017). Surfaced as a 409 the
+// record already owns (unique index from migration 0022). Surfaced as a 409 the
 // client can act on rather than the raw Postgres 23505 → 500.
 export function filePathConflictError(): ApiError {
   return new ApiError(

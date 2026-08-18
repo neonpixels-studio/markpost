@@ -100,7 +100,7 @@ async function fetchTakenFilePaths(
         eq(records.userId, userId),
         // Case-insensitive prefix match via lower(file_path) LIKE lower(prefix)
         // so it can use the functional records_user_id_file_path_lower_unique
-        // (text_pattern_ops) index added in migration 0017; a plain ILIKE
+        // (text_pattern_ops) index added in migration 0022; a plain ILIKE
         // cannot. The `IS NOT NULL AND <> ''` clauses are redundant for
         // correctness (a NULL lower() never matches, and a non-empty prefix
         // pattern can't match an empty path) but let the planner prove the
@@ -139,7 +139,7 @@ export async function ensureUniqueFilePath(
 }
 
 // Postgres SQLSTATE for a unique_violation. Raised when an insert collides with
-// the records_user_id_file_path_lower_unique index (migration 0017).
+// the records_user_id_file_path_lower_unique index (migration 0022).
 const UNIQUE_VIOLATION_CODE = "23505";
 export const FILE_PATH_UNIQUE_INDEX = "records_user_id_file_path_lower_unique";
 

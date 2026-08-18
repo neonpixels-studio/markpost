@@ -87,12 +87,8 @@
           "name": "api_tokens_user_id_users_user_id_fk",
           "tableFrom": "api_tokens",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["user_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -102,9 +98,7 @@
         "api_tokens_hashed_token_unique": {
           "name": "api_tokens_hashed_token_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "hashed_token"
-          ]
+          "columns": ["hashed_token"]
         }
       },
       "policies": {},
@@ -203,12 +197,8 @@
           "name": "events_user_id_users_user_id_fk",
           "tableFrom": "events",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["user_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -216,12 +206,8 @@
           "name": "events_source_id_sources_uuid_fk",
           "tableFrom": "events",
           "tableTo": "sources",
-          "columnsFrom": [
-            "source_id"
-          ],
-          "columnsTo": [
-            "uuid"
-          ],
+          "columnsFrom": ["source_id"],
+          "columnsTo": ["uuid"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -451,12 +437,8 @@
           "name": "records_user_id_users_user_id_fk",
           "tableFrom": "records",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["user_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -464,12 +446,8 @@
           "name": "records_source_id_sources_uuid_fk",
           "tableFrom": "records",
           "tableTo": "sources",
-          "columnsFrom": [
-            "source_id"
-          ],
-          "columnsTo": [
-            "uuid"
-          ],
+          "columnsFrom": ["source_id"],
+          "columnsTo": ["uuid"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -596,12 +574,8 @@
           "name": "sources_user_id_users_user_id_fk",
           "tableFrom": "sources",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["user_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -611,9 +585,7 @@
         "sources_endpoint_slug_unique": {
           "name": "sources_endpoint_slug_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "endpoint_slug"
-          ]
+          "columns": ["endpoint_slug"]
         }
       },
       "policies": {},
@@ -721,12 +693,8 @@
           "name": "subscriptions_user_id_users_user_id_fk",
           "tableFrom": "subscriptions",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["user_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -736,16 +704,12 @@
         "subscriptions_user_id_unique": {
           "name": "subscriptions_user_id_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "user_id"
-          ]
+          "columns": ["user_id"]
         },
         "subscriptions_stripe_subscription_id_unique": {
           "name": "subscriptions_stripe_subscription_id_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "stripe_subscription_id"
-          ]
+          "columns": ["stripe_subscription_id"]
         }
       },
       "policies": {},
@@ -832,12 +796,8 @@
           "name": "user_settings_user_id_users_user_id_fk",
           "tableFrom": "user_settings",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["user_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
