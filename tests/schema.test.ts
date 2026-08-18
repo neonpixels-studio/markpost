@@ -7,25 +7,25 @@ import { events, records, sources, subscriptions } from "../server/db/schema";
 const RECORDS_SOURCE_FK = "records_source_id_sources_uuid_fk";
 const EVENTS_SOURCE_FK = "events_source_id_sources_uuid_fk";
 const RECORDS_USER_CREATED_INDEX = "records_user_id_created_at_idx";
+const RECORDS_SOURCE_ID_INDEX = "records_source_id_idx";
+const EVENTS_SOURCE_ID_INDEX = "events_source_id_idx";
 // Resolved from the repo root (vitest's cwd), matching the convention in
 // scripts/check-migration-snapshots.ts: import.meta.url is not a plain file://
 // URL under vitest's SSR transform, so a URL-relative path throws here.
 const MIGRATIONS_DIR = join(process.cwd(), "server/db/migrations");
 
 // Locate the migration by content, not by number: a rebase behind another
-// branch that also lands 0014 renumbers this file, and pinning the name would
-// then fail with a misleading ENOENT.
-function migrationCreatingUserCreatedIndex(): string {
+// branch renumbers these files, and pinning the name would then fail with a
+// misleading ENOENT.
+function migrationContaining(marker: string): string {
   const sqlFiles = readdirSync(MIGRATIONS_DIR).filter((name) =>
     name.endsWith(".sql"),
   );
   const match = sqlFiles
     .map((name) => readFileSync(join(MIGRATIONS_DIR, name), "utf8"))
-    .find((sql) => sql.includes(RECORDS_USER_CREATED_INDEX));
+    .find((sql) => sql.includes(marker));
   if (!match) {
-    throw new Error(
-      `No migration in ${MIGRATIONS_DIR} creates ${RECORDS_USER_CREATED_INDEX}`,
-    );
+    throw new Error(`No migration in ${MIGRATIONS_DIR} contains ${marker}`);
   }
   return match;
 }
@@ -40,10 +40,15 @@ function eventsSourceForeignKey() {
   return foreignKeys.find((key) => key.getName() === EVENTS_SOURCE_FK);
 }
 
-function recordsUserCreatedIndex() {
-  const { indexes } = getTableConfig(records);
-  return indexes.find(
-    (index) => index.config.name === RECORDS_USER_CREATED_INDEX,
+function tableIndex(table: Parameters<typeof getTableConfig>[0], name: string) {
+  return getTableConfig(table).indexes.find(
+    (index) => index.config.name === name,
+  );
+}
+
+function indexColumnNames(index: ReturnType<typeof tableIndex>) {
+  return (index?.config.columns ?? []).map(
+    (column) => (column as { name: string }).name,
   );
 }
 
@@ -84,7 +89,7 @@ describe("records schema", () => {
   // See records_user_id_created_at_idx in schema.ts for why the columns and
   // their nulls ordering are what they are.
   it("has a composite (user_id, created_at desc, uuid desc) index", () => {
-    const index = recordsUserCreatedIndex();
+    const index = tableIndex(records, RECORDS_USER_CREATED_INDEX);
     expect(index).toBeDefined();
     expect(index?.config.unique).toBe(false);
 
@@ -106,10 +111,25 @@ describe("records schema", () => {
   // migration that actually creates the index in the database against drift,
   // including the load-bearing NULLS FIRST (see schema.ts) and the target table.
   it("ships a migration creating the composite index with NULLS FIRST", () => {
-    const migration = migrationCreatingUserCreatedIndex();
+    const migration = migrationContaining(RECORDS_USER_CREATED_INDEX);
     expect(migration).toContain(
       'ON "records" USING btree ("user_id","created_at" DESC NULLS FIRST,"uuid" DESC NULLS FIRST)',
     );
+  });
+
+  // The ON DELETE SET NULL FK (0013) makes Postgres null every referencing
+  // records.source_id on a source delete; without this index that is a full
+  // records scan per delete. Guards both schema.ts and the migration.
+  it("has a single-column source_id index", () => {
+    const index = tableIndex(records, RECORDS_SOURCE_ID_INDEX);
+    expect(index).toBeDefined();
+    expect(index?.config.unique).toBe(false);
+    expect(indexColumnNames(index)).toEqual(["source_id"]);
+  });
+
+  it("ships a migration creating the source_id index", () => {
+    const migration = migrationContaining(RECORDS_SOURCE_ID_INDEX);
+    expect(migration).toContain('ON "records" USING btree ("source_id")');
   });
 
   it("status column defaults to pending and is not nullable", () => {
@@ -234,6 +254,21 @@ describe("events schema", () => {
     const foreignKey = eventsSourceForeignKey();
     expect(foreignKey).toBeDefined();
     expect(foreignKey?.onDelete).toBe("set null");
+  });
+
+  // The ON DELETE SET NULL FK (0015) makes Postgres null every referencing
+  // events.source_id on a source delete; without this index that is a full
+  // events scan per delete. Guards both schema.ts and the migration.
+  it("has a single-column source_id index", () => {
+    const index = tableIndex(events, EVENTS_SOURCE_ID_INDEX);
+    expect(index).toBeDefined();
+    expect(index?.config.unique).toBe(false);
+    expect(indexColumnNames(index)).toEqual(["source_id"]);
+  });
+
+  it("ships a migration creating the source_id index", () => {
+    const migration = migrationContaining(EVENTS_SOURCE_ID_INDEX);
+    expect(migration).toContain('ON "events" USING btree ("source_id")');
   });
 });
 

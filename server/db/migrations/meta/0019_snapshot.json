@@ -1,5 +1,5 @@
 {
-  "id": "8eeade10-c192-423e-b730-dfd5f2a53f8d",
+  "id": "10830d21-ae4c-496e-a966-a7c5a2696f02",
   "prevId": "927d875b-6c5f-4b0f-813f-6a14dc6e7839",
   "version": "7",
   "dialect": "postgresql",
@@ -166,6 +166,21 @@
             },
             {
               "expression": "ts",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "events_source_id_idx": {
+          "name": "events_source_id_idx",
+          "columns": [
+            {
+              "expression": "source_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -377,6 +392,21 @@
           "isUnique": false,
           "concurrently": false,
           "method": "gin",
+          "with": {}
+        },
+        "records_source_id_idx": {
+          "name": "records_source_id_idx",
+          "columns": [
+            {
+              "expression": "source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
           "with": {}
         }
       },
@@ -765,12 +795,6 @@
           "type": "text",
           "primaryKey": true,
           "notNull": true
-        },
-        "stripe_customer_id": {
-          "name": "stripe_customer_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
