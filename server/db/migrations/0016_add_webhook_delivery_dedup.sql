@@ -1,2 +1,0 @@
-ALTER TABLE "records" ADD COLUMN "delivery_id" text;--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "records_source_id_delivery_id_unique" ON "records" USING btree ("source_id","delivery_id");
