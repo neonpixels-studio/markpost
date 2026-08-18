@@ -53,13 +53,6 @@ function indexColumnNames(index: ReturnType<typeof tableIndex>) {
   );
 }
 
-function recordsDeliveryDedupIndex() {
-  const { indexes } = getTableConfig(records);
-  return indexes.find(
-    (index) => index.config.name === RECORDS_DELIVERY_DEDUP_INDEX,
-  );
-}
-
 describe("records schema", () => {
   it("includes a userId column", () => {
     expect(records.userId).toBeDefined();
@@ -158,14 +151,10 @@ describe("records schema", () => {
   // Postgres raises 42P10 on every Stripe/GitHub ingest — guard both here since
   // the hook tests mock drizzle and can't see the real index.
   it("has a UNIQUE (source_id, delivery_id) index backing ingest idempotency", () => {
-    const index = recordsDeliveryDedupIndex();
+    const index = tableIndex(records, RECORDS_DELIVERY_DEDUP_INDEX);
     expect(index).toBeDefined();
     expect(index?.config.unique).toBe(true);
-
-    const columnNames = (index?.config.columns ?? []).map(
-      (column) => (column as { name: string }).name,
-    );
-    expect(columnNames).toEqual(["source_id", "delivery_id"]);
+    expect(indexColumnNames(index)).toEqual(["source_id", "delivery_id"]);
   });
 
   it("ships a migration adding delivery_id and its UNIQUE (source_id, delivery_id) index", () => {
