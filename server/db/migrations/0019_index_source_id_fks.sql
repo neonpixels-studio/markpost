@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS "records_source_id_idx" ON "records" USING btree ("source_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "events_source_id_idx" ON "events" USING btree ("source_id");

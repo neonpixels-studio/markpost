@@ -172,6 +172,10 @@ export const records = pgTable(
       table.uuid.desc().nullsFirst(),
     ),
     index("records_status_idx").on(table.status),
+    // Backs the ON DELETE SET NULL FK to sources.uuid: deleting a source
+    // causes Postgres to null out every referencing records.source_id, which
+    // without this index means a full table scan of records per source delete.
+    index("records_source_id_idx").on(table.sourceId),
     // Trigram GIN indexes back the ILIKE `%term%` search in
     // server/api/records/index.get.ts so title/content search stays fast at
     // scale. Requires the pg_trgm extension (enabled in migration 0011).
@@ -192,7 +196,7 @@ export const records = pgTable(
     // filesystems (macOS/Windows) as the source of truth. text_pattern_ops lets
     // this same index also back the left-anchored collision-prefix lookup
     // (lower(file_path) LIKE 'stem%') regardless of the database locale, so no
-    // second index is needed. See migration 0017.
+    // second index is needed. See migration 0022.
     uniqueIndex("records_user_id_file_path_lower_unique")
       .on(table.userId, sql`lower(${table.filePath}) text_pattern_ops`)
       .where(sql`${table.filePath} is not null and ${table.filePath} <> ''`),
@@ -217,7 +221,13 @@ export const events = pgTable(
       onDelete: "set null",
     }),
   },
-  (table) => [index("events_user_id_ts_idx").on(table.userId, table.ts)],
+  (table) => [
+    index("events_user_id_ts_idx").on(table.userId, table.ts),
+    // Same rationale as records_source_id_idx: backs the ON DELETE SET NULL FK
+    // to sources.uuid so nulling events.source_id on a source delete does not
+    // seq-scan events.
+    index("events_source_id_idx").on(table.sourceId),
+  ],
 );
 
 export const userSettings = pgTable("user_settings", {
