@@ -60,21 +60,6 @@ function recordsDeliveryDedupIndex() {
   );
 }
 
-function migrationCreatingDeliveryDedupIndex(): string {
-  const sqlFiles = readdirSync(MIGRATIONS_DIR).filter((name) =>
-    name.endsWith(".sql"),
-  );
-  const match = sqlFiles
-    .map((name) => readFileSync(join(MIGRATIONS_DIR, name), "utf8"))
-    .find((sql) => sql.includes(RECORDS_DELIVERY_DEDUP_INDEX));
-  if (!match) {
-    throw new Error(
-      `No migration in ${MIGRATIONS_DIR} creates ${RECORDS_DELIVERY_DEDUP_INDEX}`,
-    );
-  }
-  return match;
-}
-
 describe("records schema", () => {
   it("includes a userId column", () => {
     expect(records.userId).toBeDefined();
@@ -184,7 +169,7 @@ describe("records schema", () => {
   });
 
   it("ships a migration adding delivery_id and its UNIQUE (source_id, delivery_id) index", () => {
-    const migration = migrationCreatingDeliveryDedupIndex();
+    const migration = migrationContaining(RECORDS_DELIVERY_DEDUP_INDEX);
     expect(migration).toContain('ADD COLUMN "delivery_id" text');
     expect(migration).toContain(
       'ON "records" USING btree ("source_id","delivery_id")',
