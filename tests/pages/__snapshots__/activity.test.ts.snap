@@ -4,7 +4,9 @@ exports[`activity page > matches snapshot in empty state 1`] = `
 "<div active="activity" crumb="WORKSPACE / DAN'S VAULT" title="Activity"><button class="app-btn" disabled="">export log</button>
   <div style="padding: 22px 26px 40px; max-width: 920px;">
     <!--v-if-->
-    <!-- loading state -->
+    <div style="margin-bottom: 18px;" data-testid="retention-notice">
+      <div class="app-alert" data-tone="info">Activity older than 90 days is automatically removed. Export your log to keep a copy.</div>
+    </div><!-- loading state -->
     <!-- empty state -->
     <div class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px; text-align: center;"><span name="fileText" size="32"></span><span style="font-size: 15px; font-weight: 500; color: var(--ink-2);">No activity yet</span><span class="mono" style="font-size: 13px;"> Events will appear here once sources start delivering records. </span></div>
   </div>
@@ -14,6 +16,7 @@ exports[`activity page > matches snapshot in empty state 1`] = `
 exports[`activity page > matches snapshot in error state 1`] = `
 "<div active="activity" crumb="WORKSPACE / DAN'S VAULT" title="Activity"><button class="app-btn" disabled="">export log</button>
   <div style="padding: 22px 26px 40px; max-width: 920px;">
+    <!--v-if-->
     <!--v-if-->
     <!-- loading state -->
     <!-- error state -->
@@ -26,6 +29,7 @@ exports[`activity page > matches snapshot in loading state 1`] = `
 "<div active="activity" crumb="WORKSPACE / DAN'S VAULT" title="Activity"><button class="app-btn" disabled="">export log</button>
   <div style="padding: 22px 26px 40px; max-width: 920px;">
     <!--v-if-->
+    <!--v-if-->
     <!-- loading state -->
     <div class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px;"><span name="refresh" size="24"></span><span class="mono" style="font-size: 13px;">loading activity…</span></div>
   </div>
@@ -36,7 +40,9 @@ exports[`activity page > matches snapshot with events 1`] = `
 "<div active="activity" crumb="WORKSPACE / DAN'S VAULT" title="Activity"><button class="app-btn">export log</button>
   <div style="padding: 22px 26px 40px; max-width: 920px;">
     <!--v-if-->
-    <!-- loading state -->
+    <div style="margin-bottom: 18px;" data-testid="retention-notice">
+      <div class="app-alert" data-tone="info">Activity older than 90 days is automatically removed. Export your log to keep a copy.</div>
+    </div><!-- loading state -->
     <!-- log terminal -->
     <div class="term">
       <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="t-title">markpost sync --watch</span><span class="grow"></span><span class="t-title" style="margin-left: auto;">live</span></div>

@@ -203,4 +203,41 @@ describe("activity page", () => {
     await flushPromises();
     expect(wrapper.find(".app-btn").attributes("disabled")).toBeUndefined();
   });
+
+  it("surfaces the retention window in the empty state", async () => {
+    logRef.value = [];
+    const wrapper = mount(ActivityPage, globalConfig);
+    await flushPromises();
+    expect(wrapper.find("[data-testid='retention-notice']").exists()).toBe(
+      true,
+    );
+    expect(wrapper.text()).toContain("90 days");
+  });
+
+  it("surfaces the retention window alongside the log", async () => {
+    logRef.value = sampleRows;
+    const wrapper = mount(ActivityPage, globalConfig);
+    await flushPromises();
+    expect(wrapper.find("[data-testid='retention-notice']").exists()).toBe(
+      true,
+    );
+  });
+
+  it("hides the retention notice while loading", async () => {
+    isLoadingRef.value = true;
+    const wrapper = mount(ActivityPage, globalConfig);
+    await flushPromises();
+    expect(wrapper.find("[data-testid='retention-notice']").exists()).toBe(
+      false,
+    );
+  });
+
+  it("hides the retention notice on load error", async () => {
+    loadErrorRef.value = "Failed to load activity. Please try again.";
+    const wrapper = mount(ActivityPage, globalConfig);
+    await flushPromises();
+    expect(wrapper.find("[data-testid='retention-notice']").exists()).toBe(
+      false,
+    );
+  });
 });
