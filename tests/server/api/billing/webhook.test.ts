@@ -26,6 +26,13 @@ vi.mock("../../../../server/services/stripe", () => ({
     mockExtractSubscriptionData(...args),
 }));
 
+const mockSetUserStripeCustomerId = vi.fn();
+
+vi.mock("../../../../server/utils/users", () => ({
+  setUserStripeCustomerId: (...args: unknown[]) =>
+    mockSetUserStripeCustomerId(...args),
+}));
+
 const mockCreateError = vi.fn((options: object) => {
   const error = new Error("createError");
   Object.assign(error, options);
@@ -73,6 +80,8 @@ beforeEach(() => {
   mockResolveStatusFromStripe.mockReset();
   mockConstructStripeEvent.mockReset();
   mockExtractSubscriptionData.mockReset();
+  mockSetUserStripeCustomerId.mockReset();
+  mockSetUserStripeCustomerId.mockResolvedValue(undefined);
 
   process.env.STRIPE_WEBHOOK_SECRET = WEBHOOK_SECRET;
 
@@ -219,9 +228,11 @@ describe("POST /api/billing/webhook", () => {
     );
   });
 
-  it("returns { data: { received: true } } for checkout.session.completed and does not call billing utilities", async () => {
+  it("persists the Stripe customer id on the users row for checkout.session.completed and does not touch subscription rows", async () => {
     // subscription.created carries the correct plan/status/trial data and is
-    // always delivered after checkout.session.completed — rely on that event.
+    // always delivered after checkout.session.completed — rely on that event for
+    // the subscriptions row. This handler only persists the customer id so the
+    // account-deletion sweep can find it even for a schedule-only checkout.
     const sessionObject = {
       id: "cs_test123",
       mode: "subscription",
@@ -242,8 +253,136 @@ describe("POST /api/billing/webhook", () => {
     const response = await handler(buildEvent());
 
     expect(response).toEqual({ data: { received: true } });
+    expect(mockSetUserStripeCustomerId).toHaveBeenCalledWith(
+      "user_abc123",
+      "cus_test123",
+    );
     expect(mockUpsertSubscription).not.toHaveBeenCalled();
     expect(mockUpdateSubscriptionByStripeCustomerId).not.toHaveBeenCalled();
+  });
+
+  it("resolves the userId from client_reference_id when metadata omits it", async () => {
+    const sessionObject = {
+      id: "cs_ref_test",
+      mode: "subscription",
+      customer: "cus_ref123",
+      subscription: "sub_ref123",
+      metadata: {},
+      client_reference_id: "user_ref456",
+    };
+    const stripeEvent = {
+      type: "checkout.session.completed",
+      data: { object: sessionObject },
+    };
+
+    mockReadRawBody.mockResolvedValue(JSON.stringify(sessionObject));
+    mockGetHeader.mockReturnValue("t=1234,v1=valid_sig");
+    mockConstructStripeEvent.mockReturnValue(stripeEvent);
+
+    await handler(buildEvent());
+
+    expect(mockSetUserStripeCustomerId).toHaveBeenCalledWith(
+      "user_ref456",
+      "cus_ref123",
+    );
+  });
+
+  it("resolves the customer id from an expanded customer object", async () => {
+    const sessionObject = {
+      id: "cs_expanded",
+      mode: "subscription",
+      customer: { id: "cus_expanded", object: "customer" },
+      subscription: "sub_expanded",
+      metadata: { userId: "user_exp" },
+      client_reference_id: null,
+    };
+    const stripeEvent = {
+      type: "checkout.session.completed",
+      data: { object: sessionObject },
+    };
+
+    mockReadRawBody.mockResolvedValue(JSON.stringify(sessionObject));
+    mockGetHeader.mockReturnValue("t=1234,v1=valid_sig");
+    mockConstructStripeEvent.mockReturnValue(stripeEvent);
+
+    await handler(buildEvent());
+
+    expect(mockSetUserStripeCustomerId).toHaveBeenCalledWith(
+      "user_exp",
+      "cus_expanded",
+    );
+  });
+
+  it("skips persisting when the session carries no userId", async () => {
+    const sessionObject = {
+      id: "cs_no_user",
+      mode: "subscription",
+      customer: "cus_test123",
+      subscription: "sub_test123",
+      metadata: {},
+      client_reference_id: null,
+    };
+    const stripeEvent = {
+      type: "checkout.session.completed",
+      data: { object: sessionObject },
+    };
+
+    mockReadRawBody.mockResolvedValue(JSON.stringify(sessionObject));
+    mockGetHeader.mockReturnValue("t=1234,v1=valid_sig");
+    mockConstructStripeEvent.mockReturnValue(stripeEvent);
+
+    const response = await handler(buildEvent());
+
+    expect(response).toEqual({ data: { received: true } });
+    expect(mockSetUserStripeCustomerId).not.toHaveBeenCalled();
+  });
+
+  it("skips persisting when the session carries no customer", async () => {
+    const sessionObject = {
+      id: "cs_no_customer",
+      mode: "subscription",
+      customer: null,
+      subscription: "sub_test123",
+      metadata: { userId: "user_abc123" },
+      client_reference_id: null,
+    };
+    const stripeEvent = {
+      type: "checkout.session.completed",
+      data: { object: sessionObject },
+    };
+
+    mockReadRawBody.mockResolvedValue(JSON.stringify(sessionObject));
+    mockGetHeader.mockReturnValue("t=1234,v1=valid_sig");
+    mockConstructStripeEvent.mockReturnValue(stripeEvent);
+
+    const response = await handler(buildEvent());
+
+    expect(response).toEqual({ data: { received: true } });
+    expect(mockSetUserStripeCustomerId).not.toHaveBeenCalled();
+  });
+
+  it("propagates a persist failure so Stripe retries the event", async () => {
+    const sessionObject = {
+      id: "cs_persist_fail",
+      mode: "subscription",
+      customer: "cus_test123",
+      subscription: "sub_test123",
+      metadata: { userId: "user_abc123" },
+      client_reference_id: null,
+    };
+    const stripeEvent = {
+      type: "checkout.session.completed",
+      data: { object: sessionObject },
+    };
+
+    mockReadRawBody.mockResolvedValue(JSON.stringify(sessionObject));
+    mockGetHeader.mockReturnValue("t=1234,v1=valid_sig");
+    mockConstructStripeEvent.mockReturnValue(stripeEvent);
+    mockSetUserStripeCustomerId.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(handler(buildEvent())).rejects.toMatchObject({
+      statusCode: 500,
+    });
   });
 
   it("ignores non-subscription checkout.session.completed events", async () => {
@@ -267,6 +406,7 @@ describe("POST /api/billing/webhook", () => {
     const response = await handler(buildEvent());
 
     expect(response).toEqual({ data: { received: true } });
+    expect(mockSetUserStripeCustomerId).not.toHaveBeenCalled();
     expect(mockUpsertSubscription).not.toHaveBeenCalled();
   });
 

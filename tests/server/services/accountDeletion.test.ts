@@ -30,6 +30,13 @@ vi.mock("../../../server/utils/billing", () => ({
     mockFindSubscriptionByUserId(...args),
 }));
 
+const mockFindUserStripeCustomerId = vi.fn();
+
+vi.mock("../../../server/utils/users", () => ({
+  findUserStripeCustomerId: (...args: unknown[]) =>
+    mockFindUserStripeCustomerId(...args),
+}));
+
 const mockCancelSubscriptionsForCustomer = vi.fn();
 
 vi.mock("../../../server/services/stripe", () => ({
@@ -51,6 +58,7 @@ describe("reconcileAccountDeletion", () => {
     usersWhere.mockResolvedValue([]);
     deleteMock.mockImplementation(() => ({ where: usersWhere }));
     mockDeleteClerkUser.mockResolvedValue(undefined);
+    mockFindUserStripeCustomerId.mockResolvedValue(null);
     mockFindSubscriptionByUserId.mockResolvedValue({
       stripeCustomerId: "cus_test123",
       stripeSubscriptionId: "sub_test123",
@@ -100,6 +108,85 @@ describe("reconcileAccountDeletion", () => {
     await reconcileAccountDeletion("user_123");
     expect(mockCancelSubscriptionsForCustomer).not.toHaveBeenCalled();
     expect(deleteMock).toHaveBeenCalledWith("users_table");
+  });
+
+  it("sweeps the users-row customer id when there is no subscription row (schedule-only gap)", async () => {
+    mockFindUserStripeCustomerId.mockResolvedValueOnce("cus_persisted");
+    mockFindSubscriptionByUserId.mockResolvedValueOnce(null);
+    await reconcileAccountDeletion("user_123");
+    expect(mockCancelSubscriptionsForCustomer).toHaveBeenCalledWith(
+      "cus_persisted",
+    );
+    expect(deleteMock).toHaveBeenCalledWith("users_table");
+  });
+
+  it("sweeps both customer ids when the users and subscription rows disagree", async () => {
+    mockFindUserStripeCustomerId.mockResolvedValueOnce("cus_persisted");
+    mockFindSubscriptionByUserId.mockResolvedValueOnce({
+      stripeCustomerId: "cus_from_subscription",
+      stripeSubscriptionId: "sub_test123",
+    });
+    await reconcileAccountDeletion("user_123");
+    expect(mockCancelSubscriptionsForCustomer).toHaveBeenCalledTimes(2);
+    expect(mockCancelSubscriptionsForCustomer).toHaveBeenCalledWith(
+      "cus_persisted",
+    );
+    expect(mockCancelSubscriptionsForCustomer).toHaveBeenCalledWith(
+      "cus_from_subscription",
+    );
+  });
+
+  it("fails closed and logs partial progress when a later sweep fails after an earlier one canceled", async () => {
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mockFindUserStripeCustomerId.mockResolvedValueOnce("cus_persisted");
+    mockFindSubscriptionByUserId.mockResolvedValueOnce({
+      stripeCustomerId: "cus_from_subscription",
+      stripeSubscriptionId: "sub_test123",
+    });
+    mockCancelSubscriptionsForCustomer
+      .mockResolvedValueOnce({
+        canceledCount: 1,
+        failedSubscriptionIds: [],
+        canceledScheduleCount: 0,
+        failedScheduleIds: [],
+      })
+      .mockRejectedValueOnce(new Error("stripe down"));
+    await expect(reconcileAccountDeletion("user_123")).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("partial Stripe sweep"),
+      expect.objectContaining({ sweptCustomerIds: ["cus_persisted"] }),
+    );
+  });
+
+  it("fails closed (503) when the subscription row is corrupt even if the users row has an id", async () => {
+    mockFindUserStripeCustomerId.mockResolvedValueOnce("cus_persisted");
+    mockFindSubscriptionByUserId.mockResolvedValueOnce({
+      stripeCustomerId: null,
+      stripeSubscriptionId: "sub_orphan",
+    });
+    await expect(reconcileAccountDeletion("user_123")).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(mockCancelSubscriptionsForCustomer).not.toHaveBeenCalled();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it("sweeps a single customer id once when both rows agree", async () => {
+    mockFindUserStripeCustomerId.mockResolvedValueOnce("cus_test123");
+    mockFindSubscriptionByUserId.mockResolvedValueOnce({
+      stripeCustomerId: "cus_test123",
+      stripeSubscriptionId: "sub_test123",
+    });
+    await reconcileAccountDeletion("user_123");
+    expect(mockCancelSubscriptionsForCustomer).toHaveBeenCalledTimes(1);
+    expect(mockCancelSubscriptionsForCustomer).toHaveBeenCalledWith(
+      "cus_test123",
+    );
   });
 
   it("skips the sweep and wipes data when the row has a customer id but no subscription id", async () => {
