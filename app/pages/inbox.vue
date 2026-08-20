@@ -149,114 +149,122 @@
           </span>
         </div>
 
-        <div v-else class="card" style="overflow: hidden">
-          <div
-            class="row"
-            style="
-              padding: 10px 18px;
-              border-bottom: 1px solid var(--line);
-              background: var(--bg-2);
-              font-family: var(--mono);
-              font-size: 10.5px;
-              letter-spacing: 0.1em;
-              text-transform: uppercase;
-              color: var(--ink-3);
-            "
-          >
-            <span style="width: 120px">source</span>
-            <span style="flex: 1">record</span>
-            <span style="width: 230px">file</span>
-            <span style="width: 90px">status</span>
-            <span style="width: 80px; text-align: right">time</span>
-          </div>
-          <div class="divide-y">
+        <template v-else>
+          <div class="card" style="overflow: hidden">
             <div
-              v-for="record in records"
-              :key="record.id"
               class="row"
-              role="button"
-              tabindex="0"
-              :aria-label="`Open record ${record.attributes.title}`"
               style="
-                padding: 13px 18px;
-                cursor: pointer;
-                transition: background 0.1s;
-              "
-              @click="openRecord(record)"
-              @keydown.enter="openRecord(record)"
-              @keydown.space.prevent="openRecord(record)"
-              @mouseenter="
-                ($event.currentTarget as HTMLElement).style.background =
-                  'var(--bg-2)'
-              "
-              @mouseleave="
-                ($event.currentTarget as HTMLElement).style.background =
-                  'transparent'
+                padding: 10px 18px;
+                border-bottom: 1px solid var(--line);
+                background: var(--bg-2);
+                font-family: var(--mono);
+                font-size: 10.5px;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+                color: var(--ink-3);
               "
             >
-              <span class="row gap-2" style="width: 120px">
-                <AppIcon
-                  :name="sourceTypeIcon(record.attributes.source)"
-                  :size="15"
-                  :style="{ color: 'var(--accent)', flex: 'none' }"
-                />
+              <span style="width: 120px">source</span>
+              <span style="flex: 1">record</span>
+              <span style="width: 230px">file</span>
+              <span style="width: 90px">status</span>
+              <span style="width: 80px; text-align: right">time</span>
+            </div>
+            <div class="divide-y">
+              <div
+                v-for="record in records"
+                :key="record.id"
+                class="row"
+                role="button"
+                tabindex="0"
+                :aria-label="`Open record ${record.attributes.title}`"
+                style="
+                  padding: 13px 18px;
+                  cursor: pointer;
+                  transition: background 0.1s;
+                "
+                @click="openRecord(record)"
+                @keydown.enter="openRecord(record)"
+                @keydown.space.prevent="openRecord(record)"
+                @mouseenter="
+                  ($event.currentTarget as HTMLElement).style.background =
+                    'var(--bg-2)'
+                "
+                @mouseleave="
+                  ($event.currentTarget as HTMLElement).style.background =
+                    'transparent'
+                "
+              >
+                <span class="row gap-2" style="width: 120px">
+                  <AppIcon
+                    :name="sourceTypeIcon(record.attributes.source)"
+                    :size="15"
+                    :style="{ color: 'var(--accent)', flex: 'none' }"
+                  />
+                  <span
+                    class="mono"
+                    style="
+                      font-size: 11.5px;
+                      color: var(--ink-2);
+                      white-space: nowrap;
+                      overflow: hidden;
+                      text-overflow: ellipsis;
+                    "
+                  >
+                    {{ formatSourceLabel(record.attributes.source) }}
+                  </span>
+                </span>
                 <span
-                  class="mono"
                   style="
-                    font-size: 11.5px;
-                    color: var(--ink-2);
+                    flex: 1;
+                    font-size: 14px;
+                    font-weight: 500;
                     white-space: nowrap;
                     overflow: hidden;
                     text-overflow: ellipsis;
+                    padding-right: 16px;
                   "
                 >
-                  {{ formatSourceLabel(record.attributes.source) }}
+                  {{ record.attributes.title }}
                 </span>
-              </span>
-              <span
-                style="
-                  flex: 1;
-                  font-size: 14px;
-                  font-weight: 500;
-                  white-space: nowrap;
-                  overflow: hidden;
-                  text-overflow: ellipsis;
-                  padding-right: 16px;
-                "
-              >
-                {{ record.attributes.title }}
-              </span>
-              <span
-                class="mono"
-                :style="{
-                  width: '230px',
-                  fontSize: '11.5px',
-                  color: record.attributes.filePath
-                    ? 'var(--info)'
-                    : 'var(--ink-3)',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }"
-              >
-                {{ record.attributes.filePath ?? "—" }}
-              </span>
-              <span style="width: 90px">
-                <AppBadge
-                  :tone="STATUS_TONE_MAP[record.attributes.status] ?? ''"
-                  dot
-                  >{{ record.attributes.status }}</AppBadge
+                <span
+                  class="mono"
+                  :style="{
+                    width: '230px',
+                    fontSize: '11.5px',
+                    color: record.attributes.filePath
+                      ? 'var(--info)'
+                      : 'var(--ink-3)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }"
                 >
-              </span>
-              <span
-                class="mono faint"
-                style="width: 80px; text-align: right; font-size: 11.5px"
-              >
-                {{ formatRelativeTime(record.attributes.createdAt) }}
-              </span>
+                  {{ record.attributes.filePath ?? "—" }}
+                </span>
+                <span style="width: 90px">
+                  <AppBadge
+                    :tone="STATUS_TONE_MAP[record.attributes.status] ?? ''"
+                    dot
+                    >{{ record.attributes.status }}</AppBadge
+                  >
+                </span>
+                <span
+                  class="mono faint"
+                  style="width: 80px; text-align: right; font-size: 11.5px"
+                >
+                  {{ formatRelativeTime(record.attributes.createdAt) }}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
+
+          <AppLoadMore
+            v-if="hasMore"
+            :is-loading="isLoadingMore"
+            @load="loadMore"
+          />
+        </template>
       </template>
     </div>
 
@@ -291,8 +299,16 @@ definePageMeta({ middleware: "auth" });
 const INBOX_PATH = "/inbox";
 const RECORD_QUERY_KEY = "record";
 
-const { records, isLoading, loadError, filter, loadRecords } =
-  useRecords("all");
+const {
+  records,
+  isLoading,
+  isLoadingMore,
+  loadError,
+  hasMore,
+  filter,
+  loadRecords,
+  loadMore,
+} = useRecords("all");
 
 const emptyStateTitle = computed(() => {
   if (filter.value === "all") {
