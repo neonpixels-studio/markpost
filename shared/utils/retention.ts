@@ -13,8 +13,9 @@ export const EVENT_RETENTION_DAYS = 90;
 
 // The persistent notice the activity page shows so users know history is not
 // kept forever. Title kept separate from the body so the page can render it
-// through the shared AppAlert (title + slot) like every other notice.
-export const RETENTION_NOTICE_TITLE = "90-day retention";
+// through the shared AppAlert (title + slot) like every other notice. Derived
+// from EVENT_RETENTION_DAYS so it can never drift from the pruned window.
+export const RETENTION_NOTICE_TITLE = `${EVENT_RETENTION_DAYS}-day retention`;
 
 // A function, not a pre-baked string, so the day count in the copy is derived
 // from EVENT_RETENTION_DAYS at its single call site and can never be edited out
