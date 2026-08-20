@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { H3Event } from "h3";
+import {
+  startOfMonthIso,
+  startOfTodayIso,
+} from "../../../../server/utils/statsBoundaries";
 
 const selectMock = vi.fn();
 
@@ -35,8 +39,11 @@ const handler = (await import("../../../../server/api/records/stats.get"))
 
 const userId = "user_abc123";
 
-function buildEvent(contextUserId: string | undefined): H3Event {
-  return { context: { userId: contextUserId } } as unknown as H3Event;
+function buildEvent(
+  contextUserId: string | undefined,
+  query: Record<string, unknown> = {},
+): H3Event {
+  return { context: { userId: contextUserId }, query } as unknown as H3Event;
 }
 
 function stubSelectResult(row: Record<string, unknown>) {
@@ -48,6 +55,9 @@ function stubSelectResult(row: Record<string, unknown>) {
 
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
+  vi.stubGlobal("getQuery", (event: { query?: Record<string, unknown> }) => {
+    return event.query ?? {};
+  });
   mockCreateError.mockClear();
   selectMock.mockReset();
 });
@@ -127,6 +137,45 @@ describe("GET /api/records/stats", () => {
         ],
       },
     });
+  });
+
+  it("buckets counts against boundaries derived from the tz query param", async () => {
+    const { from } = stubSelectResult({
+      syncedToday: 1,
+      pending: 0,
+      errors: 0,
+      thisMonth: 1,
+    });
+
+    const timeZone = "America/New_York";
+    await handler(buildEvent(userId, { tz: timeZone }));
+
+    const selectColumns = selectMock.mock.calls[0][0] as {
+      syncedToday: { count: { values: { value: string }[] } };
+      thisMonth: { count: { values: { value: string }[] } };
+    };
+    const todayBoundary = selectColumns.syncedToday.count.values[1].value;
+    const monthBoundary = selectColumns.thisMonth.count.values[0].value;
+
+    expect(todayBoundary).toBe(startOfTodayIso(timeZone));
+    expect(monthBoundary).toBe(startOfMonthIso(timeZone));
+    // The New York boundary is offset from UTC, so it must not equal the naive
+    // UTC start-of-day the endpoint used before the fix.
+    expect(todayBoundary).not.toBe(startOfTodayIso("UTC"));
+    expect(from).toHaveBeenCalledWith(expect.anything());
+  });
+
+  it("falls back to UTC boundaries when no tz query param is present", async () => {
+    stubSelectResult({ syncedToday: 0, pending: 0, errors: 0, thisMonth: 0 });
+
+    await handler(buildEvent(userId));
+
+    const selectColumns = selectMock.mock.calls[0][0] as {
+      syncedToday: { count: { values: { value: string }[] } };
+    };
+    const todayBoundary = selectColumns.syncedToday.count.values[1].value;
+
+    expect(todayBoundary).toBe(startOfTodayIso("UTC"));
   });
 
   it("coerces string counts from the database to numbers", async () => {

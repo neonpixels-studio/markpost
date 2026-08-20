@@ -141,9 +141,31 @@ async function fetchRecordList(
   };
 }
 
+// The browser's IANA time zone, so the server can bucket "synced today" and
+// "this month" by the user's local midnight instead of UTC. Returns undefined
+// when unavailable (e.g. during SSR the server resolves to its own zone), which
+// the stats endpoint treats as UTC.
+function resolveBrowserTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildStatsUrl(): string {
+  const timeZone = resolveBrowserTimeZone();
+  if (!timeZone) {
+    return "/api/records/stats";
+  }
+
+  const params = new URLSearchParams({ tz: timeZone });
+  return `/api/records/stats?${params.toString()}`;
+}
+
 export async function fetchRecordStats(): Promise<RecordStats | null> {
   try {
-    const response = await $fetch<StatsResponse>("/api/records/stats");
+    const response = await $fetch<StatsResponse>(buildStatsUrl());
     return response.data;
   } catch (fetchError) {
     console.error("[useRecords] fetchRecordStats error:", fetchError);

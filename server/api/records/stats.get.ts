@@ -3,6 +3,15 @@ import { getDb } from "../../db";
 import { records, RECORD_STATUSES } from "../../db/schema";
 import { requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
+import {
+  resolveTimeZone,
+  startOfMonthIso,
+  startOfTodayIso,
+} from "../../utils/statsBoundaries";
+
+// Query key the client sends its IANA time zone under (e.g. "America/New_York")
+// so day/month boundaries roll over at the user's local midnight.
+const TIME_ZONE_QUERY_KEY = "tz";
 
 type RecordStats = {
   syncedToday: number;
@@ -17,26 +26,19 @@ type StatsApiResponse = {
 
 const [STATUS_SYNCED, STATUS_PENDING, STATUS_ERROR] = RECORD_STATUSES;
 
-function startOfTodayUtcIso(): string {
-  const now = new Date();
-  return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  ).toISOString();
-}
-
-function startOfMonthUtcIso(): string {
-  const now = new Date();
-  return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
-  ).toISOString();
+function firstQueryValue(
+  value: string | string[] | undefined,
+): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 async function fetchRecordStats(
   db: ReturnType<typeof getDb>,
   userId: string,
+  timeZone: string,
 ): Promise<RecordStats> {
-  const todayStartIso = startOfTodayUtcIso();
-  const monthStartIso = startOfMonthUtcIso();
+  const todayStartIso = startOfTodayIso(timeZone);
+  const monthStartIso = startOfMonthIso(timeZone);
 
   const rows = await db
     .select({
@@ -70,7 +72,13 @@ export default defineEventHandler(async (event): Promise<StatsApiResponse> => {
   try {
     const userId = requireUser(event);
     const db = getDb();
-    const fetchedStats = await fetchRecordStats(db, userId);
+    const query = getQuery(event);
+    const timeZone = resolveTimeZone(
+      firstQueryValue(
+        query[TIME_ZONE_QUERY_KEY] as string | string[] | undefined,
+      ),
+    );
+    const fetchedStats = await fetchRecordStats(db, userId, timeZone);
     return { data: fetchedStats };
   } catch (error) {
     return apiErrorHandler(error);
