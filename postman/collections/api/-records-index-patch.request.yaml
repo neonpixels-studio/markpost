@@ -1,0 +1,29 @@
+$kind: http-request
+name: /records
+url: "{{baseUrl}}/api/records"
+method: PATCH
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+        "data": {
+            "type": "records",
+            "attributes": {
+                "records": [
+                    {
+                        "uuid": "3f607385-96d5-4144-8387-9590afbb7d62",
+                        "status": "synced",
+                        "syncedAt": "2024-01-15T10:00:00.000Z",
+                        "filePath": "05-stripe/note.md"
+                    }
+                ]
+            }
+        }
+    }
+settings:
+  disabledSystemHeaders:
+    - content-type
+order: 2937984240037281
