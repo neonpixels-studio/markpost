@@ -181,6 +181,10 @@ describe("fetchRecordStats", () => {
     mockFetch.mockReset();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("returns stats data on success", async () => {
     const statsData = { syncedToday: 5, pending: 2, errors: 1, thisMonth: 42 };
     mockFetch.mockResolvedValue({ data: statsData });
@@ -188,6 +192,33 @@ describe("fetchRecordStats", () => {
     const result = await fetchRecordStats();
 
     expect(result).toEqual(statsData);
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+
+  it("sends the browser time zone as the tz query param", async () => {
+    const timeZone = "America/New_York";
+    vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+      resolvedOptions: () =>
+        ({ timeZone }) as Intl.ResolvedDateTimeFormatOptions,
+    } as Intl.DateTimeFormat);
+    mockFetch.mockResolvedValue({ data: null });
+
+    await fetchRecordStats();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      `/api/records/stats?tz=${encodeURIComponent(timeZone)}`,
+    );
+  });
+
+  it("omits the tz param when the browser time zone is unavailable", async () => {
+    vi.spyOn(Intl, "DateTimeFormat").mockReturnValue({
+      resolvedOptions: () =>
+        ({ timeZone: "" }) as Intl.ResolvedDateTimeFormatOptions,
+    } as Intl.DateTimeFormat);
+    mockFetch.mockResolvedValue({ data: null });
+
+    await fetchRecordStats();
+
     expect(mockFetch).toHaveBeenCalledWith("/api/records/stats");
   });
 
