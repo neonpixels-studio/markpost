@@ -1,6 +1,7 @@
 import { and, eq, inArray, lt } from "drizzle-orm";
 import { getDb } from "../db";
 import { events } from "../db/schema";
+import { EVENT_RETENTION_DAYS } from "#shared/utils/retention";
 
 // The events table is the highest-write table in the app (one row per webhook
 // ingest, record create, and bulk delete) and has no natural upper bound, so
@@ -17,7 +18,9 @@ import { events } from "../db/schema";
 // sweep to the writing user keeps the delete on the (user_id, ts) index and
 // targets the active, high-write accounts that actually drive growth — an idle
 // account stops adding rows too, so it stops driving growth.
-export const EVENT_RETENTION_DAYS = 90;
+//
+// EVENT_RETENTION_DAYS is imported from #shared/utils/retention so the activity
+// UI can quote the same window this sweep enforces.
 export const EVENT_PRUNE_PROBABILITY = 0.01;
 export const EVENT_PRUNE_BATCH_SIZE = 1000;
 
