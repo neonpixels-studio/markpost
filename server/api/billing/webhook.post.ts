@@ -10,6 +10,7 @@ import {
   constructStripeEvent,
   extractSubscriptionData,
 } from "../../services/stripe";
+import { setUserStripeCustomerId } from "../../utils/users";
 
 const STRIPE_WEBHOOK_SECRET_ENV = "STRIPE_WEBHOOK_SECRET";
 const STRIPE_SIGNATURE_HEADER = "stripe-signature";
@@ -81,16 +82,50 @@ async function handleSubscriptionDeleted(
   });
 }
 
+function extractSessionCustomerId(
+  session: Stripe.Checkout.Session,
+): string | null {
+  const customer = session.customer;
+  if (!customer) {
+    return null;
+  }
+
+  return typeof customer === "string" ? customer : customer.id;
+}
+
 async function handleCheckoutSessionCompleted(
   session: Stripe.Checkout.Session,
 ): Promise<void> {
-  // subscription.created always follows checkout.session.completed and carries
-  // the correct plan, status, and trial data — rely on that event for row creation.
-  // This handler exists so future checkout-specific logic (e.g. sending a
-  // welcome email) has a home without touching subscription lifecycle events.
+  // subscription.created (delivered right after this) still creates the
+  // subscriptions row. This handler only persists the Stripe customer id onto
+  // the users row — the earliest event carrying it for a brand-new customer, and
+  // the sole record for a schedule-only checkout (see cancelBillingForUser).
   if (session.mode !== "subscription") {
     return;
   }
+
+  const userId = session.client_reference_id ?? session.metadata?.userId;
+  if (!userId) {
+    // createCheckoutSession always sets both client_reference_id and
+    // metadata.userId, so neither being present means the checkout-creation code
+    // regressed — log at error, not warn, so it surfaces.
+    console.error(
+      "[billing/webhook] checkout session missing userId; skipping customer id persist",
+      { sessionId: session.id },
+    );
+    return;
+  }
+
+  const stripeCustomerId = extractSessionCustomerId(session);
+  if (!stripeCustomerId) {
+    console.warn(
+      "[billing/webhook] checkout session has no customer; skipping customer id persist",
+      { sessionId: session.id, userId },
+    );
+    return;
+  }
+
+  await setUserStripeCustomerId(userId, stripeCustomerId);
 }
 
 async function dispatchStripeEvent(stripeEvent: Stripe.Event): Promise<void> {
