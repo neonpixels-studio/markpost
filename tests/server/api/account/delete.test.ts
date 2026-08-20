@@ -36,6 +36,13 @@ vi.mock("../../../../server/utils/billing", () => ({
     mockFindSubscriptionByUserId(...args),
 }));
 
+const mockFindUserStripeCustomerId = vi.fn();
+
+vi.mock("../../../../server/utils/users", () => ({
+  findUserStripeCustomerId: (...args: unknown[]) =>
+    mockFindUserStripeCustomerId(...args),
+}));
+
 const mockCancelSubscriptionsForCustomer = vi.fn();
 
 vi.mock("../../../../server/services/stripe", () => ({
@@ -77,6 +84,7 @@ describe("DELETE /api/account", () => {
     usersWhere.mockResolvedValue([]);
     deleteMock.mockImplementation(() => ({ where: usersWhere }));
     mockDeleteClerkUser.mockResolvedValue(undefined);
+    mockFindUserStripeCustomerId.mockResolvedValue(null);
     mockFindSubscriptionByUserId.mockResolvedValue({
       stripeCustomerId: "cus_test123",
       stripeSubscriptionId: "sub_test123",
