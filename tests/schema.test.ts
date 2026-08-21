@@ -7,6 +7,7 @@ import { events, records, sources, subscriptions } from "../server/db/schema";
 const RECORDS_SOURCE_FK = "records_source_id_sources_uuid_fk";
 const EVENTS_SOURCE_FK = "events_source_id_sources_uuid_fk";
 const RECORDS_USER_CREATED_INDEX = "records_user_id_created_at_idx";
+const RECORDS_FILE_PATH_UNIQUE_INDEX = "records_user_id_file_path_lower_unique";
 const RECORDS_SOURCE_ID_INDEX = "records_source_id_idx";
 const EVENTS_SOURCE_ID_INDEX = "events_source_id_idx";
 // Resolved from the repo root (vitest's cwd), matching the convention in
@@ -50,6 +51,11 @@ function indexColumnNames(index: ReturnType<typeof tableIndex>) {
   return (index?.config.columns ?? []).map(
     (column) => (column as { name: string }).name,
   );
+}
+
+function recordsIndexNamed(name: string) {
+  const { indexes } = getTableConfig(records);
+  return indexes.find((index) => index.config.name === name);
 }
 
 describe("records schema", () => {
@@ -114,6 +120,35 @@ describe("records schema", () => {
     const migration = migrationContaining(RECORDS_USER_CREATED_INDEX);
     expect(migration).toContain(
       'ON "records" USING btree ("user_id","created_at" DESC NULLS FIRST,"uuid" DESC NULLS FIRST)',
+    );
+  });
+
+  // Closes the file_path collision race at the DB level (see issue #193): the
+  // app-level suffix has a TOCTOU window and cannot cover client-supplied paths.
+  // Asserts it is unique and partial (a `where` predicate is present); the exact
+  // predicate and the load-bearing lower()/text_pattern_ops expression are
+  // pinned by the migration-content test below.
+  it("has a partial, unique index on file_path", () => {
+    const index = recordsIndexNamed(RECORDS_FILE_PATH_UNIQUE_INDEX);
+    expect(index).toBeDefined();
+    expect(index?.config.unique).toBe(true);
+    expect(index?.config.where).toBeDefined();
+  });
+
+  // Guards the migration that creates the index in the database: it must dedupe
+  // existing colliders BEFORE the unique index, or index creation fails on any
+  // database that already has a duplicate. text_pattern_ops lets this one index
+  // also serve the left-anchored collision-prefix lookup.
+  it("ships a migration that dedupes then creates the partial unique index", () => {
+    const migration = migrationContaining(RECORDS_FILE_PATH_UNIQUE_INDEX);
+    const dedupeAt = migration.indexOf("UPDATE");
+    const indexAt = migration.indexOf(
+      `CREATE UNIQUE INDEX IF NOT EXISTS "${RECORDS_FILE_PATH_UNIQUE_INDEX}"`,
+    );
+    expect(dedupeAt).toBeGreaterThanOrEqual(0);
+    expect(indexAt).toBeGreaterThan(dedupeAt);
+    expect(migration).toContain(
+      `lower("file_path") text_pattern_ops) WHERE "file_path" IS NOT NULL AND "file_path" <> ''`,
     );
   });
 
