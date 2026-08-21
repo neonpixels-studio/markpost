@@ -19,6 +19,8 @@ import {
   buildFetchUrl,
   RECORD_FILTER_OPTIONS,
   triggerRecordExportDownload,
+  useRecords,
+  type RecordResource,
 } from "../../app/composables/useRecords";
 import { SOURCE_TYPES } from "../../shared/utils/sourceTypes";
 
@@ -77,6 +79,18 @@ describe("buildFetchUrl", () => {
     expect(buildFetchUrl("bogus" as never)).toBe("/api/records");
     expect(errorSpy).toHaveBeenCalledOnce();
     errorSpy.mockRestore();
+  });
+
+  it("appends the cursor as page[after] for the 'all' filter", () => {
+    expect(buildFetchUrl("all", "uuid-9")).toBe(
+      "/api/records?page%5Bafter%5D=uuid-9",
+    );
+  });
+
+  it("keeps the active filter alongside the cursor", () => {
+    expect(buildFetchUrl("errors", "uuid-9")).toBe(
+      "/api/records?filter%5Bstatus%5D=error&page%5Bafter%5D=uuid-9",
+    );
   });
 });
 
@@ -197,5 +211,127 @@ describe("fetchRecordStats", () => {
     const result = await fetchRecordStats();
 
     expect(result).toBeNull();
+  });
+});
+
+function makeRecordResource(uuid: string): RecordResource {
+  return {
+    type: "records",
+    id: uuid,
+    attributes: {
+      uuid,
+      createdAt: "2026-06-27T10:00:00Z",
+      userId: "user-1",
+      title: `Record ${uuid}`,
+      content: "content",
+      sourceId: null,
+      source: "webhook/github",
+      status: "synced",
+      filePath: null,
+      tags: null,
+      frontmatter: null,
+      syncedAt: null,
+      errorMessage: null,
+    },
+    links: { self: `/api/records/${uuid}` },
+  };
+}
+
+describe("useRecords loadRecords", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("populates records and hasMore from the first page", async () => {
+    mockFetch.mockResolvedValue({
+      data: [makeRecordResource("uuid-1")],
+      meta: { hasMore: true },
+    });
+
+    const { records, hasMore, loadRecords } = useRecords("all");
+    await loadRecords();
+
+    expect(records.value).toHaveLength(1);
+    expect(hasMore.value).toBe(true);
+  });
+
+  it("defaults hasMore to false when meta is absent", async () => {
+    mockFetch.mockResolvedValue({ data: [makeRecordResource("uuid-1")] });
+
+    const { hasMore, loadRecords } = useRecords("all");
+    await loadRecords();
+
+    expect(hasMore.value).toBe(false);
+  });
+
+  it("sets loadError when the first page fails", async () => {
+    mockFetch.mockRejectedValue(new Error("network error"));
+
+    const { loadError, loadRecords } = useRecords("all");
+    await loadRecords();
+
+    expect(loadError.value).toBe("Failed to load records. Please try again.");
+  });
+});
+
+describe("useRecords loadMore", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("appends the next page using the last record as the cursor", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1")],
+        meta: { hasMore: true },
+      })
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      });
+
+    const { records, hasMore, loadRecords, loadMore } = useRecords("all");
+    await loadRecords();
+    await loadMore();
+
+    expect(records.value.map((record) => record.id)).toEqual([
+      "uuid-1",
+      "uuid-2",
+    ]);
+    expect(hasMore.value).toBe(false);
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/api/records?page%5Bafter%5D=uuid-1",
+    );
+  });
+
+  it("does nothing when there are no more records", async () => {
+    mockFetch.mockResolvedValue({
+      data: [makeRecordResource("uuid-1")],
+      meta: { hasMore: false },
+    });
+
+    const { loadMore, loadRecords } = useRecords("all");
+    await loadRecords();
+    mockFetch.mockClear();
+    await loadMore();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("sets loadError when loading more fails", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1")],
+        meta: { hasMore: true },
+      })
+      .mockRejectedValueOnce(new Error("network error"));
+
+    const { loadError, loadRecords, loadMore } = useRecords("all");
+    await loadRecords();
+    await loadMore();
+
+    expect(loadError.value).toBe(
+      "Failed to load more records. Please try again.",
+    );
   });
 });

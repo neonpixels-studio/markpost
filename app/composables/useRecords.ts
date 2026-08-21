@@ -99,7 +99,10 @@ function buildQueryParams(filter: RecordFilterValue): FetchFilters {
   return {};
 }
 
-export function buildFetchUrl(filter: RecordFilterValue): string {
+export function buildFetchUrl(
+  filter: RecordFilterValue,
+  afterUuid?: string,
+): string {
   const filters = buildQueryParams(filter);
   const params = new URLSearchParams();
 
@@ -111,16 +114,31 @@ export function buildFetchUrl(filter: RecordFilterValue): string {
     params.set("filter[status]", filters.status);
   }
 
+  // The server-provided links.next drops the active filters, so we rebuild the
+  // cursor URL client-side to keep filter[source]/filter[status] on later pages.
+  if (afterUuid) {
+    params.set("page[after]", afterUuid);
+  }
+
   const queryString = params.toString();
   return queryString ? `/api/records?${queryString}` : "/api/records";
 }
 
+type RecordPage = {
+  records: RecordResource[];
+  hasMore: boolean;
+};
+
 async function fetchRecordList(
   filter: RecordFilterValue,
-): Promise<RecordResource[]> {
-  const url = buildFetchUrl(filter);
+  afterUuid?: string,
+): Promise<RecordPage> {
+  const url = buildFetchUrl(filter, afterUuid);
   const response = await $fetch<RecordListResponse>(url);
-  return response.data ?? [];
+  return {
+    records: response.data ?? [],
+    hasMore: response.meta?.hasMore ?? false,
+  };
 }
 
 export async function fetchRecordStats(): Promise<RecordStats | null> {
@@ -197,7 +215,9 @@ export function formatRelativeTime(isoString: string): string {
 export function useRecords(initialFilter: RecordFilterValue = "all") {
   const records = ref<RecordResource[]>([]);
   const isLoading = ref(false);
+  const isLoadingMore = ref(false);
   const loadError = ref<string | null>(null);
+  const hasMore = ref(false);
   const filter = ref<RecordFilterValue>(initialFilter);
 
   async function loadRecords(): Promise<void> {
@@ -205,7 +225,9 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     loadError.value = null;
 
     try {
-      records.value = await fetchRecordList(filter.value);
+      const page = await fetchRecordList(filter.value);
+      records.value = page.records;
+      hasMore.value = page.hasMore;
     } catch (fetchError) {
       console.error("[useRecords] loadRecords error:", fetchError);
       loadError.value = "Failed to load records. Please try again.";
@@ -214,13 +236,44 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     }
   }
 
+  async function loadMore(): Promise<void> {
+    if (isLoadingMore.value || !hasMore.value) {
+      return;
+    }
+
+    const lastRecord = records.value.at(-1);
+    if (!lastRecord) {
+      return;
+    }
+
+    isLoadingMore.value = true;
+    loadError.value = null;
+
+    try {
+      const page = await fetchRecordList(
+        filter.value,
+        lastRecord.attributes.uuid,
+      );
+      records.value = [...records.value, ...page.records];
+      hasMore.value = page.hasMore;
+    } catch (fetchError) {
+      console.error("[useRecords] loadMore error:", fetchError);
+      loadError.value = "Failed to load more records. Please try again.";
+    } finally {
+      isLoadingMore.value = false;
+    }
+  }
+
   watch(filter, loadRecords);
 
   return {
     records,
     isLoading,
+    isLoadingMore,
     loadError,
+    hasMore,
     filter,
     loadRecords,
+    loadMore,
   };
 }

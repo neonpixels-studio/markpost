@@ -6,10 +6,13 @@ vi.stubGlobal("definePageMeta", vi.fn());
 
 const recordsRef = ref<object[]>([]);
 const isLoadingRef = ref(false);
+const isLoadingMoreRef = ref(false);
 const loadErrorRef = ref<string | null>(null);
+const hasMoreRef = ref(false);
 const filterRef = ref("all");
 
 const mockLoadRecords = vi.fn();
+const mockLoadMore = vi.fn();
 const mockFetchRecordStats = vi.fn();
 const mockTriggerRecordExport = vi.fn();
 
@@ -21,9 +24,12 @@ vi.mock("../../app/composables/useRecords", async (importOriginal) => {
     useRecords: () => ({
       records: recordsRef,
       isLoading: isLoadingRef,
+      isLoadingMore: isLoadingMoreRef,
       loadError: loadErrorRef,
+      hasMore: hasMoreRef,
       filter: filterRef,
       loadRecords: mockLoadRecords,
+      loadMore: mockLoadMore,
     }),
     get fetchRecordStats() {
       return mockFetchRecordStats;
@@ -86,6 +92,12 @@ const globalConfig = {
         props: ["variant", "size", "icon", "disabled"],
         emits: ["click"],
       },
+      AppLoadMore: {
+        template:
+          '<button class="app-btn app-load-more" :disabled="isLoading" @click="$emit(\'load\')">{{ isLoading ? "loading…" : "load more" }}</button>',
+        props: ["isLoading"],
+        emits: ["load"],
+      },
       AppIcon: { template: "<span />" },
       AppBadge: {
         template: '<span class="app-badge"><slot /></span>',
@@ -137,10 +149,14 @@ describe("inbox page", () => {
   beforeEach(() => {
     recordsRef.value = [];
     isLoadingRef.value = false;
+    isLoadingMoreRef.value = false;
     loadErrorRef.value = null;
+    hasMoreRef.value = false;
     filterRef.value = "all";
     mockLoadRecords.mockReset();
     mockLoadRecords.mockResolvedValue(undefined);
+    mockLoadMore.mockReset();
+    mockLoadMore.mockResolvedValue(undefined);
     mockFetchRecordStats.mockReset();
     mockFetchRecordStats.mockResolvedValue(defaultStats);
     mockTriggerRecordExport.mockReset();
@@ -265,6 +281,53 @@ describe("inbox page", () => {
     const wrapper = mount(InboxPage, globalConfig);
     await flushPromises();
     expect(wrapper.findAll(".app-badge")).toHaveLength(2);
+  });
+
+  it("shows the load-more button when more records are available", async () => {
+    recordsRef.value = [makeRecord()];
+    hasMoreRef.value = true;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const loadMoreButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "load more");
+    expect(loadMoreButton).toBeDefined();
+  });
+
+  it("hides the load-more button when no more records are available", async () => {
+    recordsRef.value = [makeRecord()];
+    hasMoreRef.value = false;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const loadMoreButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "load more");
+    expect(loadMoreButton).toBeUndefined();
+  });
+
+  it("calls loadMore when the load-more button is clicked", async () => {
+    recordsRef.value = [makeRecord()];
+    hasMoreRef.value = true;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const loadMoreButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "load more");
+    await loadMoreButton?.trigger("click");
+    expect(mockLoadMore).toHaveBeenCalledOnce();
+  });
+
+  it("shows a loading label on the load-more button while fetching more", async () => {
+    recordsRef.value = [makeRecord()];
+    hasMoreRef.value = true;
+    isLoadingMoreRef.value = true;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const loadMoreButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "loading…");
+    expect(loadMoreButton).toBeDefined();
+    expect(loadMoreButton?.attributes("disabled")).toBeDefined();
   });
 
   it("triggers the record export when the export button is clicked", async () => {
