@@ -2,22 +2,12 @@ import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db";
 import { apiTokens } from "../db/schema";
 import { hashToken, isApiToken, isTokenExpired } from "../utils/tokens";
+import { refreshTokenLastUsedAt } from "../utils/tokenUsage";
 import { ensureUserRegistered } from "../utils/auth";
 import { getClerkClient } from "../utils/clerk";
 import { throwUnauthorized } from "../utils/errors";
 
 const BEARER_PREFIX = /^Bearer\s+/i;
-
-async function updateLastUsedAt(tokenId: string): Promise<void> {
-  try {
-    await getDb()
-      .update(apiTokens)
-      .set({ lastUsedAt: new Date() })
-      .where(eq(apiTokens.id, tokenId));
-  } catch (error) {
-    console.error("[auth] failed to update lastUsedAt", error);
-  }
-}
 
 async function authenticateViaApiToken(
   rawToken: string,
@@ -29,6 +19,7 @@ async function authenticateViaApiToken(
       id: apiTokens.id,
       userId: apiTokens.userId,
       expiresAt: apiTokens.expiresAt,
+      lastUsedAt: apiTokens.lastUsedAt,
     })
     .from(apiTokens)
     .where(
@@ -44,7 +35,7 @@ async function authenticateViaApiToken(
     return null;
   }
 
-  await updateLastUsedAt(matched.id);
+  await refreshTokenLastUsedAt(matched.id, matched.lastUsedAt);
 
   return matched.userId;
 }
