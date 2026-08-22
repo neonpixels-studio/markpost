@@ -1526,5 +1526,51 @@ describe("POST /api/hooks/[slug]", () => {
         statusCode: 500,
       });
     });
+
+    // Composition backstop: a delivery-id source can also lose the file_path
+    // unique-index race. insertWebhookRecord's onConflictDoNothing only arbitrates
+    // (source_id, delivery_id), so a file_path 23505 still throws and is retried
+    // by insertRecordWithUniqueFilePath. The retried insert must re-suffix the
+    // path AND still carry the delivery id — dropping it would leave a Stripe
+    // record with delivery_id NULL, permanently un-dedupable.
+    it("retries a file_path collision while preserving the delivery id", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_combo",
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+      stubSourceDeliveryAndSettings([stripeSource], []);
+      const retryCollisionWhere = vi.fn(() =>
+        Promise.resolve([{ filePath: "2026-01-01-hello.md" }]),
+      );
+      const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
+      selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = vi
+        .fn()
+        .mockRejectedValueOnce(uniqueViolation)
+        .mockResolvedValueOnce([sampleRecord]);
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(values).toHaveBeenCalledTimes(2);
+      const secondInsert = (
+        values.mock.calls[1] as [Record<string, unknown>]
+      )[0];
+      expect(secondInsert.filePath).toBe("2026-01-01-hello-2.md");
+      expect(secondInsert.deliveryId).toBe("evt_combo");
+    });
   });
 });

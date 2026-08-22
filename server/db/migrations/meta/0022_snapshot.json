@@ -1,6 +1,6 @@
 {
   "id": "749b95cf-0e5e-4a07-aa00-c879181fb95a",
-  "prevId": "13a60e9f-df63-4cc7-a47c-e20a956dd5eb",
+  "prevId": "dcd75553-7f97-4c14-bacf-9710c6fbaa85",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -273,12 +273,6 @@
           "notNull": true,
           "default": "'pending'"
         },
-        "delivery_id": {
-          "name": "delivery_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "file_path": {
           "name": "file_path",
           "type": "text",
@@ -433,27 +427,6 @@
           ],
           "isUnique": true,
           "where": "\"records\".\"file_path\" is not null and \"records\".\"file_path\" <> ''",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "records_source_id_delivery_id_unique": {
-          "name": "records_source_id_delivery_id_unique",
-          "columns": [
-            {
-              "expression": "source_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "delivery_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
