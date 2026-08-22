@@ -1,0 +1,1371 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Markpost API",
+    "version": "1.0.0",
+    "summary": "Capture inbound webhooks and email as clean Markdown.",
+    "description": "Markpost catches inbound webhooks and email, converts them to Markdown with YAML frontmatter, and syncs them into a local Obsidian vault via the markpost CLI.\n\nAll `/api/*` endpoints require a bearer token (`Authorization: Bearer mp_live_...`) except the public ingest endpoints (`POST /hooks/{slug}` and `POST /billing/webhook`), which authenticate with a per-request provider signature instead.\n\nMost responses follow the JSON:API convention: a `data` member holding a resource object (`{ type, id, attributes }`) or an array of them, with `meta` and `links` for pagination. Errors return a top-level `errors` array. A few operational endpoints (stats, exports, billing) return plain JSON documented inline.",
+    "contact": { "name": "Markpost", "url": "https://dh-markpost.netlify.app" }
+  },
+  "servers": [
+    {
+      "url": "https://dh-markpost.netlify.app/api",
+      "description": "Production"
+    }
+  ],
+  "security": [{ "bearerAuth": [] }],
+  "tags": [
+    {
+      "name": "Records",
+      "description": "Captured content, one record per inbound item."
+    },
+    { "name": "Sources", "description": "Connected webhook/email endpoints." },
+    { "name": "Events", "description": "Activity log." },
+    {
+      "name": "Tokens",
+      "description": "API tokens for authenticating the CLI and integrations."
+    },
+    { "name": "Settings", "description": "Per-user sync and vault settings." },
+    { "name": "Billing", "description": "Subscription and usage." },
+    { "name": "Account", "description": "Account lifecycle." },
+    {
+      "name": "Ingest",
+      "description": "Public, signature-authenticated ingestion."
+    }
+  ],
+  "paths": {
+    "/records": {
+      "get": {
+        "tags": ["Records"],
+        "summary": "List records",
+        "description": "Cursor-paginated, newest first. Filterable by source type, status, and free-text query.",
+        "parameters": [
+          { "$ref": "#/components/parameters/PageSize" },
+          { "$ref": "#/components/parameters/PageAfter" },
+          {
+            "name": "filter[source]",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to records whose source has this type.",
+            "schema": { "$ref": "#/components/schemas/SourceType" }
+          },
+          {
+            "name": "filter[status]",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to records with this status. Unrecognized values are ignored.",
+            "schema": { "$ref": "#/components/schemas/RecordStatus" }
+          },
+          {
+            "name": "filter[q]",
+            "in": "query",
+            "required": false,
+            "description": "Case-insensitive substring match on title and content.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Record" }
+                    },
+                    "meta": { "$ref": "#/components/schemas/PaginationMeta" },
+                    "links": { "$ref": "#/components/schemas/PaginationLinks" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Records"],
+        "summary": "Create a record",
+        "description": "Requires `title` and either `content` or `html`. When `html` is supplied it is run through the Markdown pipeline to derive content, frontmatter, tags, and file path.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "type": { "const": "records" },
+                      "attributes": {
+                        "type": "object",
+                        "required": ["title"],
+                        "properties": {
+                          "title": { "type": "string" },
+                          "content": {
+                            "type": "string",
+                            "description": "Required unless `html` is provided."
+                          },
+                          "html": {
+                            "type": "string",
+                            "description": "HTML converted to Markdown; supplies content when `content` is omitted."
+                          },
+                          "payloadType": {
+                            "type": "string",
+                            "enum": ["webhook", "email"],
+                            "default": "webhook"
+                          },
+                          "sourceId": {
+                            "type": ["string", "null"],
+                            "format": "uuid",
+                            "description": "Must reference a source owned by the caller."
+                          },
+                          "source": { "type": ["string", "null"] },
+                          "status": {
+                            "$ref": "#/components/schemas/RecordStatus"
+                          },
+                          "filePath": { "type": ["string", "null"] },
+                          "tags": {
+                            "type": ["array", "null"],
+                            "items": { "type": "string" }
+                          },
+                          "frontmatter": { "type": ["object", "null"] },
+                          "syncedAt": {
+                            "type": ["string", "null"],
+                            "format": "date-time"
+                          },
+                          "errorMessage": { "type": ["string", "null"] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/SingleRecord" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/PlanLimit" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
+      "delete": {
+        "tags": ["Records"],
+        "summary": "Batch-delete records",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "attributes": {
+                        "type": "object",
+                        "required": ["uuids"],
+                        "properties": {
+                          "uuids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 100,
+                            "items": { "type": "string", "format": "uuid" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Number of records deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "meta": {
+                      "type": "object",
+                      "properties": { "deleted": { "type": "integer" } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/records/{uuid}": {
+      "parameters": [{ "$ref": "#/components/parameters/RecordUuid" }],
+      "get": {
+        "tags": ["Records"],
+        "summary": "Get a record",
+        "responses": {
+          "200": { "$ref": "#/components/responses/SingleRecord" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Records"],
+        "summary": "Update a record",
+        "description": "At least one of `status`, `syncedAt`, `filePath`, or `errorMessage` is required.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "attributes": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "$ref": "#/components/schemas/RecordStatus"
+                          },
+                          "syncedAt": {
+                            "type": ["string", "null"],
+                            "format": "date-time"
+                          },
+                          "filePath": { "type": ["string", "null"] },
+                          "errorMessage": { "type": ["string", "null"] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/SingleRecord" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/records/export": {
+      "get": {
+        "tags": ["Records"],
+        "summary": "Export records",
+        "description": "Returns a bare JSON array of up to 10000 records, newest first, as a file download. The `X-Export-Truncated` response header is `\"true\"` when the cap was hit.",
+        "responses": {
+          "200": {
+            "description": "A JSON array of records.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": { "type": "string" },
+                "description": "attachment; filename=\"markpost-records.json\""
+              },
+              "X-Export-Truncated": {
+                "schema": { "type": "string", "enum": ["true", "false"] }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/RecordExportRow" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/records/stats": {
+      "get": {
+        "tags": ["Records"],
+        "summary": "Record counts",
+        "responses": {
+          "200": {
+            "description": "Aggregate counts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "syncedToday": { "type": "integer" },
+                        "pending": { "type": "integer" },
+                        "errors": { "type": "integer" },
+                        "thisMonth": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/sources": {
+      "get": {
+        "tags": ["Sources"],
+        "summary": "List sources",
+        "responses": {
+          "200": {
+            "description": "All of the caller's sources. `providerSecret` is always null here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Source" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Sources"],
+        "summary": "Create a source",
+        "description": "`providerSecret` is revealed exactly once in the response for generated providers (github, zapier, shortcuts). For the `stripe` provider you must supply `providerSecret`; other providers reject it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "attributes": {
+                        "type": "object",
+                        "required": ["type", "name", "routeFolder"],
+                        "properties": {
+                          "type": { "$ref": "#/components/schemas/SourceType" },
+                          "name": { "type": "string" },
+                          "routeFolder": {
+                            "type": "string",
+                            "description": "Safe relative path; letters, numbers, spaces, and . _ - / only."
+                          },
+                          "provider": {
+                            "type": ["string", "null"],
+                            "enum": [
+                              "stripe",
+                              "github",
+                              "zapier",
+                              "shortcuts",
+                              null
+                            ]
+                          },
+                          "providerSecret": {
+                            "type": ["string", "null"],
+                            "description": "Required for the stripe provider; rejected for others."
+                          },
+                          "fieldMapping": { "type": ["object", "null"] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/SingleSource" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/PlanLimit" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/sources/{uuid}": {
+      "parameters": [{ "$ref": "#/components/parameters/SourceUuid" }],
+      "patch": {
+        "tags": ["Sources"],
+        "summary": "Update a source",
+        "description": "At least one of `routeFolder` or `fieldMapping` is required.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "attributes": {
+                        "type": "object",
+                        "properties": {
+                          "routeFolder": { "type": "string" },
+                          "fieldMapping": { "type": ["object", "null"] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/SingleSource" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
+      "delete": {
+        "tags": ["Sources"],
+        "summary": "Delete a source",
+        "responses": {
+          "200": {
+            "description": "Number of sources deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "meta": {
+                      "type": "object",
+                      "properties": { "deleted": { "type": "integer" } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/sources/{uuid}/rotate-secret": {
+      "parameters": [{ "$ref": "#/components/parameters/SourceUuid" }],
+      "post": {
+        "tags": ["Sources"],
+        "summary": "Rotate a source's provider secret",
+        "description": "Mints a fresh secret for generated providers (github, zapier, shortcuts), revealed once. For the stripe provider, supply the new `providerSecret`.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "attributes": {
+                        "type": "object",
+                        "properties": {
+                          "providerSecret": { "type": ["string", "null"] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/SingleSource" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "tags": ["Events"],
+        "summary": "List activity events",
+        "description": "Cursor-paginated, newest first.",
+        "parameters": [
+          { "$ref": "#/components/parameters/PageSize" },
+          { "$ref": "#/components/parameters/PageAfter" }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Event" }
+                    },
+                    "meta": { "$ref": "#/components/schemas/PaginationMeta" },
+                    "links": {
+                      "$ref": "#/components/schemas/EventPaginationLinks"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/events/export": {
+      "get": {
+        "tags": ["Events"],
+        "summary": "Export events",
+        "description": "Returns a bare JSON array of up to 10000 events, newest first, as a file download.",
+        "responses": {
+          "200": {
+            "description": "A JSON array of events.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": { "type": "string" },
+                "description": "attachment; filename=\"markpost-activity.json\""
+              },
+              "X-Export-Truncated": {
+                "schema": { "type": "string", "enum": ["true", "false"] }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/EventExportRow" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/tokens": {
+      "get": {
+        "tags": ["Tokens"],
+        "summary": "List API tokens",
+        "description": "Non-revoked tokens. Never returns the raw token or its hash.",
+        "responses": {
+          "200": {
+            "description": "The caller's tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ApiToken" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Tokens"],
+        "summary": "Mint an API token",
+        "description": "The raw `mp_live_...` token is returned exactly once, in this response. Omit `expiresInDays` for a token that never expires.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "attributes": {
+                        "type": "object",
+                        "required": ["name"],
+                        "properties": {
+                          "name": { "type": "string" },
+                          "expiresInDays": {
+                            "type": ["integer", "null"],
+                            "minimum": 1,
+                            "maximum": 3650
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The newly minted token, including its raw value.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "type": { "const": "api_tokens" },
+                        "id": { "type": "string", "format": "uuid" },
+                        "attributes": {
+                          "type": "object",
+                          "properties": {
+                            "name": { "type": "string" },
+                            "prefix": { "type": "string" },
+                            "createdAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "expiresAt": {
+                              "type": ["string", "null"],
+                              "format": "date-time"
+                            },
+                            "token": {
+                              "type": "string",
+                              "description": "The raw token, e.g. mp_live_<64 hex>. Shown only here."
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/tokens/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }
+      ],
+      "delete": {
+        "tags": ["Tokens"],
+        "summary": "Revoke an API token",
+        "responses": {
+          "200": {
+            "description": "Token revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "data": { "type": "null" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/settings": {
+      "get": {
+        "tags": ["Settings"],
+        "summary": "Get settings",
+        "description": "Returns the caller's settings, creating defaults on first read.",
+        "responses": {
+          "200": { "$ref": "#/components/responses/SingleSettings" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "put": {
+        "tags": ["Settings"],
+        "summary": "Update settings",
+        "description": "Partial merge upsert. Empty-string and null attribute values are ignored.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "attributes": {
+                        "type": "object",
+                        "properties": {
+                          "vaultDir": { "type": "string" },
+                          "filenameTemplate": { "type": "string" },
+                          "accentColor": { "type": "string" },
+                          "autoSync": { "type": "boolean" },
+                          "autoDelete": { "type": "boolean" },
+                          "frontmatter": { "type": "boolean" },
+                          "conflictStrategy": {
+                            "type": "string",
+                            "enum": ["suffix", "overwrite", "skip"]
+                          },
+                          "theme": {
+                            "type": "string",
+                            "enum": ["light", "dark", "system"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/SingleSettings" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/billing/usage": {
+      "get": {
+        "tags": ["Billing"],
+        "summary": "Current usage and plan",
+        "responses": {
+          "200": {
+            "description": "Usage snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "recordsCreatedThisMonth": { "type": "integer" },
+                        "connectedSourceCount": { "type": "integer" },
+                        "plan": { "type": "string", "enum": ["hobby", "pro"] },
+                        "status": {
+                          "$ref": "#/components/schemas/SubscriptionStatus"
+                        },
+                        "trialEndsAt": {
+                          "type": ["string", "null"],
+                          "format": "date-time"
+                        },
+                        "trialDaysLeft": { "type": ["integer", "null"] },
+                        "trialPercentElapsed": { "type": ["number", "null"] }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/billing/checkout": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Start a Stripe Checkout session",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["priceKey"],
+                "properties": {
+                  "priceKey": {
+                    "type": "string",
+                    "enum": ["pro", "pro_annual"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/BillingUrl" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/billing/portal": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Open the Stripe billing portal",
+        "responses": {
+          "200": { "$ref": "#/components/responses/BillingUrl" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/billing/webhook": {
+      "post": {
+        "tags": ["Billing"],
+        "summary": "Stripe webhook receiver",
+        "description": "Public endpoint authenticated by the `Stripe-Signature` header, not a bearer token.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "Stripe-Signature",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Raw Stripe event payload.",
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Acknowledged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": { "received": { "type": "boolean" } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/account": {
+      "delete": {
+        "tags": ["Account"],
+        "summary": "Delete the account",
+        "description": "Cancels any live Stripe subscription, then permanently deletes all user data and the identity. Fails closed (503) if the subscription cannot be canceled.",
+        "responses": {
+          "200": {
+            "description": "Account deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "meta": {
+                      "type": "object",
+                      "properties": { "deleted": { "type": "boolean" } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/hooks/{slug}": {
+      "post": {
+        "tags": ["Ingest"],
+        "summary": "Ingest a webhook",
+        "description": "Public endpoint. Authenticated by the source's configured provider signature (`Stripe-Signature`, `X-Hub-Signature-256`, or `X-Markpost-Secret`), or by slug alone when the source has no provider. The body is an arbitrary JSON object transformed by the source's field mapping and the Markdown pipeline.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "description": "The source's endpoint slug.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted; a record was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": { "type": "string", "format": "uuid" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/PlanLimit" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": {
+            "description": "Throttled.",
+            "headers": { "Retry-After": { "schema": { "type": "integer" } } },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "mp_live token or Clerk session JWT",
+        "description": "Send `Authorization: Bearer <token>`. The token is either a markpost API token (`mp_live_...`, minted via POST /tokens) or a Clerk session JWT."
+      }
+    },
+    "parameters": {
+      "PageSize": {
+        "name": "page[size]",
+        "in": "query",
+        "required": false,
+        "description": "Page size, 1-100.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 100
+        }
+      },
+      "PageAfter": {
+        "name": "page[after]",
+        "in": "query",
+        "required": false,
+        "description": "Cursor: the id/uuid of the last item on the previous page.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "RecordUuid": {
+        "name": "uuid",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "SourceUuid": {
+        "name": "uuid",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      }
+    },
+    "responses": {
+      "SingleRecord": {
+        "description": "A single record.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "data": { "$ref": "#/components/schemas/Record" }
+              }
+            }
+          }
+        }
+      },
+      "SingleSource": {
+        "description": "A single source.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "data": { "$ref": "#/components/schemas/Source" }
+              }
+            }
+          }
+        }
+      },
+      "SingleSettings": {
+        "description": "The caller's settings.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "data": { "$ref": "#/components/schemas/UserSettings" }
+              }
+            }
+          }
+        }
+      },
+      "BillingUrl": {
+        "description": "A Stripe-hosted URL to redirect the user to.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": { "url": { "type": "string", "format": "uri" } }
+                }
+              }
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Malformed parameter, cursor, or filter.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing or invalid credentials.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The resource does not exist or is not owned by the caller.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The request conflicts with the current state (e.g. a concurrent secret rotation or slug allocation).",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+          }
+        }
+      },
+      "PlanLimit": {
+        "description": "The plan's record or source limit has been reached.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "One or more attributes failed validation. Each error's `source.pointer` names the offending attribute.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "A required upstream (Stripe) is unavailable or misconfigured.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "SourceType": {
+        "type": "string",
+        "enum": ["webhook", "email", "stripe", "github", "zapier", "shortcuts"]
+      },
+      "RecordStatus": {
+        "type": "string",
+        "enum": ["synced", "pending", "error"]
+      },
+      "EventKind": {
+        "type": "string",
+        "enum": ["ok", "dim", "warn", "err"]
+      },
+      "SubscriptionStatus": {
+        "type": "string",
+        "enum": ["active", "trialing", "past_due", "canceled", "incomplete"]
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "total": { "type": "integer" },
+          "size": { "type": "integer" },
+          "hasMore": { "type": "boolean" }
+        }
+      },
+      "PaginationLinks": {
+        "type": "object",
+        "properties": {
+          "next": { "type": ["string", "null"] },
+          "prev": { "type": ["string", "null"] }
+        }
+      },
+      "EventPaginationLinks": {
+        "type": "object",
+        "properties": { "next": { "type": ["string", "null"] } }
+      },
+      "Record": {
+        "type": "object",
+        "properties": {
+          "type": { "const": "records" },
+          "id": { "type": "string", "format": "uuid" },
+          "attributes": {
+            "type": "object",
+            "properties": {
+              "uuid": { "type": "string", "format": "uuid" },
+              "createdAt": { "type": "string", "format": "date-time" },
+              "userId": { "type": "string" },
+              "title": { "type": "string" },
+              "content": { "type": "string" },
+              "sourceId": { "type": ["string", "null"], "format": "uuid" },
+              "source": { "type": ["string", "null"] },
+              "status": { "$ref": "#/components/schemas/RecordStatus" },
+              "filePath": { "type": ["string", "null"] },
+              "tags": {
+                "type": ["array", "null"],
+                "items": { "type": "string" }
+              },
+              "frontmatter": { "type": ["object", "null"] },
+              "syncedAt": { "type": ["string", "null"], "format": "date-time" },
+              "errorMessage": { "type": ["string", "null"] }
+            }
+          },
+          "links": {
+            "type": "object",
+            "properties": { "self": { "type": "string" } }
+          }
+        }
+      },
+      "RecordExportRow": {
+        "type": "object",
+        "properties": {
+          "uuid": { "type": "string", "format": "uuid" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "title": { "type": "string" },
+          "content": { "type": "string" },
+          "source": { "type": ["string", "null"] },
+          "sourceId": { "type": ["string", "null"], "format": "uuid" },
+          "status": { "$ref": "#/components/schemas/RecordStatus" },
+          "filePath": { "type": ["string", "null"] },
+          "tags": { "type": ["array", "null"], "items": { "type": "string" } },
+          "frontmatter": { "type": ["object", "null"] },
+          "syncedAt": { "type": ["string", "null"], "format": "date-time" },
+          "errorMessage": { "type": ["string", "null"] }
+        }
+      },
+      "Source": {
+        "type": "object",
+        "properties": {
+          "type": { "const": "sources" },
+          "id": { "type": "string", "format": "uuid" },
+          "attributes": {
+            "type": "object",
+            "properties": {
+              "uuid": { "type": "string", "format": "uuid" },
+              "userId": { "type": "string" },
+              "createdAt": { "type": "string", "format": "date-time" },
+              "type": { "$ref": "#/components/schemas/SourceType" },
+              "name": { "type": "string" },
+              "provider": { "type": ["string", "null"] },
+              "providerSecret": {
+                "type": ["string", "null"],
+                "description": "Non-null only in the create/rotate response for generated providers (reveal-once)."
+              },
+              "endpointSlug": { "type": "string" },
+              "routeFolder": { "type": "string" },
+              "fieldMapping": { "type": ["object", "null"] },
+              "lastHitAt": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "recordCount": { "type": "integer" }
+            }
+          },
+          "links": {
+            "type": "object",
+            "properties": { "self": { "type": "string" } }
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "properties": {
+          "type": { "const": "events" },
+          "id": { "type": "string", "format": "uuid" },
+          "attributes": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "format": "uuid" },
+              "userId": { "type": "string" },
+              "ts": { "type": "string", "format": "date-time" },
+              "kind": { "$ref": "#/components/schemas/EventKind" },
+              "message": { "type": "string" },
+              "recordUuid": { "type": ["string", "null"], "format": "uuid" },
+              "sourceId": { "type": ["string", "null"], "format": "uuid" }
+            }
+          },
+          "links": {
+            "type": "object",
+            "properties": { "self": { "type": "string" } }
+          }
+        }
+      },
+      "EventExportRow": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "ts": { "type": "string", "format": "date-time" },
+          "kind": { "$ref": "#/components/schemas/EventKind" },
+          "message": { "type": "string" },
+          "recordUuid": { "type": ["string", "null"], "format": "uuid" },
+          "sourceId": { "type": ["string", "null"], "format": "uuid" }
+        }
+      },
+      "ApiToken": {
+        "type": "object",
+        "properties": {
+          "type": { "const": "api_tokens" },
+          "id": { "type": "string", "format": "uuid" },
+          "attributes": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "prefix": { "type": "string" },
+              "createdAt": { "type": "string", "format": "date-time" },
+              "lastUsedAt": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "expiresAt": { "type": ["string", "null"], "format": "date-time" }
+            }
+          }
+        }
+      },
+      "UserSettings": {
+        "type": "object",
+        "properties": {
+          "type": { "const": "user_settings" },
+          "id": { "type": "string" },
+          "attributes": {
+            "type": "object",
+            "properties": {
+              "userId": { "type": "string" },
+              "vaultDir": { "type": "string" },
+              "filenameTemplate": { "type": "string" },
+              "autoSync": { "type": "boolean" },
+              "autoDelete": { "type": "boolean" },
+              "frontmatter": { "type": "boolean" },
+              "conflictStrategy": {
+                "type": "string",
+                "enum": ["suffix", "overwrite", "skip"]
+              },
+              "theme": {
+                "type": "string",
+                "enum": ["light", "dark", "system"]
+              },
+              "accentColor": { "type": "string" },
+              "updatedAt": { "type": "string", "format": "date-time" }
+            }
+          },
+          "links": {
+            "type": "object",
+            "properties": { "self": { "type": "string" } }
+          }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "HTTP status code as a string, e.g. \"422\"."
+          },
+          "title": { "type": "string" },
+          "detail": { "type": "string" },
+          "source": {
+            "type": "object",
+            "properties": {
+              "pointer": {
+                "type": "string",
+                "description": "JSON pointer to the offending request body member."
+              },
+              "parameter": {
+                "type": "string",
+                "description": "Name of the offending query or path parameter."
+              }
+            }
+          }
+        }
+      },
+      "ErrorDocument": {
+        "type": "object",
+        "required": ["errors"],
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ApiError" }
+          }
+        }
+      }
+    }
+  }
+}
