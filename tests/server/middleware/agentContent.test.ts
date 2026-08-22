@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { H3Event } from "h3";
 
 const mockGetHeader = vi.fn();
+const mockSetResponseHeader = vi.fn();
 
 vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
 
@@ -16,7 +17,9 @@ function buildEvent(path: string, method = "GET"): TestEvent {
 
 beforeEach(() => {
   vi.stubGlobal("getHeader", mockGetHeader);
+  vi.stubGlobal("setResponseHeader", mockSetResponseHeader);
   mockGetHeader.mockReset();
+  mockSetResponseHeader.mockReset();
 });
 
 afterEach(() => {
@@ -40,12 +43,52 @@ describe("agentContent middleware", () => {
     expect(await result.text()).toContain("/does-not-exist");
   });
 
-  it("passes through (no response) for a known path", async () => {
+  it("serves the Markdown representation of a content route when negotiated", async () => {
     mockGetHeader.mockReturnValue("text/markdown");
 
-    const result = await handler(buildEvent("/docs"));
+    const result = (await handler(buildEvent("/docs"))) as unknown as Response;
+
+    expect(result).toBeInstanceOf(Response);
+    expect(result.status).toBe(200);
+    expect(result.headers.get("content-type")).toBe(
+      "text/markdown; charset=utf-8",
+    );
+    expect(result.headers.get("vary")).toBe("Accept, Accept-Encoding");
+    expect(await result.text()).toContain("documentation");
+  });
+
+  it("serves Markdown for a .md suffix regardless of Accept", async () => {
+    mockGetHeader.mockReturnValue("text/html");
+
+    const result = (await handler(
+      buildEvent("/pricing.md"),
+    )) as unknown as Response;
+
+    expect(result).toBeInstanceOf(Response);
+    expect(result.status).toBe(200);
+    expect(await result.text()).toContain("pricing");
+  });
+
+  it("sets Vary: Accept on the HTML variant of a content route", async () => {
+    mockGetHeader.mockReturnValue("text/html");
+
+    const result = await handler(buildEvent("/pricing"));
 
     expect(result).toBeUndefined();
+    expect(mockSetResponseHeader).toHaveBeenCalledWith(
+      expect.anything(),
+      "Vary",
+      "Accept, Accept-Encoding",
+    );
+  });
+
+  it("passes through for a known non-content path", async () => {
+    mockGetHeader.mockReturnValue("text/markdown");
+
+    const result = await handler(buildEvent("/inbox"));
+
+    expect(result).toBeUndefined();
+    expect(mockSetResponseHeader).not.toHaveBeenCalled();
   });
 
   it("passes through for an unknown path when Markdown is not negotiated", async () => {

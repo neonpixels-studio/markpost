@@ -50,6 +50,7 @@ const nuxtGlobals = {
   useRouter: "readonly",
   useRequestEvent: "readonly",
   setResponseStatus: "readonly",
+  setResponseHeader: "readonly",
   useNuxtApp: "readonly",
   useRuntimeConfig: "readonly",
   useHead: "readonly",
