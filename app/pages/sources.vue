@@ -156,6 +156,8 @@ import type { RotateState } from "~/types/rotateSecret";
 
 definePageMeta({ middleware: "auth" });
 
+useHead({ title: "Sources" });
+
 const LOAD_ERROR_TITLE = "Failed to load sources";
 const REMOVE_CONFIRM_TITLE = "Remove source?";
 const REMOVE_CONFIRM_MESSAGE =

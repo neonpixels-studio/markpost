@@ -121,6 +121,18 @@ stripe listen --forward-to http://localhost:3000/api/billing/webhook
 
 Authentication is handled by [Clerk](https://clerk.com) via the `@clerk/nuxt` module. Server middleware at `server/middleware/auth.ts` verifies the session on every request and makes the user available at `event.context.userId` in API route handlers.
 
+## Agent and machine-readable resources
+
+Markpost publishes a set of predictable, machine-readable resources so that AI agents and other automated clients can discover the product and its API without scraping the UI:
+
+- **`public/openapi.json`** — the full HTTP API surface as an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0.html) document, served at [`/openapi.json`](https://dh-markpost.netlify.app/openapi.json). Global `bearerAuth` security, with an `x-scopes` catalog of the named permission scopes.
+- **`server/utils/protectedResource.ts`** — builds [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata served at `/.well-known/oauth-protected-resource`, declaring `scopes_supported` for the API. Emitted by `server/middleware/agentContent.ts`.
+- **`public/llms.txt`** — an [llmstxt.org](https://llmstxt.org) index pointing agents at the docs, OpenAPI spec, protected-resource metadata, and Markdown representations.
+- **`public/sitemap.xml`** and **`public/robots.txt`** — public URL discovery.
+- **Markdown content negotiation** — `server/middleware/agentContent.ts` serves a `text/markdown` representation of the home, docs, and pricing pages when requested with `Accept: text/markdown` (or a `.md` suffix), and adds `Vary: Accept` on those routes. Unknown paths return a real HTTP 404 with a short Markdown body instead of a soft-200 app shell.
+
+The scopes declared in the OpenAPI `x-scopes` catalog and the protected-resource metadata are advertised for discovery but **not yet enforced** per-endpoint — tokens currently grant full access. See `server/utils/agentContent.ts` and `server/utils/protectedResource.ts` for the source of truth.
+
 ## Development
 
 Start the dev server at `http://localhost:3000`:

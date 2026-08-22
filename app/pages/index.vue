@@ -312,6 +312,8 @@
 </template>
 
 <script setup lang="ts">
+useHead({ title: "Inbound webhooks & email, synced to your vault" });
+
 const presets = ["stripe", "github", "zapier", "rss", "shortcuts"];
 
 const steps = [

@@ -205,6 +205,8 @@ import RecordsDoc from "~/components/docs/RecordsDoc.vue";
 import CliDoc from "~/components/docs/CliDoc.vue";
 import MarkdownDoc from "~/components/docs/MarkdownDoc.vue";
 
+useHead({ title: "Documentation" });
+
 const { isDark, initTheme, toggleTheme } = useTheme();
 onMounted(initTheme);
 

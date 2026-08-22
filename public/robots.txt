@@ -1,2 +1,4 @@
 User-Agent: *
 Disallow:
+
+Sitemap: https://dh-markpost.netlify.app/sitemap.xml

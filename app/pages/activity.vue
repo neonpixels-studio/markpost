@@ -126,6 +126,8 @@ import { useExportNotice } from "~/composables/useExportNotice";
 
 definePageMeta({ middleware: "auth" });
 
+useHead({ title: "Activity" });
+
 const { log, isLoading, loadError, loadEvents } = useEvents();
 
 const {

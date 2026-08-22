@@ -59,6 +59,8 @@ import SetBilling from "~/components/settings/SetBilling.vue";
 
 definePageMeta({ middleware: "auth" });
 
+useHead({ title: "Settings" });
+
 const activeTab = ref("account");
 
 const tabs = [

@@ -286,6 +286,8 @@ import { useExportNotice } from "~/composables/useExportNotice";
 
 definePageMeta({ middleware: "auth" });
 
+useHead({ title: "Inbox" });
+
 const INBOX_PATH = "/inbox";
 const RECORD_QUERY_KEY = "record";
 

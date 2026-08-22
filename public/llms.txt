@@ -1,0 +1,26 @@
+# Markpost
+
+> Markpost catches inbound webhooks and email, converts them to clean Markdown with YAML frontmatter (title, tags, source, timestamps), and its CLI syncs them straight into your local Obsidian vault.
+
+Base URL: https://dh-markpost.netlify.app. The HTTP API lives under `/api` and authenticates with a bearer token (`Authorization: Bearer mp_live_...`), minted from Settings or `POST /api/tokens`. Public ingest endpoints (`/api/hooks/{slug}`) authenticate with a per-source signature instead.
+
+Content pages also serve a Markdown representation via content negotiation: request them with `Accept: text/markdown` (or append `.md`).
+
+## Docs
+
+- [Documentation](https://dh-markpost.netlify.app/docs): quickstart, core concepts, authentication, webhooks, email-in, records API, CLI reference, and Markdown/frontmatter.
+- [Pricing](https://dh-markpost.netlify.app/pricing): Hobby ($0) and Pro plans.
+- [Home](https://dh-markpost.netlify.app/): product overview.
+
+## API & machine-readable resources
+
+- [OpenAPI specification](https://dh-markpost.netlify.app/openapi.json): the full HTTP API surface (OpenAPI 3.1).
+- [Protected-resource metadata](https://dh-markpost.netlify.app/.well-known/oauth-protected-resource): RFC 9728 metadata declaring the API's supported OAuth scopes.
+- [Sitemap](https://dh-markpost.netlify.app/sitemap.xml): all public URLs.
+
+## Markdown representations
+
+- [Documentation (Markdown)](https://dh-markpost.netlify.app/docs.md)
+- [Pricing (Markdown)](https://dh-markpost.netlify.app/pricing.md)
+
+The home page's Markdown is served from the root URL when requested with `Accept: text/markdown`.

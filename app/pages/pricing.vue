@@ -398,6 +398,8 @@
 </template>
 
 <script setup lang="ts">
+useHead({ title: "Pricing" });
+
 const cycle = ref<"monthly" | "yearly">("yearly");
 
 const proPricing = computed(() => {

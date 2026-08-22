@@ -40,6 +40,7 @@ Object.assign(globalThis, {
   useId,
   useSyncSettings,
   useApiTokens,
+  useHead: () => {},
 });
 
 // useTheme keeps a module-level `ref()` singleton, so it must be imported

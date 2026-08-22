@@ -63,6 +63,8 @@ definePageMeta({ name: "not-found" });
 
 const route = useRoute();
 
+useHead({ title: "Page not found" });
+
 // Return a real HTTP 404 for unknown paths instead of a soft-200 app shell, so
 // agents (and search engines) don't conclude every path exists. No-op on the
 // client; only the SSR response carries a status.
