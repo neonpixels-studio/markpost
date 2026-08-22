@@ -6,6 +6,12 @@ import { requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import { recordSerializer, type RecordApiResponse } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
+import { isFilePathUniqueViolation } from "../../utils/filePathCollision";
+import {
+  invalidUuidError,
+  recordNotFoundError,
+  filePathConflictError,
+} from "../../utils/recordErrors";
 
 type PatchRecordAttributes = {
   status?: string;
@@ -26,33 +32,6 @@ type RecordUpdatePayload = {
   filePath?: string | null;
   errorMessage?: string | null;
 };
-
-function invalidUuidError(): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "400",
-        title: "Invalid Parameter",
-        detail: "The uuid parameter is missing or malformed.",
-        source: { parameter: "uuid" },
-      },
-    ],
-    400,
-  );
-}
-
-function notFoundError(): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "404",
-        title: "Not Found",
-        detail: "No record was found for the given uuid.",
-      },
-    ],
-    404,
-  );
-}
 
 // Shared shape for every 422 "Invalid Attribute" case below; only the
 // detail message and the offending pointer differ per field.
@@ -229,13 +208,21 @@ async function updateUserRecord(
 ) {
   const db = getDb();
 
-  const [updated] = await db
-    .update(records)
-    .set(payload)
-    .where(and(eq(records.userId, userId), eq(records.uuid, recordUuid)))
-    .returning();
+  try {
+    const [updated] = await db
+      .update(records)
+      .set(payload)
+      .where(and(eq(records.userId, userId), eq(records.uuid, recordUuid)))
+      .returning();
 
-  return updated ?? null;
+    return updated ?? null;
+  } catch (error) {
+    if (isFilePathUniqueViolation(error)) {
+      throw filePathConflictError();
+    }
+
+    throw error;
+  }
 }
 
 export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
@@ -265,7 +252,7 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
     const updated = await updateUserRecord(userId, recordUuid, payload);
 
     if (!updated) {
-      throw notFoundError();
+      throw recordNotFoundError();
     }
 
     return { data: recordSerializer(updated) };

@@ -7,7 +7,12 @@ import {
   spyConsoleError,
 } from "../../helpers";
 import { ApiError } from "../../../../server/utils/errors";
+import {
+  CONTENT_LENGTH_HEADER,
+  MAX_WEBHOOK_BODY_BYTES,
+} from "../../../../server/utils/webhookBodyLimit";
 import { hashSharedSecret } from "../../../../server/utils/signatureVerifier";
+import { records } from "../../../../server/db/schema";
 import { SHARED_SECRET_HEADER } from "#shared/utils/webhookSecrets";
 
 const selectMock = vi.fn();
@@ -24,6 +29,13 @@ vi.mock("../../../../server/db", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
+  and: (...conditions: unknown[]) => ({ op: "and", conditions }),
+  isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
+  ilike: (column: unknown, pattern: unknown) => ({
+    op: "ilike",
+    column,
+    pattern,
+  }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     strings,
     values,
@@ -111,18 +123,29 @@ function makeSelectChain(resolvedRows: unknown[]) {
   return { from, where, limit };
 }
 
+// The filePath collision lookup resolves at `.where()` (no `.limit()`), unlike
+// the source/settings selects that resolve at `.limit()`.
+function makeWhereResolvingChain(resolvedRows: unknown[]) {
+  const where = vi.fn(() => Promise.resolve(resolvedRows));
+  const from = vi.fn(() => ({ where }));
+  return { from, where };
+}
+
 function stubSourceAndSettings(
   sourceRows: unknown[],
   filenameTemplate = DEFAULT_FILENAME_TEMPLATE,
+  collisionRows: unknown[] = [],
 ) {
   const sourceChain = makeSelectChain(sourceRows);
   const settingsChain = makeSelectChain([{ filenameTemplate }]);
+  const collisionChain = makeWhereResolvingChain(collisionRows);
 
   selectMock
     .mockReturnValueOnce({ from: sourceChain.from })
-    .mockReturnValueOnce({ from: settingsChain.from });
+    .mockReturnValueOnce({ from: settingsChain.from })
+    .mockReturnValueOnce({ from: collisionChain.from });
 
-  return { sourceChain, settingsChain };
+  return { sourceChain, settingsChain, collisionChain };
 }
 
 function stubSourceOnly(sourceRows: unknown[]) {
@@ -133,9 +156,10 @@ function stubSourceOnly(sourceRows: unknown[]) {
 
 function stubInsertRecord(row: unknown) {
   const returning = vi.fn(() => Promise.resolve([row]));
-  const values = vi.fn(() => ({ returning }));
+  const onConflictDoNothing = vi.fn(() => ({ returning }));
+  const values = vi.fn(() => ({ onConflictDoNothing }));
   insertMock.mockReturnValue({ values });
-  return { values, returning };
+  return { values, onConflictDoNothing, returning };
 }
 
 function stubUpdateStats() {
@@ -283,33 +307,218 @@ describe("POST /api/hooks/[slug]", () => {
       expect(insertedValues.status).toBe("pending");
     });
 
-    it("handles a non-JSON body without crashing", async () => {
-      stubSourceAndSettings([sampleSource]);
-      stubInsertRecord(sampleRecord);
+    it("appends a suffix when the generated filePath already exists", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource], DEFAULT_FILENAME_TEMPLATE, [
+        { filePath: "2026-01-01-hello.md" },
+      ]);
+      const { values } = stubInsertRecord(sampleRecord);
       stubUpdateStats();
-      mockReadRawBody.mockResolvedValue("not-json");
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+
+      expect(insertedValues.filePath).toBe("2026-01-01-hello-2.md");
+    });
+
+    it("retries with a suffixed path instead of 500ing when a concurrent insert claimed the path (23505)", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      // First lookup sees nothing taken, so the clean path is inserted; the
+      // insert loses the race to a concurrent writer (23505). The retry's
+      // collision lookup now sees the winning row and suffixes.
+      stubSourceAndSettings([sampleSource]);
+      const retryCollisionWhere = vi.fn(() =>
+        Promise.resolve([{ filePath: "2026-01-01-hello.md" }]),
+      );
+      const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
+      selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = vi
+        .fn()
+        .mockRejectedValueOnce(uniqueViolation)
+        .mockResolvedValueOnce([sampleRecord]);
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
 
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(values).toHaveBeenCalledTimes(2);
+      const secondInsert = (
+        values.mock.calls[1] as [Record<string, unknown>]
+      )[0];
+      expect(secondInsert.filePath).toBe("2026-01-01-hello-2.md");
     });
 
-    it("handles a valid-JSON non-object body (null) without crashing", async () => {
+    it("resolves the retry off the original stem (…-3, not …-2-2) when the path was already suffixed", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      // Request-time collision: the pre-insert lookup sees "2026-01-01-hello.md",
+      // so the first insert uses the already-suffixed "…-hello-2.md". It then
+      // loses the race (another writer took "…-hello-2.md" too). The retry must
+      // re-resolve from the ORIGINAL "…-hello.md", whose prefix sees both taken
+      // rows, landing on "…-hello-3.md" — never nesting to "…-hello-2-2.md".
+      stubSourceAndSettings([sampleSource], DEFAULT_FILENAME_TEMPLATE, [
+        { filePath: "2026-01-01-hello.md" },
+      ]);
+      const retryCollisionWhere = vi.fn(() =>
+        Promise.resolve([
+          { filePath: "2026-01-01-hello.md" },
+          { filePath: "2026-01-01-hello-2.md" },
+        ]),
+      );
+      const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
+      selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = vi
+        .fn()
+        .mockRejectedValueOnce(uniqueViolation)
+        .mockResolvedValueOnce([sampleRecord]);
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      const firstInsert = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+      const secondInsert = (
+        values.mock.calls[1] as [Record<string, unknown>]
+      )[0];
+      expect(firstInsert.filePath).toBe("2026-01-01-hello-2.md");
+      expect(secondInsert.filePath).toBe("2026-01-01-hello-3.md");
+    });
+
+    it("keeps the generated filePath when nothing collides", async () => {
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource]);
+      const { values } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+
+      expect(insertedValues.filePath).toBe("2026-01-01-hello.md");
+    });
+  });
+
+  describe("invalid body — non-object payload", () => {
+    // A non-JSON object body (form-encoded, plain text, JSON scalar/array/null,
+    // or empty) must fail loud with a 400 whose message points the operator at
+    // the fix, and must NOT create a record or bump source stats. Asserting the
+    // message keeps the test honest: blanking NON_OBJECT_BODY_DETAIL fails it.
+    // sampleSource has provider `null`, so the GitHub `payload=` unwrap never
+    // applies — a bare form body is rejected like any other non-object.
+    async function expectNonObjectBodyRejected(rawBody: string): Promise<void> {
+      stubSourceOnly([sampleSource]);
+      const { values } = stubInsertRecord(sampleRecord);
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 400,
+      });
+
+      expect(values).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+      // Ordering guard: the body is validated after the throttle (so junk
+      // deliveries still count against the window) but before the expensive
+      // plan-limit COUNT (which a doomed delivery must never pay for).
+      expect(mockRecordWebhookHit).toHaveBeenCalledWith(SOURCE_UUID);
+      expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
+      expect(mockSetResponseStatus).not.toHaveBeenCalledWith(
+        expect.anything(),
+        202,
+      );
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 400,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "400",
+              title: "Bad Request",
+              detail: expect.stringContaining("application/json"),
+            }),
+          ],
+        },
+      });
+    }
+
+    it("rejects a form-encoded body from a non-GitHub source with 400", async () => {
+      await expectNonObjectBodyRejected("title=hello&body=world");
+    });
+
+    it("rejects a non-GitHub source's `payload=` form body with 400", async () => {
+      const githubJson = JSON.stringify({ title: "Push" });
+      await expectNonObjectBodyRejected(
+        `payload=${encodeURIComponent(githubJson)}`,
+      );
+    });
+
+    it("rejects a plain-text body with 400", async () => {
+      await expectNonObjectBodyRejected("not-json");
+    });
+
+    it("rejects a valid-JSON non-object body (null) with 400", async () => {
+      await expectNonObjectBodyRejected("null");
+    });
+
+    it("rejects a valid-JSON array body with 400", async () => {
+      await expectNonObjectBodyRejected(JSON.stringify([1, 2, 3]));
+    });
+
+    it("rejects an empty body with 400", async () => {
+      await expectNonObjectBodyRejected("");
+    });
+
+    // The contract is the object shape, not its contents: an empty JSON object is
+    // a valid object and is ingested (field mapping / source name may still fill
+    // the title). Pinned so this boundary is intentional, not an accident.
+    it("accepts an empty JSON object and returns 202", async () => {
       stubSourceAndSettings([sampleSource]);
       stubInsertRecord(sampleRecord);
       stubUpdateStats();
-      mockReadRawBody.mockResolvedValue("null");
-
-      const response = await handler(buildEvent());
-
-      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-    });
-
-    it("handles a valid-JSON array body without crashing", async () => {
-      stubSourceAndSettings([sampleSource]);
-      stubInsertRecord(sampleRecord);
-      stubUpdateStats();
-      mockReadRawBody.mockResolvedValue(JSON.stringify([1, 2, 3]));
+      mockReadRawBody.mockResolvedValue("{}");
 
       const response = await handler(buildEvent());
 
@@ -353,6 +562,23 @@ describe("POST /api/hooks/[slug]", () => {
       mockGetHeader.mockReturnValue(
         buildValidStripeHeader(rawBody, "wrong_secret"),
       );
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 401,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 401 }),
+      );
+    });
+
+    // Signature verification must run before body validation: an unsigned caller
+    // sending garbage should see 401 (auth failure), never 400 (which would leak
+    // that the slug exists and reveal how the body is parsed). Guards the ordering
+    // against a future refactor hoisting the parse above checkSignature.
+    it("returns 401 (not 400) for an unsigned request with a non-JSON body", async () => {
+      stubSourceOnly([stripeSource]);
+      mockReadRawBody.mockResolvedValue("not-json");
+      mockGetHeader.mockReturnValue(undefined);
 
       await expect(handler(buildEvent())).rejects.toMatchObject({
         statusCode: 401,
@@ -477,6 +703,57 @@ describe("POST /api/hooks/[slug]", () => {
         statusCode: 401,
       });
     });
+
+    // GitHub's default content type is form-encoded: the JSON is URL-encoded under
+    // a `payload` field (spaces as `+`), and the HMAC is over that raw form body.
+    // Signature verification and payload unwrap must compose end to end.
+    it("returns 202 for a signed form-encoded GitHub delivery", async () => {
+      const formBody = new URLSearchParams({
+        payload: JSON.stringify({ title: "Push", content: "to main" }),
+      }).toString();
+
+      stubSourceAndSettings([githubSource]);
+      const { values } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(formBody);
+      stubGithubHeader(formBody, GITHUB_SECRET);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+      expect(insertedValues.title).toBe("Push");
+    });
+
+    it("returns 400 for a signed GitHub form body whose payload is not a JSON object", async () => {
+      const formBody = "payload=null";
+
+      stubSourceOnly([githubSource]);
+      stubInsertRecord(sampleRecord);
+      mockReadRawBody.mockResolvedValue(formBody);
+      stubGithubHeader(formBody, GITHUB_SECRET);
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 400,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 for a signed GitHub body with an empty payload field", async () => {
+      const formBody = "payload=";
+
+      stubSourceOnly([githubSource]);
+      stubInsertRecord(sampleRecord);
+      mockReadRawBody.mockResolvedValue(formBody);
+      stubGithubHeader(formBody, GITHUB_SECRET);
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 400,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("zapier / shortcuts shared-secret verification", () => {
@@ -546,6 +823,29 @@ describe("POST /api/hooks/[slug]", () => {
         expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
       },
     );
+
+    // The GitHub `payload=` form unwrap is gated to GitHub sources: a verified
+    // non-GitHub provider (here Zapier) must still reject a form-encoded body
+    // rather than unwrapping a `payload` field, so this shape is not a smuggling
+    // path around the JSON-object contract for other providers.
+    it("returns 400 for a signed Zapier delivery with a form-encoded `payload` body", async () => {
+      const source = {
+        ...sampleSource,
+        provider: "zapier",
+        providerSecret: STORED_SECRET_HASH,
+      };
+      const formBody = `payload=${encodeURIComponent(JSON.stringify({ title: "T" }))}`;
+
+      stubSourceOnly([source]);
+      stubInsertRecord(sampleRecord);
+      mockReadRawBody.mockResolvedValue(formBody);
+      stubSharedSecretHeader(SHARED_SECRET);
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 400,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("fieldMapping", () => {
@@ -641,7 +941,8 @@ describe("POST /api/hooks/[slug]", () => {
       stubSourceAndSettings([sampleSource]);
 
       const returning = vi.fn(() => Promise.resolve([]));
-      const values = vi.fn(() => ({ returning }));
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
       insertMock.mockReturnValue({ values });
 
       stubUpdateStats();
@@ -857,6 +1158,419 @@ describe("POST /api/hooks/[slug]", () => {
         statusCode: 429,
       });
       expect(mockRecordWebhookHit).toHaveBeenCalledWith(SOURCE_UUID);
+    });
+  });
+
+  describe("payload size limit", () => {
+    function stubContentLengthHeader(value: string): void {
+      mockGetHeader.mockImplementation((_event: unknown, name: string) =>
+        name === CONTENT_LENGTH_HEADER ? value : undefined,
+      );
+    }
+
+    it("returns 413 by Content-Length before the source lookup or reading the body", async () => {
+      stubContentLengthHeader(String(MAX_WEBHOOK_BODY_BYTES + 1));
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 413,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 413,
+        data: {
+          errors: [
+            {
+              status: "413",
+              title: "Payload Too Large",
+              detail: expect.stringContaining(String(MAX_WEBHOOK_BODY_BYTES)),
+            },
+          ],
+        },
+      });
+      // Rejected on the declared length before doing any work: no source lookup,
+      // no body buffering, no throttle budget spent, no record inserted.
+      expect(selectMock).not.toHaveBeenCalled();
+      expect(mockReadRawBody).not.toHaveBeenCalled();
+      expect(mockRecordWebhookHit).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("returns 413 on the actual byte count when Content-Length is absent", async () => {
+      stubSourceOnly([sampleSource]);
+      mockGetHeader.mockReturnValue(undefined);
+      mockReadRawBody.mockResolvedValue("a".repeat(MAX_WEBHOOK_BODY_BYTES + 1));
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 413,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(mockRecordWebhookHit).not.toHaveBeenCalled();
+    });
+
+    it("returns 413 on the real byte count when Content-Length understates the body", async () => {
+      stubSourceOnly([sampleSource]);
+      stubContentLengthHeader("10");
+      mockReadRawBody.mockResolvedValue("a".repeat(MAX_WEBHOOK_BODY_BYTES + 1));
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 413,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("ingests a body at exactly the byte maximum, passing both checks", async () => {
+      const filler = "x".repeat(
+        MAX_WEBHOOK_BODY_BYTES - JSON.stringify({ content: "" }).length,
+      );
+      const rawBody = JSON.stringify({ content: filler });
+      expect(Buffer.byteLength(rawBody, "utf8")).toBe(MAX_WEBHOOK_BODY_BYTES);
+
+      stubSourceAndSettings([sampleSource]);
+      stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      // An honest Content-Length at the exact cap must pass (the guard rejects
+      // strictly greater), then the byte check at the same boundary must pass too.
+      stubContentLengthHeader(String(MAX_WEBHOOK_BODY_BYTES));
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+    });
+  });
+
+  // Stripe re-sends the same event `id`, and GitHub the same X-GitHub-Delivery,
+  // on any non-2xx or timeout. Ingest must be idempotent so those retries return
+  // the original record instead of inserting a duplicate.
+  describe("provider retry idempotency", () => {
+    const GITHUB_SECRET = "github_test_secret";
+    const stripeSource = {
+      ...sampleSource,
+      provider: "stripe",
+      providerSecret: STRIPE_SECRET,
+    };
+    const githubSource = {
+      ...sampleSource,
+      provider: "github",
+      providerSecret: GITHUB_SECRET,
+    };
+
+    function stubStripeHeader(rawBody: string): void {
+      mockGetHeader.mockImplementation((_event: unknown, name: string) =>
+        name === "stripe-signature"
+          ? buildValidStripeHeader(rawBody, STRIPE_SECRET)
+          : undefined,
+      );
+    }
+
+    function stubGithubHeaders(rawBody: string, deliveryId: string): void {
+      mockGetHeader.mockImplementation((_event: unknown, name: string) => {
+        if (name === "x-hub-signature-256") {
+          return buildValidGithubHeader(rawBody, GITHUB_SECRET);
+        }
+
+        if (name === "x-github-delivery") {
+          return deliveryId;
+        }
+
+        return undefined;
+      });
+    }
+
+    function stubSourceThenDelivery(
+      sourceRows: unknown[],
+      deliveryRows: unknown[],
+    ) {
+      const sourceChain = makeSelectChain(sourceRows);
+      const deliveryChain = makeSelectChain(deliveryRows);
+      selectMock
+        .mockReturnValueOnce({ from: sourceChain.from })
+        .mockReturnValueOnce({ from: deliveryChain.from });
+      return { sourceChain, deliveryChain };
+    }
+
+    function stubSourceDeliveryAndSettings(
+      sourceRows: unknown[],
+      deliveryRows: unknown[],
+    ) {
+      const sourceChain = makeSelectChain(sourceRows);
+      const deliveryChain = makeSelectChain(deliveryRows);
+      const settingsChain = makeSelectChain([
+        { filenameTemplate: DEFAULT_FILENAME_TEMPLATE },
+      ]);
+      const collisionChain = makeWhereResolvingChain([]);
+      selectMock
+        .mockReturnValueOnce({ from: sourceChain.from })
+        .mockReturnValueOnce({ from: deliveryChain.from })
+        .mockReturnValueOnce({ from: settingsChain.from })
+        .mockReturnValueOnce({ from: collisionChain.from });
+    }
+
+    it("returns the existing record without inserting when a Stripe event id was already ingested", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_123",
+        type: "charge.succeeded",
+      });
+      const { deliveryChain } = stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      // A retry must not insert again, spend plan-limit budget, or re-emit
+      // side effects for a record that already landed.
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
+      expect(mockWriteEvent).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+      // Cross-tenant guard: the lookup must be scoped by BOTH this source's uuid
+      // and the delivery id, never delivery id alone — otherwise a colliding id
+      // could return another source's record. (The eq() mock returns
+      // {column, value}; and() wraps them under conditions.)
+      const whereArg = deliveryChain.where.mock.calls[0]?.[0] as {
+        conditions: Array<{ value: unknown }>;
+      };
+      expect(whereArg.conditions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ value: SOURCE_UUID }),
+          expect.objectContaining({ value: "evt_123" }),
+        ]),
+      );
+    });
+
+    it("stores the Stripe event id on the inserted record so a later retry is detectable", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_456",
+        type: "charge.succeeded",
+      });
+      stubSourceDeliveryAndSettings([stripeSource], []);
+      const { values, onConflictDoNothing } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+      expect(insertedValues.deliveryId).toBe("evt_456");
+      // The conflict arbiter must be the (source_id, delivery_id) unique index,
+      // or a re-delivery race would insert a duplicate instead of no-op'ing.
+      const conflictArg = onConflictDoNothing.mock.calls[0]?.[0] as {
+        target: unknown[];
+      };
+      expect(conflictArg.target[0]).toBe(records.sourceId);
+      expect(conflictArg.target[1]).toBe(records.deliveryId);
+    });
+
+    it("returns the existing record without inserting when an X-GitHub-Delivery id was already ingested", async () => {
+      const rawBody = JSON.stringify({ title: "Push", content: "to main" });
+      stubSourceThenDelivery(
+        [githubSource],
+        [{ uuid: sampleRecord.uuid, title: "Push" }],
+      );
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubGithubHeaders(rawBody, "d34db33f-0000-0000-0000-000000000000");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
+    });
+
+    it("stores the X-GitHub-Delivery id on the inserted record", async () => {
+      const rawBody = JSON.stringify({ title: "Push", content: "to main" });
+      const deliveryId = "gh-delivery-0001";
+      stubSourceDeliveryAndSettings([githubSource], []);
+      const { values } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubGithubHeaders(rawBody, deliveryId);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+      expect(insertedValues.deliveryId).toBe(deliveryId);
+    });
+
+    // A GitHub source whose x-github-delivery header was stripped (proxy/CDN, or
+    // a rewriting gateway) has no delivery id, so it must not attempt a dedup
+    // lookup — it inserts with deliveryId null and runs side effects normally.
+    // This exercises a different select ordering than the slug-only case: a
+    // signed provider source that still ends up with no delivery id.
+    it("skips the dedup lookup for a GitHub source with no delivery header", async () => {
+      const rawBody = JSON.stringify({ title: "Push", content: "to main" });
+      stubSourceAndSettings([githubSource]);
+      const { values } = stubInsertRecord(sampleRecord);
+      const { set: updateSet } = stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      // Sign the body but provide NO x-github-delivery header.
+      mockGetHeader.mockImplementation((_event: unknown, name: string) =>
+        name === "x-hub-signature-256"
+          ? buildValidGithubHeader(rawBody, GITHUB_SECRET)
+          : undefined,
+      );
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+      expect(insertedValues.deliveryId).toBeNull();
+      // Side effects still run for a genuinely new (non-deduped) record.
+      expect(updateSet).toHaveBeenCalled();
+      expect(mockWriteEvent).toHaveBeenCalled();
+    });
+
+    // A slug-only source has no provider delivery id, so ingest stays as it was:
+    // no dedup lookup, and an incidental `id` field in the body is NOT mistaken
+    // for a Stripe event id.
+    it("does not dedupe a slug-only source and inserts a null delivery id", async () => {
+      stubSourceAndSettings([sampleSource]);
+      const { values } = stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(
+        JSON.stringify({ id: "evt_should_be_ignored", title: "T" }),
+      );
+
+      await handler(buildEvent());
+
+      const insertedValues = (
+        values.mock.calls[0] as [Record<string, unknown>]
+      )[0];
+      expect(insertedValues.deliveryId).toBeNull();
+    });
+
+    // Concurrency backstop: two identical deliveries both miss the pre-check,
+    // but the unique index lets only one insert land. The loser gets no row from
+    // onConflictDoNothing and must resolve to the winner's record as a dedup hit
+    // — a 202 with the canonical uuid, and no duplicate side effects.
+    it("treats an insert that loses the unique-index race as a dedup hit", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_race",
+        type: "charge.succeeded",
+      });
+      const sourceChain = makeSelectChain([stripeSource]);
+      const preCheckChain = makeSelectChain([]);
+      const settingsChain = makeSelectChain([
+        { filenameTemplate: DEFAULT_FILENAME_TEMPLATE },
+      ]);
+      const collisionChain = makeWhereResolvingChain([]);
+      const raceLookupChain = makeSelectChain([
+        { uuid: sampleRecord.uuid, title: "Charge" },
+      ]);
+      selectMock
+        .mockReturnValueOnce({ from: sourceChain.from })
+        .mockReturnValueOnce({ from: preCheckChain.from })
+        .mockReturnValueOnce({ from: settingsChain.from })
+        .mockReturnValueOnce({ from: collisionChain.from })
+        .mockReturnValueOnce({ from: raceLookupChain.from });
+
+      const returning = vi.fn(() => Promise.resolve([]));
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      const { set: updateSet } = stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(updateSet).not.toHaveBeenCalled();
+      expect(mockWriteEvent).not.toHaveBeenCalled();
+    });
+
+    // Fail loud, don't fabricate: if the insert returns no row AND the follow-up
+    // delivery lookup also finds nothing (e.g. the winning row was deleted in the
+    // gap), there is no record to return — surface a 500 rather than a 202 with
+    // an undefined uuid.
+    it("throws 500 when a conflicting insert has no recoverable record", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_gone",
+        type: "charge.succeeded",
+      });
+      const sourceChain = makeSelectChain([stripeSource]);
+      const preCheckChain = makeSelectChain([]);
+      const settingsChain = makeSelectChain([
+        { filenameTemplate: DEFAULT_FILENAME_TEMPLATE },
+      ]);
+      const collisionChain = makeWhereResolvingChain([]);
+      const raceLookupChain = makeSelectChain([]);
+      selectMock
+        .mockReturnValueOnce({ from: sourceChain.from })
+        .mockReturnValueOnce({ from: preCheckChain.from })
+        .mockReturnValueOnce({ from: settingsChain.from })
+        .mockReturnValueOnce({ from: collisionChain.from })
+        .mockReturnValueOnce({ from: raceLookupChain.from });
+
+      const returning = vi.fn(() => Promise.resolve([]));
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 500,
+      });
+    });
+
+    // Composition backstop: a delivery-id source can also lose the file_path
+    // unique-index race. insertWebhookRecord's onConflictDoNothing only arbitrates
+    // (source_id, delivery_id), so a file_path 23505 still throws and is retried
+    // by insertRecordWithUniqueFilePath. The retried insert must re-suffix the
+    // path AND still carry the delivery id — dropping it would leave a Stripe
+    // record with delivery_id NULL, permanently un-dedupable.
+    it("retries a file_path collision while preserving the delivery id", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_combo",
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+      stubSourceDeliveryAndSettings([stripeSource], []);
+      const retryCollisionWhere = vi.fn(() =>
+        Promise.resolve([{ filePath: "2026-01-01-hello.md" }]),
+      );
+      const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
+      selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = vi
+        .fn()
+        .mockRejectedValueOnce(uniqueViolation)
+        .mockResolvedValueOnce([sampleRecord]);
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(values).toHaveBeenCalledTimes(2);
+      const secondInsert = (
+        values.mock.calls[1] as [Record<string, unknown>]
+      )[0];
+      expect(secondInsert.filePath).toBe("2026-01-01-hello-2.md");
+      expect(secondInsert.deliveryId).toBe("evt_combo");
     });
   });
 });

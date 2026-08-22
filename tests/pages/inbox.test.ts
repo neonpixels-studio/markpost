@@ -6,35 +6,46 @@ vi.stubGlobal("definePageMeta", vi.fn());
 
 const recordsRef = ref<object[]>([]);
 const isLoadingRef = ref(false);
+const isLoadingMoreRef = ref(false);
 const loadErrorRef = ref<string | null>(null);
+const hasMoreRef = ref(false);
 const filterRef = ref("all");
 
 const mockLoadRecords = vi.fn();
+const mockLoadMore = vi.fn();
 const mockFetchRecordStats = vi.fn();
 const mockTriggerRecordExport = vi.fn();
 
-vi.mock("../../app/composables/useRecords", () => ({
-  useRecords: () => ({
-    records: recordsRef,
-    isLoading: isLoadingRef,
-    loadError: loadErrorRef,
-    filter: filterRef,
-    loadRecords: mockLoadRecords,
-  }),
-  get fetchRecordStats() {
-    return mockFetchRecordStats;
-  },
-  formatRelativeTime: (isoString: string) => {
-    void isoString;
-    return "2m ago";
-  },
-  formatSourceLabel: (source: string | null) => `label:${source ?? "unknown"}`,
-  sourceTypeIcon: () => "zap",
-  get triggerRecordExportDownload() {
-    return mockTriggerRecordExport;
-  },
-  STATUS_TONE_MAP: { synced: "ok", pending: "warn", error: "err" },
-}));
+vi.mock("../../app/composables/useRecords", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../app/composables/useRecords")>();
+  return {
+    ...actual,
+    useRecords: () => ({
+      records: recordsRef,
+      isLoading: isLoadingRef,
+      isLoadingMore: isLoadingMoreRef,
+      loadError: loadErrorRef,
+      hasMore: hasMoreRef,
+      filter: filterRef,
+      loadRecords: mockLoadRecords,
+      loadMore: mockLoadMore,
+    }),
+    get fetchRecordStats() {
+      return mockFetchRecordStats;
+    },
+    formatRelativeTime: (isoString: string) => {
+      void isoString;
+      return "2m ago";
+    },
+    formatSourceLabel: (source: string | null) =>
+      `label:${source ?? "unknown"}`,
+    sourceTypeIcon: () => "zap",
+    get triggerRecordExportDownload() {
+      return mockTriggerRecordExport;
+    },
+  };
+});
 
 const detailRecordRef = ref<object | null>(null);
 const detailLoadingRef = ref(false);
@@ -64,6 +75,7 @@ const mockNavigateTo = vi.fn();
 vi.stubGlobal("navigateTo", mockNavigateTo);
 
 import InboxPage from "../../app/pages/inbox.vue";
+import { SOURCE_TYPES } from "../../shared/utils/sourceTypes";
 
 const globalConfig = {
   global: {
@@ -80,13 +92,20 @@ const globalConfig = {
         props: ["variant", "size", "icon", "disabled"],
         emits: ["click"],
       },
+      AppLoadMore: {
+        template:
+          '<button class="app-btn app-load-more" :disabled="isLoading" @click="$emit(\'load\')">{{ isLoading ? "loading…" : "load more" }}</button>',
+        props: ["isLoading"],
+        emits: ["load"],
+      },
       AppIcon: { template: "<span />" },
       AppBadge: {
         template: '<span class="app-badge"><slot /></span>',
         props: ["tone", "dot"],
       },
       InputSegmented: {
-        template: "<div />",
+        template:
+          '<div class="seg" role="radiogroup"><button v-for="option in options" :key="option.value" class="seg-option" :class="{ on: modelValue === option.value }" role="radio" :aria-checked="modelValue === option.value" @click="$emit(\'update:modelValue\', option.value)">{{ option.label }}</button></div>',
         props: ["modelValue", "options"],
         emits: ["update:modelValue"],
       },
@@ -130,10 +149,14 @@ describe("inbox page", () => {
   beforeEach(() => {
     recordsRef.value = [];
     isLoadingRef.value = false;
+    isLoadingMoreRef.value = false;
     loadErrorRef.value = null;
+    hasMoreRef.value = false;
     filterRef.value = "all";
     mockLoadRecords.mockReset();
     mockLoadRecords.mockResolvedValue(undefined);
+    mockLoadMore.mockReset();
+    mockLoadMore.mockResolvedValue(undefined);
     mockFetchRecordStats.mockReset();
     mockFetchRecordStats.mockResolvedValue(defaultStats);
     mockTriggerRecordExport.mockReset();
@@ -146,6 +169,33 @@ describe("inbox page", () => {
     mockCloseDetail.mockReset();
     mockNavigateTo.mockReset();
   });
+
+  it("renders a filter button for every source type plus all/errors", async () => {
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const labels = wrapper
+      .findAll(".seg-option")
+      .map((button) => button.text());
+    for (const sourceType of SOURCE_TYPES) {
+      expect(labels).toContain(sourceType);
+    }
+    expect(labels).toContain("all");
+    expect(labels).toContain("errors");
+    expect(labels).toHaveLength(SOURCE_TYPES.length + 2);
+  });
+
+  it.each(SOURCE_TYPES)(
+    "selects the %s filter when its button is clicked",
+    async (sourceType) => {
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      const button = wrapper
+        .findAll(".seg-option")
+        .find((each) => each.text() === sourceType);
+      await button?.trigger("click");
+      expect(filterRef.value).toBe(sourceType);
+    },
+  );
 
   it("calls loadRecords on mount", async () => {
     mount(InboxPage, globalConfig);
@@ -208,11 +258,76 @@ describe("inbox page", () => {
     expect(wrapper.text()).toContain("No records yet");
   });
 
+  it("shows a filter-specific empty state when a source filter matches nothing", async () => {
+    recordsRef.value = [];
+    filterRef.value = "stripe";
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    expect(wrapper.text()).toContain("No stripe records");
+    expect(wrapper.text()).toContain("Try a different filter.");
+  });
+
+  it("shows a filter-specific empty state for the errors filter", async () => {
+    recordsRef.value = [];
+    filterRef.value = "errors";
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    expect(wrapper.text()).toContain("No errors records");
+    expect(wrapper.text()).toContain("Try a different filter.");
+  });
+
   it("renders a badge for each record", async () => {
     recordsRef.value = [makeRecord(), makeRecord({ title: "Another" })];
     const wrapper = mount(InboxPage, globalConfig);
     await flushPromises();
     expect(wrapper.findAll(".app-badge")).toHaveLength(2);
+  });
+
+  it("shows the load-more button when more records are available", async () => {
+    recordsRef.value = [makeRecord()];
+    hasMoreRef.value = true;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const loadMoreButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "load more");
+    expect(loadMoreButton).toBeDefined();
+  });
+
+  it("hides the load-more button when no more records are available", async () => {
+    recordsRef.value = [makeRecord()];
+    hasMoreRef.value = false;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const loadMoreButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "load more");
+    expect(loadMoreButton).toBeUndefined();
+  });
+
+  it("calls loadMore when the load-more button is clicked", async () => {
+    recordsRef.value = [makeRecord()];
+    hasMoreRef.value = true;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const loadMoreButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "load more");
+    await loadMoreButton?.trigger("click");
+    expect(mockLoadMore).toHaveBeenCalledOnce();
+  });
+
+  it("shows a loading label on the load-more button while fetching more", async () => {
+    recordsRef.value = [makeRecord()];
+    hasMoreRef.value = true;
+    isLoadingMoreRef.value = true;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const loadMoreButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "loading…");
+    expect(loadMoreButton).toBeDefined();
+    expect(loadMoreButton?.attributes("disabled")).toBeDefined();
   });
 
   it("triggers the record export when the export button is clicked", async () => {

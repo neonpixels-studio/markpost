@@ -21,7 +21,7 @@ type Option = string | { value: string; label: string };
 const props = withDefaults(
   defineProps<{
     modelValue: string;
-    options: Option[];
+    options: readonly Option[];
     disabled?: boolean;
   }>(),
   {

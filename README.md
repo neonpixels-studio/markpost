@@ -62,6 +62,8 @@ npm run db:studio
 
 A source is a unique ingest endpoint (`/api/hooks/:slug`) that turns an incoming webhook into a record. The Add Source modal offers presets (Stripe, GitHub, Zapier, Apple Shortcuts) that are a plain webhook source with a `provider` set, which enables signature verification on every delivery — see `server/utils/signatureVerifier.ts`.
 
+**Request body.** The delivery body must be a JSON object (send `Content-Type: application/json`). For **GitHub** sources only, its default `application/x-www-form-urlencoded` content type is also accepted, since GitHub URL-encodes the JSON under a `payload` form field and computes the signature over that raw body. Anything else — a plain-text body, a form-encoded body from a non-GitHub source, a JSON scalar/array, or an empty body — is rejected with `400 Bad Request` rather than silently ingesting a blank "Untitled" record, so a misconfigured integration fails loudly (the `400` shows in the sender's delivery log) instead of quietly producing empty records. Field mapping (see below) still runs on the object, so keys can be remapped to `title`/`body`, but the top-level payload itself must be an object.
+
 | Provider        | Verification                                              | Secret                                                                                                                                                                                                                                                                                                                                                                                              |
 | --------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stripe          | HMAC-SHA256 over the `Stripe-Signature` header            | User-supplied at creation — Stripe issues the signing secret when the user creates their own webhook endpoint, so the Add Source modal asks them to paste it in before the source can be created. Stored as-is (HMAC needs the raw value). Unrelated to the app's own billing webhook, which verifies against the separate `STRIPE_WEBHOOK_SECRET` env var (see "Billing and subscriptions" below). |
@@ -72,6 +74,8 @@ A source is a unique ingest endpoint (`/api/hooks/:slug`) that turns an incoming
 A generated secret (GitHub/Zapier/Shortcuts) is revealed exactly once, in the response to the request that created the source (the Add Source modal shows a one-time "copy this now" step) — the API never returns it again on subsequent `GET`/`PATCH` calls, and the reactive source list in the app never holds onto it either. A user-supplied secret (Stripe) is never shown back, since the user already has it.
 
 Sources created before this verification model existed (`provider` left `null`) keep working unauthenticated rather than being retroactively broken — enabling verification is opt-in for new sources, not a forced migration for old ones.
+
+**Payload size cap.** Ingest rejects any delivery whose body exceeds `MAX_WEBHOOK_BODY_BYTES` (1 MiB) with a `413`, checked by `Content-Length` before buffering and again on the decoded body about to be stored (see `server/utils/webhookBodyLimit.ts`). The rate limit caps request count, not size, so this is what stops a single oversized body from bloating storage and memory on an endpoint that only needs a slug to reach.
 
 **Rotating a secret.** `POST /api/sources/:uuid/rotate-secret` rotates a leaked or lost secret in place — the `endpointSlug` is preserved, so the provider's existing webhook URL keeps working and only the secret has to be re-pasted. It never changes the source's `provider`; `PATCH /api/sources/:uuid` still deliberately ignores `provider`/`providerSecret` (that endpoint is for `routeFolder`/`fieldMapping` only). Behaviour mirrors source creation per provider:
 
@@ -98,12 +102,12 @@ Billing is handled via [Stripe](https://stripe.com). The integration consists of
 
 ### Required environment variables
 
-| Variable                     | Description                                                                                                                   |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `STRIPE_SECRET_KEY`          | Stripe secret key (from [Dashboard → API Keys](https://dashboard.stripe.com/apikeys)). Server-only.                           |
-| `STRIPE_WEBHOOK_SECRET`      | Webhook signing secret (from [Dashboard → Webhooks → your endpoint → Signing secret](https://dashboard.stripe.com/webhooks)). |
-| `STRIPE_PRO_PRICE_ID`        | Stripe price ID for the monthly Pro plan.                                                                                     |
-| `STRIPE_PRO_ANNUAL_PRICE_ID` | Stripe price ID for the annual Pro plan (optional; falls back to monthly).                                                    |
+| Variable                     | Description                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `STRIPE_SECRET_KEY`          | Stripe secret key (from [Dashboard → API Keys](https://dashboard.stripe.com/apikeys)). Server-only. A standard secret key covers this; a restricted key must grant **customers read** in addition to **subscriptions read/write**, since account deletion reads the customer to prove the key can see it before treating a subscription sweep as complete. |
+| `STRIPE_WEBHOOK_SECRET`      | Webhook signing secret (from [Dashboard → Webhooks → your endpoint → Signing secret](https://dashboard.stripe.com/webhooks)).                                                                                                                                                                                                                              |
+| `STRIPE_PRO_PRICE_ID`        | Stripe price ID for the monthly Pro plan.                                                                                                                                                                                                                                                                                                                  |
+| `STRIPE_PRO_ANNUAL_PRICE_ID` | Stripe price ID for the annual Pro plan (optional; falls back to monthly).                                                                                                                                                                                                                                                                                 |
 
 ### Setting up the Stripe webhook
 
@@ -120,6 +124,16 @@ stripe listen --forward-to http://localhost:3000/api/billing/webhook
 ## Authentication
 
 Authentication is handled by [Clerk](https://clerk.com) via the `@clerk/nuxt` module. Server middleware at `server/middleware/auth.ts` verifies the session on every request and makes the user available at `event.context.userId` in API route handlers.
+
+### Clerk deletion webhook
+
+Deleting an account in-app (`DELETE /api/account`) cancels Stripe billing and cascade-deletes the user's data. A user removed **out-of-band** — from the Clerk Dashboard or Account Portal — bypasses that path, which would orphan their DB rows and leave live Stripe billing running. To reconcile it, `POST /api/webhooks/clerk` receives Clerk's `user.deleted` event and runs the same cancel-Stripe-then-wipe-data teardown (shared logic lives in `server/services/accountDeletion.ts`). The Svix signature on every delivery is verified against `CLERK_WEBHOOK_SIGNING_SECRET`; an invalid or missing signature is rejected with a `400` before any teardown runs. Unrecognised event types are acknowledged with a `200` no-op.
+
+To set it up: in the [Clerk Dashboard](https://dashboard.clerk.com) → **Configure → Webhooks**, add an endpoint pointing to `https://your-domain.com/api/webhooks/clerk`, subscribe it to the `user.deleted` event, and copy the endpoint's **Signing Secret** into `CLERK_WEBHOOK_SIGNING_SECRET`.
+
+| Env var                        | Where to get it                                                                                                                                   |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLERK_WEBHOOK_SIGNING_SECRET` | Signing secret for the Clerk webhook endpoint ([Dashboard → Configure → Webhooks → your endpoint → Signing Secret](https://dashboard.clerk.com)). |
 
 ## Agent and machine-readable resources
 
@@ -242,6 +256,7 @@ Required repository secrets (Settings → Secrets → Actions):
 - `E2E_DATABASE_URL`
 - `NUXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
 - `NUXT_CLERK_SECRET_KEY`
+- `CLERK_WEBHOOK_SIGNING_SECRET`
 - `SENTRY_AUTH_TOKEN`
 - `SENTRY_DSN`
 - `SENTRY_ORG`

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -7,11 +8,16 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   userId: text("user_id").primaryKey(),
+  // Persisted at checkout completion; nullable and backfill-safe. See
+  // cancelBillingForUser (server/services/accountDeletion.ts) for why deletion
+  // resolves the Stripe customer from here first.
+  stripeCustomerId: text("stripe_customer_id"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -138,9 +144,19 @@ export const records = pgTable(
       .references(() => users.userId, { onDelete: "cascade" }),
     title: text("title").notNull(),
     content: text("content").notNull(),
-    sourceId: uuid("source_id").references(() => sources.uuid),
+    sourceId: uuid("source_id").references(() => sources.uuid, {
+      onDelete: "set null",
+    }),
     source: text("source"),
     status: text("status").notNull().default("pending"),
+    // Per-source provider delivery/event id used to make ingest idempotent:
+    // Stripe re-sends the same event `id` on retry, GitHub the same
+    // X-GitHub-Delivery. NULL for slug-only sources and any pre-idempotency
+    // row; because Postgres treats NULLs as distinct in a unique index, those
+    // never collide and only a real provider re-delivery is rejected. See the
+    // records_source_id_delivery_id_unique index below and
+    // server/utils/webhookDelivery.ts for extraction.
+    deliveryId: text("delivery_id"),
     filePath: text("file_path"),
     tags: jsonb("tags"),
     frontmatter: jsonb("frontmatter"),
@@ -148,8 +164,30 @@ export const records = pgTable(
     errorMessage: text("error_message"),
   },
   (table) => [
+    // records_user_id_idx is a strict leading-column prefix of the composite
+    // below, so the composite already serves every plain user_id lookup. It is
+    // kept for now (dropping an index is out of scope for "add an index") and
+    // flagged as a follow-up removal candidate, not left redundant by oversight.
     index("records_user_id_idx").on(table.userId),
+    // Composite backing the two hottest record paths: the inbox list
+    // (server/api/records/index.get.ts) filters by user_id and orders by
+    // (created_at desc, uuid desc), and countRecordsCreatedThisMonth
+    // (server/utils/recordUsage.ts) runs a user_id + created_at >= monthStart
+    // COUNT on every webhook ingest. Without it both fall back to a sort/heap
+    // scan as records grow. created_at and uuid are descending with NULLS FIRST
+    // (Postgres' default for DESC, which is what the bare `desc()` ORDER BY
+    // emits) so the planner can walk the index in the inbox's exact order and
+    // skip the Sort node; a DESC NULLS LAST index would not match that pathkey.
+    index("records_user_id_created_at_idx").on(
+      table.userId,
+      table.createdAt.desc().nullsFirst(),
+      table.uuid.desc().nullsFirst(),
+    ),
     index("records_status_idx").on(table.status),
+    // Backs the ON DELETE SET NULL FK to sources.uuid: deleting a source
+    // causes Postgres to null out every referencing records.source_id, which
+    // without this index means a full table scan of records per source delete.
+    index("records_source_id_idx").on(table.sourceId),
     // Trigram GIN indexes back the ILIKE `%term%` search in
     // server/api/records/index.get.ts so title/content search stays fast at
     // scale. Requires the pg_trgm extension (enabled in migration 0011).
@@ -161,6 +199,28 @@ export const records = pgTable(
       "gin",
       table.content.op("gin_trgm_ops"),
     ),
+    // Enforces webhook-ingest idempotency at the DB layer: a provider retry
+    // carrying an already-seen delivery id for the same source cannot create a
+    // second record even under a concurrent race the app-level pre-check would
+    // miss. delivery_id is NULL for slug-only sources, and Postgres treats
+    // NULLs as distinct here, so those rows are never constrained.
+    uniqueIndex("records_source_id_delivery_id_unique").on(
+      table.sourceId,
+      table.deliveryId,
+    ),
+    // One record per (user, case-insensitive file_path): closes the TOCTOU race
+    // and the client-supplied-path duplicate window that the app-level suffix
+    // (server/utils/filePathCollision.ts) cannot, so two records can never map
+    // to the same synced file. Partial — a NULL or empty file_path means "no
+    // file yet" and must not collide with another. Case-insensitive to mirror
+    // resolveUniqueFilePath, which treats the CLI's case-insensitive
+    // filesystems (macOS/Windows) as the source of truth. text_pattern_ops lets
+    // this same index also back the left-anchored collision-prefix lookup
+    // (lower(file_path) LIKE 'stem%') regardless of the database locale, so no
+    // second index is needed. See migration 0022.
+    uniqueIndex("records_user_id_file_path_lower_unique")
+      .on(table.userId, sql`lower(${table.filePath}) text_pattern_ops`)
+      .where(sql`${table.filePath} is not null and ${table.filePath} <> ''`),
   ],
 );
 
@@ -178,9 +238,17 @@ export const events = pgTable(
     kind: text("kind").notNull(),
     message: text("message").notNull(),
     recordUuid: uuid("record_uuid"),
-    sourceId: uuid("source_id"),
+    sourceId: uuid("source_id").references(() => sources.uuid, {
+      onDelete: "set null",
+    }),
   },
-  (table) => [index("events_user_id_ts_idx").on(table.userId, table.ts)],
+  (table) => [
+    index("events_user_id_ts_idx").on(table.userId, table.ts),
+    // Same rationale as records_source_id_idx: backs the ON DELETE SET NULL FK
+    // to sources.uuid so nulling events.source_id on a source delete does not
+    // seq-scan events.
+    index("events_source_id_idx").on(table.sourceId),
+  ],
 );
 
 export const userSettings = pgTable("user_settings", {

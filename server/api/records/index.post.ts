@@ -18,6 +18,12 @@ import {
 } from "../../utils/markdown";
 import { recordSerializer, type RecordApiResponse } from "../../utils/response";
 import {
+  ensureUniqueFilePath,
+  insertRecordWithUniqueFilePath,
+  isFilePathUniqueViolation,
+} from "../../utils/filePathCollision";
+import { filePathConflictError } from "../../utils/recordErrors";
+import {
   apiValidate,
   isAbsent,
   type AttributeRule,
@@ -258,26 +264,65 @@ function resolveContentFromHtml(
   );
 }
 
+// Mirrors the `attributes.filePath ?? resolved.filePath` fallback, but
+// disambiguates the *generated* path against existing records so two ingests
+// that collapse to the same name no longer map to one file. A client-supplied
+// filePath (import flow) is intentional and passes through untouched.
+async function resolveGeneratedFilePath(
+  userId: string,
+  clientFilePath: string | null | undefined,
+  generatedFilePath: string | null,
+): Promise<string | null> {
+  if (clientFilePath !== undefined && clientFilePath !== null) {
+    return clientFilePath;
+  }
+
+  // Either "" or null here; preserve it as-is to match the prior
+  // `attributes.filePath ?? resolved.filePath` fallback.
+  if (!generatedFilePath) {
+    return generatedFilePath;
+  }
+
+  return ensureUniqueFilePath(userId, generatedFilePath);
+}
+
+type MarkdownPipelineResult = {
+  attributes: CreateRecordAttributes;
+  // The un-suffixed generated path (null when html is absent or no path was
+  // generated). Used as the re-resolution base on a concurrent-insert retry so
+  // suffixes grow off the true stem (hello-2, hello-3) instead of nesting
+  // (hello-2-2) when the pre-insert lookup already suffixed attributes.filePath.
+  generatedFilePath: string | null;
+};
+
 async function applyMarkdownPipeline(
   attributes: CreateRecordAttributes,
   database: Database,
   userId: string,
-): Promise<CreateRecordAttributes> {
+): Promise<MarkdownPipelineResult> {
   if (isAbsent(attributes.html)) {
-    return attributes;
+    return { attributes, generatedFilePath: null };
   }
 
   const filenameTemplate = await fetchFilenameTemplate(database, userId);
   const userSettingsValues: UserSettings = { filenameTemplate };
 
   const resolved = resolveContentFromHtml(attributes, userSettingsValues);
+  const filePath = await resolveGeneratedFilePath(
+    userId,
+    attributes.filePath,
+    resolved.filePath,
+  );
 
   return {
-    ...attributes,
-    content: attributes.content ?? resolved.content,
-    frontmatter: attributes.frontmatter ?? resolved.frontmatter,
-    tags: attributes.tags ?? resolved.tags,
-    filePath: attributes.filePath ?? resolved.filePath,
+    attributes: {
+      ...attributes,
+      content: attributes.content ?? resolved.content,
+      frontmatter: attributes.frontmatter ?? resolved.frontmatter,
+      tags: attributes.tags ?? resolved.tags,
+      filePath,
+    },
+    generatedFilePath: resolved.filePath,
   };
 }
 
@@ -346,6 +391,77 @@ async function insertRecord(
   return created;
 }
 
+type PersistRecordOptions = {
+  clientSuppliedFilePath: boolean;
+  // Un-suffixed base for re-resolution on a generated-path retry (see
+  // MarkdownPipelineResult.generatedFilePath).
+  desiredFilePath: string | null | undefined;
+};
+
+// A client-supplied filePath (import flow) is deliberately never auto-suffixed
+// (see resolveGeneratedFilePath): the client asserts the record lives at exactly
+// that path, so silently rewriting it to `path-2.md` would point the record at a
+// file the client never named — that collision is a 409. A server-generated path
+// is auto-suffixed and retried, but if the retry budget is exhausted its 23505
+// also surfaces as the same 409 rather than a raw 500. Kept out of the handler so
+// its branching does not inflate the request flow's complexity.
+async function persistRecord(
+  db: ReturnType<typeof getDb>,
+  userId: string,
+  insertValues: InsertRecordValues,
+  options: PersistRecordOptions,
+) {
+  try {
+    if (options.clientSuppliedFilePath) {
+      return await insertRecord(db, insertValues);
+    }
+
+    return await insertRecordWithUniqueFilePath(
+      userId,
+      insertValues.filePath,
+      (filePath) => insertRecord(db, { ...insertValues, filePath }),
+      options.desiredFilePath,
+    );
+  } catch (error) {
+    if (isFilePathUniqueViolation(error)) {
+      throw filePathConflictError();
+    }
+
+    throw error;
+  }
+}
+
+type CreatedRecord = {
+  uuid: string;
+  status: string;
+  title: string | null;
+  errorMessage: string | null;
+  sourceId: string | null;
+};
+
+// Best-effort activity-log entry for a freshly-created record; its own failure
+// is logged and swallowed so it never rolls back the 201. Extracted so the
+// status→message branching lives out of the request handler.
+async function writeRecordCreatedEvent(
+  userId: string,
+  record: CreatedRecord,
+): Promise<void> {
+  const isError = record.status === "error";
+  const message = isError
+    ? `Record created with error: ${record.errorMessage ?? "unknown"}`
+    : `Record created: ${record.title ?? "untitled"}`;
+
+  await writeEvent({
+    userId,
+    kind: isError ? "err" : "ok",
+    message,
+    recordUuid: record.uuid,
+    sourceId: record.sourceId ?? null,
+  }).catch((writeError) => {
+    console.error("[records/create] failed to write event:", writeError);
+  });
+}
+
 export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
   try {
     const userId = requireUser(event);
@@ -365,11 +481,10 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
     const db = getDb();
 
     // Apply markdown pipeline when html is present; this may fetch user settings.
-    const attributes = (await applyMarkdownPipeline(
-      rawAttributes,
-      db,
-      userId,
-    )) as Required<Pick<CreateRecordAttributes, "title" | "content">> &
+    const pipeline = await applyMarkdownPipeline(rawAttributes, db, userId);
+    const attributes = pipeline.attributes as Required<
+      Pick<CreateRecordAttributes, "title" | "content">
+    > &
       Omit<CreateRecordAttributes, "title" | "content">;
 
     if (attributes.sourceId) {
@@ -379,23 +494,18 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
     await assertWithinRecordLimit(userId);
 
     const insertValues = buildInsertValues(userId, attributes);
-    const record = await insertRecord(db, insertValues);
 
-    const eventKind = record.status === "error" ? "err" : "ok";
-    const eventMessage =
-      record.status === "error"
-        ? `Record created with error: ${record.errorMessage ?? "unknown"}`
-        : `Record created: ${record.title ?? "untitled"}`;
+    // Only a server-generated path may be auto-suffixed on a concurrent-insert
+    // collision; a client-supplied one 409s instead (see persistRecord).
+    const clientSuppliedFilePath =
+      rawAttributes.filePath !== undefined && rawAttributes.filePath !== null;
 
-    await writeEvent({
-      userId,
-      kind: eventKind,
-      message: eventMessage,
-      recordUuid: record.uuid,
-      sourceId: record.sourceId ?? null,
-    }).catch((writeError) => {
-      console.error("[records/create] failed to write event:", writeError);
+    const record = await persistRecord(db, userId, insertValues, {
+      clientSuppliedFilePath,
+      desiredFilePath: pipeline.generatedFilePath ?? insertValues.filePath,
     });
+
+    await writeRecordCreatedEvent(userId, record);
 
     setResponseStatus(event, 201);
 

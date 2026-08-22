@@ -1,18 +1,33 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { H3Event } from "h3";
 import { getDb } from "../../db";
 import { records, sources, userSettings } from "../../db/schema";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
 import { applyFieldMapping } from "../../utils/fieldMapper";
 import { parseWebhookPayload, type UserSettings } from "../../utils/markdown";
+import {
+  ensureUniqueFilePath,
+  insertRecordWithUniqueFilePath,
+} from "../../utils/filePathCollision";
 import { assertWithinRecordLimit } from "../../utils/planLimits";
 import {
+  GITHUB_PROVIDER,
   GITHUB_SIGNATURE_HEADER,
+  normalizeProvider,
   STRIPE_SIGNATURE_HEADER,
   verifyProviderSignature,
 } from "../../utils/signatureVerifier";
 import { writeEvent } from "../../utils/eventWriter";
+import {
+  extractDeliveryId,
+  GITHUB_DELIVERY_HEADER,
+} from "../../utils/webhookDelivery";
 import { recordWebhookHit } from "../../utils/webhookThrottle";
+import {
+  assertBodyWithinLimit,
+  assertContentLengthWithinLimit,
+  CONTENT_LENGTH_HEADER,
+} from "../../utils/webhookBodyLimit";
 import { SHARED_SECRET_HEADER } from "#shared/utils/webhookSecrets";
 
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
@@ -35,43 +50,33 @@ type UserSettingsRow = {
   filenameTemplate: string;
 };
 
-function notFoundError(): ApiError {
+const NON_OBJECT_BODY_DETAIL =
+  "Webhook body must be a JSON object. Send a JSON object payload with Content-Type: application/json.";
+
+function apiError(httpStatus: number, title: string, detail: string): ApiError {
   return new ApiError(
-    [
-      {
-        status: "404",
-        title: "Not Found",
-        detail: "No source was found for the given slug.",
-      },
-    ],
-    404,
+    [{ status: String(httpStatus), title, detail }],
+    httpStatus,
   );
+}
+
+function notFoundError(): ApiError {
+  return apiError(404, "Not Found", "No source was found for the given slug.");
 }
 
 function signatureError(reason: string): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "401",
-        title: "Unauthorized",
-        detail: reason,
-      },
-    ],
-    401,
-  );
+  return apiError(401, "Unauthorized", reason);
+}
+
+function badRequestError(detail: string): ApiError {
+  return apiError(400, "Bad Request", detail);
 }
 
 function throttledError(): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "429",
-        title: "Too Many Requests",
-        detail:
-          "This webhook source is receiving too many requests. Slow down and try again shortly.",
-      },
-    ],
+  return apiError(
     429,
+    "Too Many Requests",
+    "This webhook source is receiving too many requests. Slow down and try again shortly.",
   );
 }
 
@@ -115,10 +120,20 @@ type ParsedWebhookResult = {
   filePath: string;
 };
 
+type IngestedRecord = { uuid: string; title: string };
+
+// onConflictDoNothing on the (source_id, delivery_id) unique index absorbs the
+// race the app-level pre-check can't: two identical deliveries arriving at once
+// both miss findRecordByDelivery, but only one insert lands — the other returns
+// no row. A NULL delivery_id never conflicts (Postgres treats NULLs as
+// distinct), so slug-only sources always insert here as before. A null return
+// therefore means either that race (deliveryId set) or a genuine insert failure
+// (deliveryId null); the caller distinguishes the two.
 async function insertWebhookRecord(
   source: SourceRow,
   parsed: ParsedWebhookResult,
-) {
+  deliveryId: string | null,
+): Promise<IngestedRecord | null> {
   const db = getDb();
   const [created] = await db
     .insert(records)
@@ -132,23 +147,30 @@ async function insertWebhookRecord(
       tags: parsed.tags,
       frontmatter: parsed.frontmatter,
       filePath: parsed.filePath,
+      deliveryId,
+    })
+    .onConflictDoNothing({
+      target: [records.sourceId, records.deliveryId],
     })
     .returning();
 
-  if (!created) {
-    throw new ApiError(
-      [
-        {
-          status: "500",
-          title: "Internal Server Error",
-          detail: "Failed to insert record",
-        },
-      ],
-      500,
-    );
-  }
+  return created ?? null;
+}
 
-  return created;
+async function findRecordByDelivery(
+  sourceId: string,
+  deliveryId: string,
+): Promise<IngestedRecord | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({ uuid: records.uuid, title: records.title })
+    .from(records)
+    .where(
+      and(eq(records.sourceId, sourceId), eq(records.deliveryId, deliveryId)),
+    )
+    .limit(1);
+
+  return row ?? null;
 }
 
 async function updateSourceStats(sourceId: string): Promise<void> {
@@ -192,11 +214,7 @@ function buildProviderHeaders(
   };
 }
 
-function parseBodyToPayload(rawBody: string): Record<string, unknown> {
-  if (!rawBody) {
-    return {};
-  }
-
+function asJsonObject(rawBody: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(rawBody);
 
@@ -205,14 +223,65 @@ function parseBodyToPayload(rawBody: string): Record<string, unknown> {
       typeof parsed !== "object" ||
       Array.isArray(parsed)
     ) {
-      return {};
+      return null;
     }
 
     return parsed as Record<string, unknown>;
   } catch {
-    // Non-JSON body: treat as empty payload; the parser will use defaults
-    return {};
+    return null;
   }
+}
+
+// GitHub's webhook "Content type" defaults to application/x-www-form-urlencoded,
+// which delivers the JSON payload URL-encoded under a `payload` form field. The
+// HMAC in X-Hub-Signature-256 is computed over that raw form body, so the
+// signature still verifies — we only have to unwrap `payload` before parsing.
+// Gated to GitHub sources so a generic form-encoded body from any other source
+// is still rejected rather than silently unwrapping a `payload` field.
+function githubFormPayload(rawBody: string): Record<string, unknown> | null {
+  const encoded = new URLSearchParams(rawBody).get("payload");
+  return encoded ? asJsonObject(encoded) : null;
+}
+
+function parseWebhookBody(
+  source: SourceRow,
+  rawBody: string,
+): Record<string, unknown> | null {
+  const directObject = asJsonObject(rawBody);
+
+  if (directObject) {
+    return directObject;
+  }
+
+  // normalizeProvider is the single normalization boundary for provider identity
+  // (see signatureVerifier.ts) — compare through it so a stored `"GitHub"` still
+  // dispatches to the form-encoded unwrap it just verified the signature against.
+  if (normalizeProvider(source.provider) === GITHUB_PROVIDER) {
+    return githubFormPayload(rawBody);
+  }
+
+  return null;
+}
+
+// Fail loud on anything that isn't a JSON object. Accepted: a raw JSON object
+// body (Stripe, Zapier, Apple Shortcuts, and GitHub when set to
+// Content-Type: application/json) or, for GitHub sources, its default
+// form-encoded `payload` wrapper. Everything else — a plain-text/other
+// form-encoded body, a JSON scalar/array, or an empty body — is rejected with a
+// 400; each would otherwise be coerced to {} and ingested as a blank "Untitled"
+// record with a 202, hiding a misconfigured integration. (An empty body throws
+// in JSON.parse, so asJsonObject already returns null for it.)
+function requireJsonObjectBody(
+  source: SourceRow,
+  rawBody: string,
+): Record<string, unknown> {
+  const payload = parseWebhookBody(source, rawBody);
+
+  if (!payload) {
+    throw badRequestError(NON_OBJECT_BODY_DETAIL);
+  }
+
+  return payload;
 }
 
 async function resolveAndValidateSource(
@@ -274,8 +343,13 @@ async function enforceThrottle(
   throw throttledError();
 }
 
-async function buildAndInsertRecord(source: SourceRow, rawBody: string) {
-  const payload = parseBodyToPayload(rawBody);
+type IngestOutcome = { record: IngestedRecord; deduped: boolean };
+
+async function buildAndInsertRecord(
+  source: SourceRow,
+  payload: Record<string, unknown>,
+  deliveryId: string | null,
+): Promise<IngestOutcome> {
   const webhookPayload = applyFieldMapping(
     payload,
     source.fieldMapping,
@@ -288,7 +362,78 @@ async function buildAndInsertRecord(source: SourceRow, rawBody: string) {
   };
 
   const parsed = parseWebhookPayload(webhookPayload, userSettingsValues);
-  return insertWebhookRecord(source, parsed);
+  const filePath = await ensureUniqueFilePath(source.userId, parsed.filePath);
+  // Two independent conflicts can arise on insert. A (source_id, delivery_id)
+  // duplicate is absorbed by insertWebhookRecord's onConflictDoNothing, which
+  // returns null (a dedup hit, resolved below). A file_path unique violation is
+  // NOT in that conflict target, so it still throws a 23505 that
+  // insertRecordWithUniqueFilePath catches and retries with a re-suffixed path.
+  // Wrapping the delivery-id-aware insert in the file-path retry composes both:
+  // delivery-id dedup wins first (the row never inserts, so the file_path index
+  // is never checked); a genuine path collision retries.
+  const created = await insertRecordWithUniqueFilePath(
+    source.userId,
+    filePath,
+    (resolvedFilePath) =>
+      insertWebhookRecord(
+        source,
+        { ...parsed, filePath: resolvedFilePath },
+        deliveryId,
+      ),
+    parsed.filePath,
+  );
+
+  if (created) {
+    return { record: created, deduped: false };
+  }
+
+  return resolveInsertConflict(source, deliveryId);
+}
+
+// insertWebhookRecord returned no row. With a delivery id that means a
+// concurrent duplicate won the insert race — return its record as a dedup hit
+// so this delivery still gets a 202 with the canonical uuid. Without one it is
+// a genuine insert failure, which must fail loud.
+async function resolveInsertConflict(
+  source: SourceRow,
+  deliveryId: string | null,
+): Promise<IngestOutcome> {
+  if (!deliveryId) {
+    throw apiError(500, "Internal Server Error", "Failed to insert record");
+  }
+
+  const existing = await findRecordByDelivery(source.uuid, deliveryId);
+
+  if (!existing) {
+    throw apiError(500, "Internal Server Error", "Failed to insert record");
+  }
+
+  return { record: existing, deduped: true };
+}
+
+// Pre-insert idempotency guard: a provider retry carrying an already-ingested
+// delivery id returns the existing record without touching the plan-limit
+// budget or inserting again. Runs before assertWithinRecordLimit so a user at
+// their cap can still be told a retried delivery already landed instead of a
+// spurious 403.
+async function findAlreadyIngested(
+  source: SourceRow,
+  deliveryId: string | null,
+): Promise<IngestedRecord | null> {
+  if (!deliveryId) {
+    return null;
+  }
+
+  return findRecordByDelivery(source.uuid, deliveryId);
+}
+
+function buildDeliveryHeaders(
+  event: H3Event,
+): Record<string, string | undefined> {
+  return {
+    [GITHUB_DELIVERY_HEADER]:
+      getHeader(event, GITHUB_DELIVERY_HEADER) ?? undefined,
+  };
 }
 
 // The record already exists at this point (writeBestEffortSideEffects is only ever
@@ -353,11 +498,20 @@ async function writeBestEffortSideEffects(
 
 export default defineEventHandler(async (event) => {
   try {
+    // Reject an oversized delivery by its declared Content-Length first: the
+    // check is slug-independent and leaks nothing, so it sheds a flood of
+    // oversized bodies before the source lookup, the body buffer, signature
+    // verification, or the throttle. The post-read byte check below backstops a
+    // missing or dishonest header.
+    assertContentLengthWithinLimit(getHeader(event, CONTENT_LENGTH_HEADER));
+
     const slug = getRouterParam(event, "slug");
     const source = await resolveAndValidateSource(slug);
 
     const rawBodyText = await readRawBody(event);
     const rawBody = rawBodyText ?? "";
+
+    assertBodyWithinLimit(rawBody);
 
     // Verify the signature before spending throttle budget: HMAC verification
     // is cheap and stateless, so checking it first stops an attacker who only
@@ -375,10 +529,50 @@ export default defineEventHandler(async (event) => {
     // It is also the cheaper guard, so it sheds load before the subscription
     // lookup and monthly COUNT that assertWithinRecordLimit runs.
     await enforceThrottle(event, source);
+
+    // Validate the body before the plan-limit check: a malformed delivery will
+    // never create a record, so it must not consume the user's plan-limit budget
+    // (assertWithinRecordLimit's subscription lookup + monthly COUNT). Kept after
+    // enforceThrottle so a slug-only flood of junk bodies still counts against the
+    // throttle window (see the reasoning on enforceThrottle above).
+    const payload = requireJsonObjectBody(source, rawBody);
+
+    // Idempotency: a provider (Stripe/GitHub) re-sends the same delivery on any
+    // non-2xx or timeout. Skip an already-ingested delivery so retries return
+    // the original record instead of creating a duplicate. Runs before the
+    // plan-limit check so a retry never burns budget or 403s on a record that
+    // already counted.
+    const deliveryId = extractDeliveryId(
+      source.provider,
+      buildDeliveryHeaders(event),
+      payload,
+    );
+    const alreadyIngested = await findAlreadyIngested(source, deliveryId);
+
+    if (alreadyIngested) {
+      setResponseStatus(event, 202);
+      return { data: { uuid: alreadyIngested.uuid } };
+    }
+
     await assertWithinRecordLimit(source.userId);
 
-    const record = await buildAndInsertRecord(source, rawBody);
-    await writeBestEffortSideEffects(source, record);
+    const { record, deduped } = await buildAndInsertRecord(
+      source,
+      payload,
+      deliveryId,
+    );
+
+    // A dedup hit means this delivery's record already exists, so its side
+    // effects are skipped: re-running them on every normal retry would
+    // double-count recordCount and emit a duplicate "received" event for one
+    // logical delivery. The tradeoff is that if the very first delivery crashed
+    // after committing the insert but before its side effects ran, a later retry
+    // won't re-fire them (recordCount under-counts by one, no ok event). That
+    // rare crash-window loss is preferred over over-counting every honest retry;
+    // making side effects idempotent to close it is tracked as a follow-up.
+    if (!deduped) {
+      await writeBestEffortSideEffects(source, record);
+    }
 
     setResponseStatus(event, 202);
     return { data: { uuid: record.uuid } };

@@ -2,21 +2,12 @@ import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db";
 import { apiTokens } from "../db/schema";
 import { hashToken, isApiToken, isTokenExpired } from "../utils/tokens";
+import { refreshTokenLastUsedAt } from "../utils/tokenUsage";
 import { ensureUserRegistered } from "../utils/auth";
 import { getClerkClient } from "../utils/clerk";
+import { throwUnauthorized } from "../utils/errors";
 
 const BEARER_PREFIX = /^Bearer\s+/i;
-
-async function updateLastUsedAt(tokenId: string): Promise<void> {
-  try {
-    await getDb()
-      .update(apiTokens)
-      .set({ lastUsedAt: new Date() })
-      .where(eq(apiTokens.id, tokenId));
-  } catch (error) {
-    console.error("[auth] failed to update lastUsedAt", error);
-  }
-}
 
 async function authenticateViaApiToken(
   rawToken: string,
@@ -28,6 +19,7 @@ async function authenticateViaApiToken(
       id: apiTokens.id,
       userId: apiTokens.userId,
       expiresAt: apiTokens.expiresAt,
+      lastUsedAt: apiTokens.lastUsedAt,
     })
     .from(apiTokens)
     .where(
@@ -43,7 +35,7 @@ async function authenticateViaApiToken(
     return null;
   }
 
-  await updateLastUsedAt(matched.id);
+  await refreshTokenLastUsedAt(matched.id, matched.lastUsedAt);
 
   return matched.userId;
 }
@@ -60,6 +52,9 @@ async function authenticateViaClerk(token: string): Promise<string | null> {
 
 const HOOKS_PATH_PREFIX = "/api/hooks/";
 const BILLING_WEBHOOK_PATH = "/api/billing/webhook";
+// Clerk signs this webhook with a Svix signature (verified in the handler), not
+// a bearer token, so it must bypass the token/session auth below.
+const CLERK_WEBHOOK_PATH = "/api/webhooks/clerk";
 
 export default defineEventHandler(async (event) => {
   if (!event.path.startsWith("/api/")) {
@@ -74,12 +69,16 @@ export default defineEventHandler(async (event) => {
     return;
   }
 
+  if (event.path === CLERK_WEBHOOK_PATH) {
+    return;
+  }
+
   const rawToken = getHeader(event, "authorization")?.replace(
     BEARER_PREFIX,
     "",
   );
   if (!rawToken) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+    throwUnauthorized();
   }
 
   const viaApiToken = isApiToken(rawToken);
@@ -88,7 +87,7 @@ export default defineEventHandler(async (event) => {
     : await authenticateViaClerk(rawToken);
 
   if (!userId) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+    throwUnauthorized();
   }
 
   // Only the Clerk path can carry a brand-new identity; an API token can only
