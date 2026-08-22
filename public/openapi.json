@@ -14,6 +14,20 @@
     }
   ],
   "security": [{ "bearerAuth": [] }],
+  "x-scopes": {
+    "records:read": "Read records and record statistics.",
+    "records:write": "Create, update, and delete records.",
+    "sources:read": "List connected sources.",
+    "sources:write": "Create, update, delete, and rotate secrets for sources.",
+    "events:read": "Read the activity event log.",
+    "tokens:read": "List API tokens.",
+    "tokens:write": "Mint and revoke API tokens.",
+    "settings:read": "Read sync and vault settings.",
+    "settings:write": "Update sync and vault settings.",
+    "billing:read": "Read subscription and usage.",
+    "billing:write": "Start checkout and open the billing portal.",
+    "account:write": "Delete the account."
+  },
   "tags": [
     {
       "name": "Records",
@@ -978,7 +992,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "mp_live token or Clerk session JWT",
-        "description": "Send `Authorization: Bearer <token>`. The token is either a markpost API token (`mp_live_...`, minted via POST /tokens) or a Clerk session JWT."
+        "description": "Send `Authorization: Bearer <token>`. The token is either a markpost API token (`mp_live_...`, minted via POST /tokens) or a Clerk session JWT. The named permission scopes this API recognizes are catalogued in `x-scopes` and published as `scopes_supported` in the RFC 9728 protected-resource metadata at `/.well-known/oauth-protected-resource`."
       }
     },
     "parameters": {

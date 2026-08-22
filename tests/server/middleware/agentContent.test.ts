@@ -71,4 +71,22 @@ describe("agentContent middleware", () => {
 
     expect(result).toBeUndefined();
   });
+
+  it("serves RFC 9728 protected-resource metadata", async () => {
+    mockGetHeader.mockReturnValue(undefined);
+
+    const result = (await handler(
+      buildEvent("/.well-known/oauth-protected-resource"),
+    )) as unknown as Response;
+
+    expect(result).toBeInstanceOf(Response);
+    expect(result.status).toBe(200);
+    expect(result.headers.get("content-type")).toBe(
+      "application/json; charset=utf-8",
+    );
+
+    const body = JSON.parse(await result.text());
+    expect(body.resource).toMatch(/\/api$/);
+    expect(body.scopes_supported).toContain("records:read");
+  });
 });

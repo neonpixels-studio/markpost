@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { SCOPE_NAMES } from "../../server/utils/protectedResource";
 
 const specPath = resolve(process.cwd(), "public/openapi.json");
 const spec = JSON.parse(readFileSync(specPath, "utf8"));
@@ -99,6 +100,12 @@ describe("public/openapi.json", () => {
     for (const [path, method] of PUBLIC_OPERATIONS) {
       expect(spec.paths[path][method].security).toEqual([]);
     }
+  });
+
+  it("catalogs the same scopes as the protected-resource metadata", () => {
+    expect(Object.keys(spec["x-scopes"]).sort()).toEqual(
+      [...SCOPE_NAMES].sort(),
+    );
   });
 
   it("has no dangling internal $refs", () => {
