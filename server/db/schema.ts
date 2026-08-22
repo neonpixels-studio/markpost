@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -207,6 +208,19 @@ export const records = pgTable(
       table.sourceId,
       table.deliveryId,
     ),
+    // One record per (user, case-insensitive file_path): closes the TOCTOU race
+    // and the client-supplied-path duplicate window that the app-level suffix
+    // (server/utils/filePathCollision.ts) cannot, so two records can never map
+    // to the same synced file. Partial — a NULL or empty file_path means "no
+    // file yet" and must not collide with another. Case-insensitive to mirror
+    // resolveUniqueFilePath, which treats the CLI's case-insensitive
+    // filesystems (macOS/Windows) as the source of truth. text_pattern_ops lets
+    // this same index also back the left-anchored collision-prefix lookup
+    // (lower(file_path) LIKE 'stem%') regardless of the database locale, so no
+    // second index is needed. See migration 0022.
+    uniqueIndex("records_user_id_file_path_lower_unique")
+      .on(table.userId, sql`lower(${table.filePath}) text_pattern_ops`)
+      .where(sql`${table.filePath} is not null and ${table.filePath} <> ''`),
   ],
 );
 

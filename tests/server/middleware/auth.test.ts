@@ -173,6 +173,34 @@ describe("auth middleware", () => {
       expect(updateMock).toHaveBeenCalled();
     });
 
+    it("skips the lastUsedAt write when the stored value is still fresh", async () => {
+      const rawToken = generateRawToken();
+      const justNow = new Date();
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, lastUsedAt: justNow }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.userId).toBe(userId);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it("writes lastUsedAt when the stored value is stale", async () => {
+      const rawToken = generateRawToken();
+      const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, lastUsedAt: longAgo }]);
+      stubUpdateSuccess();
+
+      await handler(buildEvent());
+
+      expect(updateMock).toHaveBeenCalled();
+    });
+
     it("still sets userId when the lastUsedAt update fails", async () => {
       const rawToken = generateRawToken();
 

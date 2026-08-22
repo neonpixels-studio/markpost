@@ -26,6 +26,16 @@
         </AppAlert>
       </div>
 
+      <div
+        v-if="!isLoading && !loadError"
+        style="margin-bottom: 18px"
+        data-testid="retention-notice"
+      >
+        <AppAlert tone="info" :title="retentionTitle" :closeable="false">
+          {{ retentionMessage }}
+        </AppAlert>
+      </div>
+
       <!-- loading state -->
       <div
         v-if="isLoading"
@@ -123,8 +133,15 @@
 <script setup lang="ts">
 import { useEvents, triggerExportDownload } from "~/composables/useEvents";
 import { useExportNotice } from "~/composables/useExportNotice";
+import {
+  RETENTION_NOTICE_TITLE,
+  retentionNoticeMessage,
+} from "#shared/utils/retention";
 
 definePageMeta({ middleware: "auth" });
+
+const retentionTitle = RETENTION_NOTICE_TITLE;
+const retentionMessage = retentionNoticeMessage();
 
 const { log, isLoading, loadError, loadEvents } = useEvents();
 

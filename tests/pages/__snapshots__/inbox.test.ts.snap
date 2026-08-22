@@ -166,6 +166,7 @@ exports[`inbox page > matches snapshot with records 1`] = `
         <div class="row" role="button" tabindex="0" aria-label="Open record Another" style="padding: 13px 18px; cursor: pointer; transition: background 0.1s;"><span class="row gap-2" style="width: 120px;"><span name="zap" size="15" style="color: var(--accent); flex-grow: 0; flex-shrink: 0; flex-basis: auto;"></span><span class="mono" style="font-size: 11.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">label:webhook/github</span></span><span style="font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 16px; flex-grow: 1; flex-shrink: 1; flex-basis: 0%;">Another</span><span class="mono" style="width: 230px; font-size: 11.5px; color: var(--info); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">99-incoming/test.md</span><span style="width: 90px;"><span class="app-badge">synced</span></span><span class="mono faint" style="width: 80px; text-align: right; font-size: 11.5px;">2m ago</span></div>
       </div>
     </div>
+    <!--v-if-->
   </div>
   <!--v-if-->
 </div>"

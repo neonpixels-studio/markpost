@@ -117,6 +117,27 @@ describe("PATCH /api/records/:uuid", () => {
     });
   });
 
+  it("returns 409 when the new filePath collides with another record (23505)", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ filePath: "taken/path.md" }));
+
+    const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+      code: "23505",
+      constraint: "records_user_id_file_path_lower_unique",
+    });
+    const returning = vi.fn(() => Promise.reject(uniqueViolation));
+    const where = vi.fn(() => ({ returning }));
+    const set = vi.fn(() => ({ where }));
+    updateMock.mockReturnValue({ set });
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 409 }),
+    );
+  });
+
   it("updates only status without touching other fields", async () => {
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(buildBody({ status: "pending" }));

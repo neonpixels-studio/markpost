@@ -134,6 +134,13 @@
       "when": 1787033586927,
       "tag": "0021_add_webhook_delivery_dedup",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1787033598241,
+      "tag": "0022_add_filepath_unique_index",
+      "breakpoints": true
     }
   ]
 }

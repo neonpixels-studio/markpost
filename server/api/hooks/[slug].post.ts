@@ -5,7 +5,10 @@ import { records, sources, userSettings } from "../../db/schema";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
 import { applyFieldMapping } from "../../utils/fieldMapper";
 import { parseWebhookPayload, type UserSettings } from "../../utils/markdown";
-import { ensureUniqueFilePath } from "../../utils/filePathCollision";
+import {
+  ensureUniqueFilePath,
+  insertRecordWithUniqueFilePath,
+} from "../../utils/filePathCollision";
 import { assertWithinRecordLimit } from "../../utils/planLimits";
 import {
   GITHUB_PROVIDER,
@@ -360,10 +363,24 @@ async function buildAndInsertRecord(
 
   const parsed = parseWebhookPayload(webhookPayload, userSettingsValues);
   const filePath = await ensureUniqueFilePath(source.userId, parsed.filePath);
-  const created = await insertWebhookRecord(
-    source,
-    { ...parsed, filePath },
-    deliveryId,
+  // Two independent conflicts can arise on insert. A (source_id, delivery_id)
+  // duplicate is absorbed by insertWebhookRecord's onConflictDoNothing, which
+  // returns null (a dedup hit, resolved below). A file_path unique violation is
+  // NOT in that conflict target, so it still throws a 23505 that
+  // insertRecordWithUniqueFilePath catches and retries with a re-suffixed path.
+  // Wrapping the delivery-id-aware insert in the file-path retry composes both:
+  // delivery-id dedup wins first (the row never inserts, so the file_path index
+  // is never checked); a genuine path collision retries.
+  const created = await insertRecordWithUniqueFilePath(
+    source.userId,
+    filePath,
+    (resolvedFilePath) =>
+      insertWebhookRecord(
+        source,
+        { ...parsed, filePath: resolvedFilePath },
+        deliveryId,
+      ),
+    parsed.filePath,
   );
 
   if (created) {
