@@ -24,8 +24,13 @@ vi.mock("drizzle-orm", () => ({
   // "does not filter on records.source" regression guard can detect a
   // reintroduced like(records.source, …) instead of throwing on undefined.
   like: (column: unknown, pattern: unknown) => ({ like: { column, pattern } }),
-  lt: (column: unknown, value: unknown) => ({ lt: { column, value } }),
   or: (...conditions: unknown[]) => ({ or: conditions }),
+  // The cursor predicate is now a row-wise `sql` tuple comparison. Capture the
+  // interpolated column/value fragments so hasCursorPredicate can still detect
+  // that the cursor landed on a query.
+  sql: (_strings: TemplateStringsArray, ...values: unknown[]) => ({
+    sql: { values },
+  }),
   SQL: class {},
 }));
 
@@ -238,23 +243,21 @@ describe("GET /api/records", () => {
     );
   }
 
-  // The cursor predicate is `or(lt(createdAt), and(...))`; detect it by the
-  // lt(records.createdAt) branch so a change that drops the cursor from a
-  // query fails loudly.
+  // The cursor predicate is now a row-wise `sql` tuple comparison whose
+  // interpolated values are [records.createdAt, records.uuid, cursor.createdAt,
+  // cursor.uuid]; detect it by the records.createdAt column fragment so a change
+  // that drops the cursor from a query fails loudly.
   function hasCursorPredicate(conditions: unknown[]): boolean {
     return conditions.some(
       (condition) =>
         typeof condition === "object" &&
         condition !== null &&
-        "or" in condition &&
-        Array.isArray((condition as { or: unknown[] }).or) &&
-        (condition as { or: unknown[] }).or.some(
-          (branch) =>
-            typeof branch === "object" &&
-            branch !== null &&
-            "lt" in branch &&
-            (branch as { lt: { column: unknown } }).lt.column ===
-              records.createdAt,
+        "sql" in condition &&
+        Array.isArray(
+          (condition as { sql: { values: unknown[] } }).sql.values,
+        ) &&
+        (condition as { sql: { values: unknown[] } }).sql.values.includes(
+          records.createdAt,
         ),
     );
   }

@@ -1,4 +1,14 @@
-import { and, count, desc, eq, ilike, inArray, lt, or, SQL } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  or,
+  sql,
+  SQL,
+} from "drizzle-orm";
 import { getDb } from "../../db";
 import { records, RECORD_STATUSES, sources } from "../../db/schema";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
@@ -135,6 +145,16 @@ export function sourceTypeCondition(
   return inArray(records.sourceId, matchingSourceIds);
 }
 
+// Row-wise (a.k.a. tuple) keyset comparison instead of the equivalent
+// `OR(created_at < c, AND(created_at = c, uuid < u))`. Postgres treats a row
+// comparison as a single range predicate, so it can seek straight to the
+// cursor's position in records_user_id_created_at_idx (user_id, created_at
+// desc, uuid desc) rather than re-walking the page from the top on every deep
+// page. The column and value order must mirror that index's sort order.
+export function recordCursorCondition(cursor: CursorPosition): SQL {
+  return sql`(${records.createdAt}, ${records.uuid}) < (${cursor.createdAt}, ${cursor.uuid})`;
+}
+
 function buildFilterConditions(
   db: Database,
   userId: string,
@@ -159,14 +179,7 @@ function buildFilterConditions(
   }
 
   if (cursor) {
-    const beforeCursor = or(
-      lt(records.createdAt, cursor.createdAt),
-      and(
-        eq(records.createdAt, cursor.createdAt),
-        lt(records.uuid, cursor.uuid),
-      ),
-    );
-    conditions.push(beforeCursor);
+    conditions.push(recordCursorCondition(cursor));
   }
 
   return and(...conditions);
