@@ -81,15 +81,14 @@ function throttledError(): ApiError {
   );
 }
 
-// The create handler maps an unresolvable file_path collision to a 409 too, but
-// via filePathConflictError (recordErrors.ts), whose body carries a
-// `/data/attributes/filePath` JSON:API pointer. A webhook sender posts a raw
-// provider payload with no such document shape, so we build a hook-local 409
-// with no pointer instead of reusing that builder — matching the other local
-// error helpers in this file (notFoundError, throttledError, …). Named
-// distinctly from the create handler's builder so an import can't silently pull
-// in the pointer variant. Non-retryable by design (see the issue): the message
-// must not tell the sender to retry.
+// Named distinctly from the create handler's filePathConflictError
+// (recordErrors.ts): that one's body carries a `/data/attributes/filePath`
+// JSON:API pointer, which is meaningless to a webhook sender posting a raw
+// provider payload, so we build a pointer-free 409 here instead of importing it.
+// 409 is the status the issue mandates (mirroring the create handler). Tradeoff:
+// a spent retry budget is really transient contention that a redelivery could
+// clear, so a non-retryable 409 can drop a bursty same-path delivery — see the
+// follow-up suggestion about signalling that case as a retryable 503 instead.
 function filePathCollisionError(): ApiError {
   return apiError(
     409,
@@ -404,16 +403,11 @@ async function buildAndInsertRecord(
 // delivery-id dedup wins first (the row never inserts, so the file_path index
 // is never checked); a genuine path collision retries.
 //
-// When the file_path collision can't be resolved, insertRecordWithUniqueFilePath
-// re-throws the raw Postgres 23505 — either because the retry budget was spent or
-// because the resolver couldn't free a path different from the one that just
-// failed (see nextFilePathAfterViolation). Left unmapped it reaches
-// apiErrorHandler as a generic 500 with no signal about the collision. Map it to
-// a 409 — the same non-retryable status the create handler returns for an
-// unresolvable file_path collision (persistRecord in
-// server/api/records/index.post.ts) — so the response reflects the real cause
-// rather than an opaque server error. Log first so the collision is visible, not
-// silently swallowed. Any non-file-path error propagates untouched.
+// insertRecordWithUniqueFilePath resolves file_path collisions by re-suffixing,
+// but re-throws the raw Postgres 23505 once it can't (budget spent, or the
+// resolver can't free a new path). Unmapped that becomes an opaque 500; map it to
+// the 409 the create handler uses for the same case. Log the swallowed error with
+// enough context to act on the incident. Non-file-path errors propagate untouched.
 async function insertRecordResolvingFilePath(
   source: SourceRow,
   parsed: ParsedWebhookResult,
@@ -434,7 +428,13 @@ async function insertRecordResolvingFilePath(
     );
   } catch (error) {
     if (isFilePathUniqueViolation(error)) {
-      console.error("[hooks/ingest] unresolvable file path collision:", error);
+      console.error("[hooks/ingest] unresolvable file path collision:", {
+        sourceId: source.uuid,
+        userId: source.userId,
+        deliveryId,
+        filePath: parsed.filePath,
+        error,
+      });
       throw filePathCollisionError();
     }
 
