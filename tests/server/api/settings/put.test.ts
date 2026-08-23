@@ -237,6 +237,85 @@ describe("PUT /api/settings", () => {
     });
   });
 
+  it("throws a 422 when filenameTemplate has no dynamic placeholder", async () => {
+    mockReadBody.mockResolvedValue(buildBody({ filenameTemplate: "notes.md" }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            source: { pointer: "/data/attributes/filenameTemplate" },
+            detail: expect.stringContaining("{{slug}}"),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 422 when filenameTemplate lacks a .md extension", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({ filenameTemplate: "{{slug}}.txt" }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            detail: expect.stringContaining(".md"),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 422 when vaultDir contains a traversal segment", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({ vaultDir: "~/notes/../../etc" }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            source: { pointer: "/data/attributes/vaultDir" },
+            detail: expect.stringContaining(".."),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("accepts a valid filenameTemplate and vaultDir", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        filenameTemplate: "{{date}}-{{slug}}.md",
+        vaultDir: "~/Documents/Vault",
+      }),
+    );
+    stubUpsertResult([sampleSettings]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response).toEqual({
+      data: expect.objectContaining({ type: "user_settings" }),
+    });
+  });
+
   it("throws a 401 when the user is not authenticated", async () => {
     mockReadBody.mockResolvedValue(buildBody({ vaultDir: "~/Notes" }));
 
