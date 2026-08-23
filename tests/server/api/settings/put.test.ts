@@ -280,7 +280,7 @@ describe("PUT /api/settings", () => {
 
   it("throws a 422 when vaultDir contains a traversal segment", async () => {
     mockReadBody.mockResolvedValue(
-      buildBody({ vaultDir: "~/notes/../../etc" }),
+      buildBody({ vaultDir: "~/notes\u001f/vault" }),
     );
 
     await expect(handler(buildEvent(userId))).rejects.toMatchObject({
@@ -293,24 +293,28 @@ describe("PUT /api/settings", () => {
           expect.objectContaining({
             status: "422",
             source: { pointer: "/data/attributes/vaultDir" },
-            detail: expect.stringContaining(".."),
+            detail: expect.stringContaining("control characters"),
           }),
         ],
       },
     });
   });
 
-  it("accepts a valid filenameTemplate and vaultDir", async () => {
+  it("persists a valid filenameTemplate and vaultDir unchanged", async () => {
     mockReadBody.mockResolvedValue(
       buildBody({
         filenameTemplate: "{{date}}-{{slug}}.md",
         vaultDir: "~/Documents/Vault",
       }),
     );
-    stubUpsertResult([sampleSettings]);
+    const { values } = stubUpsertResult([sampleSettings]);
 
     const response = await handler(buildEvent(userId));
 
+    const insertedValues = (values as ReturnType<typeof vi.fn>).mock
+      .calls[0][0];
+    expect(insertedValues.filenameTemplate).toBe("{{date}}-{{slug}}.md");
+    expect(insertedValues.vaultDir).toBe("~/Documents/Vault");
     expect(response).toEqual({
       data: expect.objectContaining({ type: "user_settings" }),
     });
