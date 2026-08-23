@@ -86,6 +86,10 @@ const USER_ID = "user_abc123";
 const SOURCE_NAME = "My Webhook";
 const STRIPE_SECRET = "whsec_test_stripe_secret";
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
+// Mirrors MAX_FILE_PATH_INSERT_ATTEMPTS in server/utils/filePathCollision.ts
+// (not exported); the exhaustion test queues one fewer collision lookup than
+// this and expects exactly this many insert attempts before the 409.
+const MAX_FILE_PATH_INSERT_ATTEMPTS = 5;
 
 const sampleSource = {
   uuid: SOURCE_UUID,
@@ -499,11 +503,46 @@ describe("POST /api/hooks/[slug]", () => {
       await expect(handler(buildEvent())).rejects.toMatchObject({
         statusCode: 409,
       });
-      // Never a 500, and the record was never written under a colliding path.
-      expect(mockSetResponseStatus).not.toHaveBeenCalledWith(
-        expect.anything(),
-        202,
+      // Every attempt in the budget was spent before the 409, so the mapping
+      // fires on genuine exhaustion — not by short-circuiting the first
+      // collision straight to 409 (which would leave these inserts uncalled).
+      expect(returning).toHaveBeenCalledTimes(MAX_FILE_PATH_INSERT_ATTEMPTS);
+      // Webhook senders post a raw provider payload, so the 409 must not carry
+      // the create handler's `/data/attributes/filePath` JSON:API pointer for a
+      // field the sender never set.
+      const errorArgs = mockCreateError.mock.calls.at(-1)?.[0] as {
+        data: { errors: Array<{ source?: unknown }> };
+      };
+      expect(errorArgs.data.errors[0].source).toBeUndefined();
+    });
+
+    it("re-throws a non-file-path insert failure as a 500 (mapping is scoped to 23505)", async () => {
+      // A DB failure that is NOT the file_path unique violation (e.g. a dropped
+      // connection) must propagate untouched to the generic 500 handler, never
+      // get masked as a 409. Guards the `isFilePathUniqueViolation` branch so
+      // blanket-mapping every error to 409 fails here.
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource]);
+      const connectionError = Object.assign(
+        new Error("connection terminated unexpectedly"),
+        { code: "57P01" },
       );
+      const returning = vi.fn(() => Promise.reject(connectionError));
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 500,
+      });
+      // Not retried as a file_path collision — one insert attempt, then propagate.
+      expect(returning).toHaveBeenCalledTimes(1);
     });
   });
 

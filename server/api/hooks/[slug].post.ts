@@ -10,7 +10,6 @@ import {
   insertRecordWithUniqueFilePath,
   isFilePathUniqueViolation,
 } from "../../utils/filePathCollision";
-import { filePathConflictError } from "../../utils/recordErrors";
 import { assertWithinRecordLimit } from "../../utils/planLimits";
 import {
   GITHUB_PROVIDER,
@@ -79,6 +78,20 @@ function throttledError(): ApiError {
     429,
     "Too Many Requests",
     "This webhook source is receiving too many requests. Slow down and try again shortly.",
+  );
+}
+
+// The create handler maps an exhausted file_path collision to a 409 too, but via
+// filePathConflictError (recordErrors.ts), whose body carries a
+// `/data/attributes/filePath` JSON:API pointer. A webhook sender posts a raw
+// provider payload with no such document shape, so we build a hook-local 409
+// with no pointer instead of reusing that builder — matching the other local
+// error helpers in this file (notFoundError, throttledError, …).
+function filePathConflictError(): ApiError {
+  return apiError(
+    409,
+    "Conflict",
+    "Could not assign a unique file path for this record after several attempts. Retry this delivery.",
   );
 }
 
@@ -389,11 +402,14 @@ async function buildAndInsertRecord(
 // is never checked); a genuine path collision retries.
 //
 // Once the retry budget is spent, insertRecordWithUniqueFilePath re-throws the
-// raw Postgres 23505. Left unmapped it reaches apiErrorHandler as a 500, which
-// providers (Stripe/GitHub) treat as retryable and redeliver — risking a
-// duplicate record. Map it to the same non-retryable 409 the create handler
-// returns (filePathConflictError), mirroring persistRecord in
-// server/api/records/index.post.ts, so the provider stops retrying.
+// raw Postgres 23505. Left unmapped it reaches apiErrorHandler as a generic 500
+// with no signal about the collision. Map it to a 409 — the same non-retryable
+// status the create handler returns for an unresolvable file_path collision
+// (persistRecord in server/api/records/index.post.ts) — so the response reflects
+// the real cause rather than an opaque server error. Log first: exhausting all
+// MAX_FILE_PATH_INSERT_ATTEMPTS inserts is the "genuinely stuck insert" case that
+// budget exists to surface, so it must fail loud, matching the other logged
+// failure paths in this file. Any non-file-path error propagates untouched.
 async function insertRecordResolvingFilePath(
   source: SourceRow,
   parsed: ParsedWebhookResult,
@@ -414,6 +430,7 @@ async function insertRecordResolvingFilePath(
     );
   } catch (error) {
     if (isFilePathUniqueViolation(error)) {
+      console.error("[hooks/ingest] file path retry budget exhausted:", error);
       throw filePathConflictError();
     }
 
