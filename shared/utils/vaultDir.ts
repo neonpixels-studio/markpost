@@ -18,9 +18,9 @@ const PATH_SEPARATORS = /[/\\]/;
 // to ".." — comparison is done against the trimmed component to catch that.
 const TRAVERSAL_SEGMENT = /^\.{2,}$/;
 
-// NUL and C0 control characters cannot appear in a usable filesystem path and
-// are a classic injection vector, so reject any value containing one.
-const CONTROL_CHARACTERS = /[\x00-\x1f]/;
+// NUL, the C0 control range, and DEL cannot appear in a usable filesystem path
+// and are a classic injection vector, so reject any value containing one.
+const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/;
 
 export type VaultDirViolation =
   "not-a-string" | "empty" | "too-long" | "traversal" | "invalid-characters";

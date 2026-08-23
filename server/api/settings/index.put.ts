@@ -64,17 +64,15 @@ function isAttributePresent(value: unknown): boolean {
 
 // apiValidate only type-checks vaultDir/filenameTemplate. These two also carry
 // path-safety and collision rules (a placeholder-free template collapses every
-// record onto one file_path), so run their dedicated validators here. An empty
-// value is a no-op that preserves the column default, so only validate a value
-// that is actually present.
+// record onto one file_path), so run their dedicated validators here — each
+// throws a 422 on a bad value. An empty value is a no-op that preserves the
+// column default, so only validate a value that is actually present.
 function assertValidPathAttributes(attributes: UpdateSettingsAttributes): void {
   if (isAttributePresent(attributes.filenameTemplate)) {
-    attributes.filenameTemplate = assertValidFilenameTemplate(
-      attributes.filenameTemplate,
-    );
+    assertValidFilenameTemplate(attributes.filenameTemplate);
   }
   if (isAttributePresent(attributes.vaultDir)) {
-    attributes.vaultDir = assertValidVaultDir(attributes.vaultDir);
+    assertValidVaultDir(attributes.vaultDir);
   }
 }
 

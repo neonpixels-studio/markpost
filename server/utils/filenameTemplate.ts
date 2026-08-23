@@ -12,7 +12,7 @@ const VIOLATION_DETAIL: Record<FilenameTemplateViolation, string> = {
   empty: "FilenameTemplate must not be empty",
   "too-long": `FilenameTemplate must be at most ${FILENAME_TEMPLATE_MAX_LENGTH} characters`,
   "missing-placeholder":
-    "FilenameTemplate must contain at least one of {{date}}, {{slug}}, or {{source}} so records don't collide on one filename",
+    "FilenameTemplate must contain at least one of {{date}}, {{slug}}, or {{source}} so it isn't a constant filename",
   "missing-extension": "FilenameTemplate must end with .md",
 };
 
