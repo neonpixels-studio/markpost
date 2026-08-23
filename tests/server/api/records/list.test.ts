@@ -297,6 +297,29 @@ describe("GET /api/records", () => {
     return conditions.some((condition) => isCursorPredicate(condition, cursor));
   }
 
+  // Loose column-only match for the *negative* count assertion: any tuple
+  // fragment naming the cursor columns counts, regardless of its bound values.
+  // The strict isCursorPredicate would let a cursor leaked onto the count query
+  // from a reconstructed value (e.g. new Date(cursor.createdAt)) read as absent,
+  // silently understating `total` while the test stays green.
+  function mentionsCursorColumns(condition: unknown): boolean {
+    if (typeof condition !== "object" || condition === null) {
+      return false;
+    }
+
+    if (!("sql" in condition)) {
+      return false;
+    }
+
+    const { values } = (condition as { sql: { values: unknown[] } }).sql;
+
+    return values[0] === records.createdAt && values[1] === records.uuid;
+  }
+
+  function hasCursorColumns(conditions: unknown[]): boolean {
+    return conditions.some(mentionsCursorColumns);
+  }
+
   it("uses the first value when filter[source] is repeated in the query string", async () => {
     queryParams = { "filter[source]": ["webhook", "email"] };
     const { countWhere } = stubSelectResults({ value: 0 }, []);
@@ -576,7 +599,7 @@ describe("GET /api/records", () => {
       .and;
 
     expect(hasCursorPredicate(pageConditions, cursorRow)).toBe(true);
-    expect(hasCursorPredicate(countConditions, cursorRow)).toBe(false);
+    expect(hasCursorColumns(countConditions)).toBe(false);
   });
 
   // Page 2 of a filtered list is the realistic case: the page query must carry
@@ -606,6 +629,6 @@ describe("GET /api/records", () => {
     expect(hasCursorPredicate(pageConditions, cursorRow)).toBe(true);
 
     expect(findSourceIdInArray(countConditions)).toBeDefined();
-    expect(hasCursorPredicate(countConditions, cursorRow)).toBe(false);
+    expect(hasCursorColumns(countConditions)).toBe(false);
   });
 });

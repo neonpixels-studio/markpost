@@ -145,21 +145,15 @@ export function sourceTypeCondition(
   return inArray(records.sourceId, matchingSourceIds);
 }
 
-// Row-wise (a.k.a. tuple) keyset comparison instead of the equivalent
-// `OR(created_at < c, AND(created_at = c, uuid < u))`. Postgres can use a row
-// comparison as a single range qual, so on deep pages it descends the composite
-// index straight to the cursor instead of re-walking from the top; the planner
-// does not reduce the OR form to a range start, so that form re-scans. The
-// property holds only in combination with the `user_id = $n` equality qual that
-// buildFilterConditions always adds first: the backing index is
-// records_user_id_created_at_idx (user_id, created_at desc, uuid desc), so
-// user_id anchors the descent and (created_at, uuid) is the range within it —
-// the tuple's column/direction order must mirror those two trailing columns.
-// (Scoped to records only; the events list has the same OR shape but a
-// different, ascending index, so porting it is separate work.) Each cursor
-// value is bound through its column encoder (sql.param) so the Date serialises
-// as UTC exactly as the prior lt(records.createdAt, …) did — a bare
-// interpolation would ship the raw Date to the driver with a local offset.
+// Row-wise comparison, not the equivalent `OR(a<c, AND(a=c, b<u))` form the
+// planner cannot reduce to a range start. Postgres uses this as a range qual
+// on records_user_id_created_at_idx (see schema.ts) so deep pages seek to the
+// cursor instead of re-scanning; column order and direction must mirror that
+// index's trailing columns and the ORDER BY below, and it only ranges once the
+// `user_id = $n` equality qual buildFilterConditions adds first anchors it.
+// sql.param binds each value through its column encoder so the Date serialises
+// as UTC, exactly as the prior lt(records.createdAt, …) did — a bare
+// interpolation would ship a local-offset Date to the driver.
 export function recordCursorCondition(cursor: CursorPosition): SQL {
   return sql`(${records.createdAt}, ${records.uuid}) < (${sql.param(cursor.createdAt, records.createdAt)}, ${sql.param(cursor.uuid, records.uuid)})`;
 }
