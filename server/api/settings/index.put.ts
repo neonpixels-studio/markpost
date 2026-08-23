@@ -3,6 +3,8 @@ import { userSettings } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
 import { requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
+import { assertValidFilenameTemplate } from "../../utils/filenameTemplate";
+import { assertValidVaultDir } from "../../utils/vaultDir";
 import {
   CONFLICT_STRATEGIES,
   THEMES,
@@ -60,6 +62,22 @@ function isAttributePresent(value: unknown): boolean {
   return value !== undefined && value !== null && value !== "";
 }
 
+// apiValidate only type-checks vaultDir/filenameTemplate. These two also carry
+// path-safety and collision rules (a placeholder-free template collapses every
+// record onto one file_path), so run their dedicated validators here. An empty
+// value is a no-op that preserves the column default, so only validate a value
+// that is actually present.
+function assertValidPathAttributes(attributes: UpdateSettingsAttributes): void {
+  if (isAttributePresent(attributes.filenameTemplate)) {
+    attributes.filenameTemplate = assertValidFilenameTemplate(
+      attributes.filenameTemplate,
+    );
+  }
+  if (isAttributePresent(attributes.vaultDir)) {
+    attributes.vaultDir = assertValidVaultDir(attributes.vaultDir);
+  }
+}
+
 function pickAllowedAttributes(
   attributes: UpdateSettingsAttributes,
 ): UpdateSettingsAttributes {
@@ -103,6 +121,7 @@ export default defineEventHandler(
 
       const attributes =
         (body.data?.attributes as UpdateSettingsAttributes) ?? {};
+      assertValidPathAttributes(attributes);
       const settings = await upsertUserSettings(getDb(), userId, attributes);
 
       return { data: userSettingsSerializer(settings) };
