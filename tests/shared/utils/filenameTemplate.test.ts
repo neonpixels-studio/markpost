@@ -29,6 +29,14 @@ describe("filenameTemplateViolation", () => {
     );
   });
 
+  it("accepts a value exactly at the max length", () => {
+    const suffix = "{{slug}}.md";
+    const padding = "a".repeat(FILENAME_TEMPLATE_MAX_LENGTH - suffix.length);
+    const template = `${padding}${suffix}`;
+    expect(template).toHaveLength(FILENAME_TEMPLATE_MAX_LENGTH);
+    expect(filenameTemplateViolation(template)).toBeNull();
+  });
+
   const traversalTemplates = [
     "../{{slug}}.md",
     "{{date}}/../../{{slug}}.md",

@@ -30,8 +30,8 @@ function vaultDirError(violation: VaultDirViolation): ApiError {
 }
 
 // Throws a 422 ApiError when vaultDir is not a safe base directory — the sole
-// vaultDir validation, including the string-type check, so create and update
-// can't drift. Returns the value unchanged on success so callers persist
+// vaultDir validation, including the string-type check, so every settings
+// writer validates it the same way. Returns the value unchanged so callers persist
 // exactly what was validated.
 export function assertValidVaultDir(value: unknown): string {
   if (typeof value !== "string") {
