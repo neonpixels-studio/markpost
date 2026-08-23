@@ -11,6 +11,8 @@ const VIOLATION_DETAIL: Record<FilenameTemplateViolation, string> = {
   "not-a-string": "FilenameTemplate must be a string",
   empty: "FilenameTemplate must not be empty",
   "too-long": `FilenameTemplate must be at most ${FILENAME_TEMPLATE_MAX_LENGTH} characters`,
+  traversal: "FilenameTemplate must not contain path traversal segments (..)",
+  "invalid-characters": "FilenameTemplate must not contain control characters",
   "missing-placeholder":
     "FilenameTemplate must contain at least one of {{date}}, {{slug}}, or {{source}} so it isn't a constant filename",
   "missing-extension": "FilenameTemplate must end with .md",

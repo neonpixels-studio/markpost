@@ -280,6 +280,28 @@ describe("PUT /api/settings", () => {
 
   it("throws a 422 when vaultDir contains a traversal segment", async () => {
     mockReadBody.mockResolvedValue(
+      buildBody({ vaultDir: "~/notes/../../etc" }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            source: { pointer: "/data/attributes/vaultDir" },
+            detail: expect.stringContaining(".."),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 422 when vaultDir contains a control character", async () => {
+    mockReadBody.mockResolvedValue(
       buildBody({ vaultDir: "~/notes\u001f/vault" }),
     );
 
@@ -294,6 +316,28 @@ describe("PUT /api/settings", () => {
             status: "422",
             source: { pointer: "/data/attributes/vaultDir" },
             detail: expect.stringContaining("control characters"),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 422 when filenameTemplate contains a traversal segment", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({ filenameTemplate: "../{{slug}}.md" }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            source: { pointer: "/data/attributes/filenameTemplate" },
+            detail: expect.stringContaining(".."),
           }),
         ],
       },
