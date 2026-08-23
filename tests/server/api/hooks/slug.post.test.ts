@@ -13,6 +13,7 @@ import {
 } from "../../../../server/utils/webhookBodyLimit";
 import { hashSharedSecret } from "../../../../server/utils/signatureVerifier";
 import { records } from "../../../../server/db/schema";
+import { MAX_FILE_PATH_INSERT_ATTEMPTS } from "../../../../server/utils/filePathCollision";
 import { SHARED_SECRET_HEADER } from "#shared/utils/webhookSecrets";
 
 const selectMock = vi.fn();
@@ -86,10 +87,6 @@ const USER_ID = "user_abc123";
 const SOURCE_NAME = "My Webhook";
 const STRIPE_SECRET = "whsec_test_stripe_secret";
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
-// Mirrors MAX_FILE_PATH_INSERT_ATTEMPTS in server/utils/filePathCollision.ts
-// (not exported); the exhaustion test queues one fewer collision lookup than
-// this and expects exactly this many insert attempts before the 409.
-const MAX_FILE_PATH_INSERT_ATTEMPTS = 5;
 
 const sampleSource = {
   uuid: SOURCE_UUID,
@@ -463,23 +460,22 @@ describe("POST /api/hooks/[slug]", () => {
 
       stubSourceAndSettings([sampleSource]);
 
-      // One retry-collision lookup per re-resolution: growing taken sets push
-      // the resolver to -2, -3, -4, -5 before the budget is spent.
-      const takenSuffixSets = [
-        ["2026-01-01-hello.md"],
-        ["2026-01-01-hello.md", "2026-01-01-hello-2.md"],
-        [
+      // One retry-collision lookup per re-resolution (attempts 0..N-2 re-resolve;
+      // the final attempt exhausts the budget without another lookup). Each
+      // lookup shows one more taken suffix so the resolver keeps handing back a
+      // genuinely new path. Generated from the real budget so bumping
+      // MAX_FILE_PATH_INSERT_ATTEMPTS keeps the fixtures in lockstep.
+      const takenSuffixSets = Array.from(
+        { length: MAX_FILE_PATH_INSERT_ATTEMPTS - 1 },
+        (_unused, lookupIndex) => [
           "2026-01-01-hello.md",
-          "2026-01-01-hello-2.md",
-          "2026-01-01-hello-3.md",
+          ...Array.from(
+            { length: lookupIndex },
+            (_unusedSuffix, suffixIndex) =>
+              `2026-01-01-hello-${suffixIndex + 2}.md`,
+          ),
         ],
-        [
-          "2026-01-01-hello.md",
-          "2026-01-01-hello-2.md",
-          "2026-01-01-hello-3.md",
-          "2026-01-01-hello-4.md",
-        ],
-      ];
+      );
       for (const takenPaths of takenSuffixSets) {
         const retryCollisionWhere = vi.fn(() =>
           Promise.resolve(takenPaths.map((filePath) => ({ filePath }))),
@@ -499,6 +495,7 @@ describe("POST /api/hooks/[slug]", () => {
       const values = vi.fn(() => ({ onConflictDoNothing }));
       insertMock.mockReturnValue({ values });
       mockReadRawBody.mockResolvedValue(rawBody);
+      const consoleErrorSpy = spyConsoleError();
 
       await expect(handler(buildEvent())).rejects.toMatchObject({
         statusCode: 409,
@@ -507,6 +504,12 @@ describe("POST /api/hooks/[slug]", () => {
       // fires on genuine exhaustion — not by short-circuiting the first
       // collision straight to 409 (which would leave these inserts uncalled).
       expect(returning).toHaveBeenCalledTimes(MAX_FILE_PATH_INSERT_ATTEMPTS);
+      // Fail loud: the swallowed 23505 must still be logged, per the handler's
+      // "log first" contract. Deleting the console.error regresses this.
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[hooks/ingest]"),
+        uniqueViolation,
+      );
       // Webhook senders post a raw provider payload, so the 409 must not carry
       // the create handler's `/data/attributes/filePath` JSON:API pointer for a
       // field the sender never set.
@@ -514,6 +517,42 @@ describe("POST /api/hooks/[slug]", () => {
         data: { errors: Array<{ source?: unknown }> };
       };
       expect(errorArgs.data.errors[0].source).toBeUndefined();
+    });
+
+    it("maps a single-attempt unresolvable collision to the same 409", async () => {
+      // The other re-throw branch: the first insert 23505s and the resolver can
+      // only hand back the path that just failed (nothing new is visible yet), so
+      // insertRecordWithUniqueFilePath re-throws on attempt 0 without exhausting
+      // the budget. That still maps to the 409, not a 500. The pre-insert lookup
+      // and the retry lookup both see nothing taken, so the resolver returns the
+      // unchanged "…hello.md" — equal to the failed path — and gives up.
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource]);
+      const retryCollisionWhere = vi.fn(() => Promise.resolve([]));
+      const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
+      selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = vi.fn(() => Promise.reject(uniqueViolation));
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      mockReadRawBody.mockResolvedValue(rawBody);
+      spyConsoleError();
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      // Gave up on attempt 0 — a single insert, no budget-exhausting retry loop.
+      expect(returning).toHaveBeenCalledTimes(1);
     });
 
     it("re-throws a non-file-path insert failure as a 500 (mapping is scoped to 23505)", async () => {
