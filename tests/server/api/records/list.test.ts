@@ -5,6 +5,19 @@ import { records, sources } from "../../../../server/db/schema";
 
 const selectMock = vi.fn();
 
+// Hoisted so the drizzle-orm mock factory (itself hoisted) can reference it.
+// A callable with a `.param` property mirrors the real `sql` export's shape
+// enough for both recordCursorCondition and schema.ts's module-scope sql`…`
+// index expressions to build without throwing under the mock.
+const { mockSql } = vi.hoisted(() => {
+  const mockSql = (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    sql: { strings: [...strings], values },
+  });
+  mockSql.param = (value: unknown) => value;
+  mockSql.raw = (value: unknown) => ({ raw: value });
+  return { mockSql };
+});
+
 vi.mock("../../../../server/db", () => ({
   getDb: () => ({ select: selectMock }),
 }));
@@ -25,12 +38,13 @@ vi.mock("drizzle-orm", () => ({
   // reintroduced like(records.source, …) instead of throwing on undefined.
   like: (column: unknown, pattern: unknown) => ({ like: { column, pattern } }),
   or: (...conditions: unknown[]) => ({ or: conditions }),
-  // The cursor predicate is now a row-wise `sql` tuple comparison. Capture the
-  // interpolated column/value fragments so hasCursorPredicate can still detect
-  // that the cursor landed on a query.
-  sql: (_strings: TemplateStringsArray, ...values: unknown[]) => ({
-    sql: { values },
-  }),
+  // The cursor predicate is a row-wise `sql` tuple comparison built with
+  // sql`…` and sql.param(). Capture the template strings and interpolated
+  // values so hasCursorPredicate can assert the exact shape, and expose
+  // sql.param so recordCursorCondition (and schema.ts, which loads under this
+  // mock) can call it. sql.param returns the raw value here — the compiled
+  // encoding is proven separately in cursorPredicate.sql.test.ts.
+  sql: mockSql,
   SQL: class {},
 }));
 
@@ -243,23 +257,34 @@ describe("GET /api/records", () => {
     );
   }
 
-  // The cursor predicate is now a row-wise `sql` tuple comparison whose
-  // interpolated values are [records.createdAt, records.uuid, cursor.createdAt,
-  // cursor.uuid]; detect it by the records.createdAt column fragment so a change
-  // that drops the cursor from a query fails loudly.
-  function hasCursorPredicate(conditions: unknown[]): boolean {
-    return conditions.some(
-      (condition) =>
-        typeof condition === "object" &&
-        condition !== null &&
-        "sql" in condition &&
-        Array.isArray(
-          (condition as { sql: { values: unknown[] } }).sql.values,
-        ) &&
-        (condition as { sql: { values: unknown[] } }).sql.values.includes(
-          records.createdAt,
-        ),
+  // The cursor predicate is a row-wise `sql` tuple comparison. Under mockSql it
+  // surfaces as { sql: { strings, values } } where values are [records.createdAt,
+  // records.uuid, cursor.createdAt, cursor.uuid] and the template renders a `<`.
+  // Assert that exact shape so a change that drops OR corrupts the cursor (wrong
+  // column, flipped direction) fails loudly, not just a dropped one.
+  function isCursorPredicate(condition: unknown): boolean {
+    if (typeof condition !== "object" || condition === null) {
+      return false;
+    }
+
+    if (!("sql" in condition)) {
+      return false;
+    }
+
+    const { strings, values } = (
+      condition as { sql: { strings: string[]; values: unknown[] } }
+    ).sql;
+
+    return (
+      values[0] === records.createdAt &&
+      values[1] === records.uuid &&
+      values[2] instanceof Date &&
+      strings.join("").includes("<")
     );
+  }
+
+  function hasCursorPredicate(conditions: unknown[]): boolean {
+    return conditions.some(isCursorPredicate);
   }
 
   it("uses the first value when filter[source] is repeated in the query string", async () => {

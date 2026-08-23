@@ -22,12 +22,13 @@ describe("recordCursorCondition (compiled SQL)", () => {
       recordCursorCondition(cursor),
     );
 
-    // A single tuple comparison the planner can seek with, in the same column
-    // order as records_user_id_created_at_idx.
+    // A single tuple comparison the planner can descend the composite index
+    // with, in the same column order as records_user_id_created_at_idx. The
+    // `toBe` pins the whole string, so a reintroduced OR/AND form fails here.
     expect(sql).toBe('("records"."created_at", "records"."uuid") < ($1, $2)');
-    expect(params).toEqual([cursor.createdAt, cursor.uuid]);
 
-    // The pre-keyset shape re-walked from the top; prove it is gone.
-    expect(sql).not.toContain(" or ");
+    // Bound through the column encoder, so the Date is serialised as a UTC
+    // ISO string (not shipped raw with a local offset).
+    expect(params).toEqual(["2026-01-01T00:00:00.000Z", cursor.uuid]);
   });
 });
