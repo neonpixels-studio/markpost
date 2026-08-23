@@ -87,6 +87,13 @@ const USER_ID = "user_abc123";
 const SOURCE_NAME = "My Webhook";
 const STRIPE_SECRET = "whsec_test_stripe_secret";
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
+// Resolves to filePath "2026-01-01-hello.md" under the default template — the
+// shared body for the file_path collision tests.
+const SAMPLE_RAW_BODY = JSON.stringify({
+  title: "Hello",
+  content: "C",
+  created: "2026-01-01T00:00:00.000Z",
+});
 
 const sampleSource = {
   uuid: SOURCE_UUID,
@@ -161,6 +168,16 @@ function stubInsertRecord(row: unknown) {
   const values = vi.fn(() => ({ onConflictDoNothing }));
   insertMock.mockReturnValue({ values });
   return { values, onConflictDoNothing, returning };
+}
+
+// Every insert attempt rejects with `error`. Returns the `returning` spy so a
+// test can assert how many attempts ran before the handler gave up.
+function stubInsertRejecting(error: unknown) {
+  const returning = vi.fn(() => Promise.reject(error));
+  const onConflictDoNothing = vi.fn(() => ({ returning }));
+  const values = vi.fn(() => ({ onConflictDoNothing }));
+  insertMock.mockReturnValue({ values });
+  return returning;
 }
 
 function stubUpdateStats() {
@@ -452,12 +469,6 @@ describe("POST /api/hooks/[slug]", () => {
       // duplicate record; the handler must map it to the create handler's
       // non-retryable 409 instead. Asserting 409 fails the moment the mapping
       // regresses to a bare 500.
-      const rawBody = JSON.stringify({
-        title: "Hello",
-        content: "C",
-        created: "2026-01-01T00:00:00.000Z",
-      });
-
       stubSourceAndSettings([sampleSource]);
 
       // One retry-collision lookup per re-resolution (attempts 0..N-2 re-resolve;
@@ -490,11 +501,8 @@ describe("POST /api/hooks/[slug]", () => {
         code: "23505",
         constraint: "records_user_id_file_path_lower_unique",
       });
-      const returning = vi.fn(() => Promise.reject(uniqueViolation));
-      const onConflictDoNothing = vi.fn(() => ({ returning }));
-      const values = vi.fn(() => ({ onConflictDoNothing }));
-      insertMock.mockReturnValue({ values });
-      mockReadRawBody.mockResolvedValue(rawBody);
+      const returning = stubInsertRejecting(uniqueViolation);
+      mockReadRawBody.mockResolvedValue(SAMPLE_RAW_BODY);
       const consoleErrorSpy = spyConsoleError();
 
       await expect(handler(buildEvent())).rejects.toMatchObject({
@@ -504,11 +512,17 @@ describe("POST /api/hooks/[slug]", () => {
       // fires on genuine exhaustion — not by short-circuiting the first
       // collision straight to 409 (which would leave these inserts uncalled).
       expect(returning).toHaveBeenCalledTimes(MAX_FILE_PATH_INSERT_ATTEMPTS);
-      // Fail loud: the swallowed 23505 must still be logged, per the handler's
-      // "log first" contract. Deleting the console.error regresses this.
+      // Fail loud with actionable context: the swallowed 23505 is logged with
+      // the source/delivery/path identifiers, so an operator can trace it.
+      // Deleting the console.error regresses this.
       expect(consoleErrorSpy).toHaveBeenCalledWith(
         expect.stringContaining("[hooks/ingest]"),
-        uniqueViolation,
+        expect.objectContaining({
+          sourceId: SOURCE_UUID,
+          userId: USER_ID,
+          filePath: "2026-01-01-hello.md",
+          error: uniqueViolation,
+        }),
       );
       // Webhook senders post a raw provider payload, so the 409 must not carry
       // the create handler's `/data/attributes/filePath` JSON:API pointer for a
@@ -526,12 +540,6 @@ describe("POST /api/hooks/[slug]", () => {
       // the budget. That still maps to the 409, not a 500. The pre-insert lookup
       // and the retry lookup both see nothing taken, so the resolver returns the
       // unchanged "…hello.md" — equal to the failed path — and gives up.
-      const rawBody = JSON.stringify({
-        title: "Hello",
-        content: "C",
-        created: "2026-01-01T00:00:00.000Z",
-      });
-
       stubSourceAndSettings([sampleSource]);
       const retryCollisionWhere = vi.fn(() => Promise.resolve([]));
       const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
@@ -541,11 +549,8 @@ describe("POST /api/hooks/[slug]", () => {
         code: "23505",
         constraint: "records_user_id_file_path_lower_unique",
       });
-      const returning = vi.fn(() => Promise.reject(uniqueViolation));
-      const onConflictDoNothing = vi.fn(() => ({ returning }));
-      const values = vi.fn(() => ({ onConflictDoNothing }));
-      insertMock.mockReturnValue({ values });
-      mockReadRawBody.mockResolvedValue(rawBody);
+      const returning = stubInsertRejecting(uniqueViolation);
+      mockReadRawBody.mockResolvedValue(SAMPLE_RAW_BODY);
       spyConsoleError();
 
       await expect(handler(buildEvent())).rejects.toMatchObject({
@@ -560,27 +565,40 @@ describe("POST /api/hooks/[slug]", () => {
       // connection) must propagate untouched to the generic 500 handler, never
       // get masked as a 409. Guards the `isFilePathUniqueViolation` branch so
       // blanket-mapping every error to 409 fails here.
-      const rawBody = JSON.stringify({
-        title: "Hello",
-        content: "C",
-        created: "2026-01-01T00:00:00.000Z",
-      });
-
       stubSourceAndSettings([sampleSource]);
       const connectionError = Object.assign(
         new Error("connection terminated unexpectedly"),
         { code: "57P01" },
       );
-      const returning = vi.fn(() => Promise.reject(connectionError));
-      const onConflictDoNothing = vi.fn(() => ({ returning }));
-      const values = vi.fn(() => ({ onConflictDoNothing }));
-      insertMock.mockReturnValue({ values });
-      mockReadRawBody.mockResolvedValue(rawBody);
+      const returning = stubInsertRejecting(connectionError);
+      mockReadRawBody.mockResolvedValue(SAMPLE_RAW_BODY);
 
       await expect(handler(buildEvent())).rejects.toMatchObject({
         statusCode: 500,
       });
       // Not retried as a file_path collision — one insert attempt, then propagate.
+      expect(returning).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-throws a 23505 on a different unique index as a 500, not a 409", async () => {
+      // isFilePathUniqueViolation matches on BOTH code and the file_path
+      // constraint name. A 23505 on a different unique index (e.g. the
+      // source_id/delivery_id dedup index) is not a file_path collision, so it
+      // must surface as a 500 — never get mislabeled a file-path 409. Guards
+      // against isFilePathUniqueViolation regressing to a code-only check.
+      stubSourceAndSettings([sampleSource]);
+      const otherViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_source_id_delivery_id_unique",
+      });
+      const returning = stubInsertRejecting(otherViolation);
+      mockReadRawBody.mockResolvedValue(SAMPLE_RAW_BODY);
+      spyConsoleError();
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 500,
+      });
+      // Not treated as a file_path collision — no retry loop.
       expect(returning).toHaveBeenCalledTimes(1);
     });
   });
