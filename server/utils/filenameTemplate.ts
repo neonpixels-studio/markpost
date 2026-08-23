@@ -34,8 +34,9 @@ function filenameTemplateError(violation: FilenameTemplateViolation): ApiError {
 
 // Throws a 422 ApiError when filenameTemplate would render an unsafe or
 // collision-prone file_path — the sole filenameTemplate validation, including
-// the string-type check, so create and update can't drift. Returns the value
-// unchanged on success so callers persist exactly what was validated.
+// the string-type check, so every settings writer validates it the same way.
+// Returns the value unchanged on success so callers persist exactly what was
+// validated.
 export function assertValidFilenameTemplate(value: unknown): string {
   if (typeof value !== "string") {
     throw filenameTemplateError("not-a-string");

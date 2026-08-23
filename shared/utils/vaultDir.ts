@@ -8,8 +8,8 @@ import {
 // "~", and Windows drive letters are all legitimate and must be allowed. What it
 // must reject is a value that is empty, absurdly long, escapes upward via ".."
 // segments, or carries NUL/control characters that would corrupt a filesystem
-// write. This contract is shared so create and update validate vaultDir the same
-// way and can't drift. It validates values at write time only; rows written
+// write. This contract is shared so every settings writer validates vaultDir the
+// same way. It validates values at write time only; rows written
 // before this existed are not covered here.
 
 export const VAULT_DIR_MAX_LENGTH = 1024;
