@@ -38,9 +38,10 @@ vi.mock("../../app/composables/useRecords", async (importOriginal) => {
       void isoString;
       return "2m ago";
     },
-    formatSourceLabel: (source: string | null) =>
-      `label:${source ?? "unknown"}`,
-    sourceTypeIcon: () => "zap",
+    formatSourceLabel: (source: string | null, sourceType: string | null) =>
+      `label:${source ?? sourceType ?? "unknown"}`,
+    sourceTypeIcon: (sourceType: string | null) =>
+      `icon:${sourceType ?? "none"}`,
     get triggerRecordExportDownload() {
       return mockTriggerRecordExport;
     },
@@ -129,8 +130,9 @@ function makeRecord(overrides: Record<string, unknown> = {}) {
       userId: "user-1",
       title: "Test Record",
       content: "Content here",
-      sourceId: null,
-      source: "webhook/github",
+      sourceId: "source-1",
+      source: "My GitHub hook",
+      sourceType: "github",
       status: "synced",
       filePath: "99-incoming/test.md",
       tags: null,

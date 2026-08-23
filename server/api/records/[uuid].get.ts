@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, getTableColumns } from "drizzle-orm";
 import { getDb } from "../../db";
-import { records } from "../../db/schema";
+import { records, sources } from "../../db/schema";
 import { requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import { recordSerializer, type RecordApiResponse } from "../../utils/response";
@@ -16,8 +16,15 @@ export async function findRecordForUser(
   userId: string,
 ) {
   const rows = await db
-    .select()
+    .select({ ...getTableColumns(records), sourceType: sources.type })
     .from(records)
+    // Scope the join to the same user so it can never surface another tenant's
+    // source type, even if a future write path sets sourceId without the
+    // ownership check that guards it today.
+    .leftJoin(
+      sources,
+      and(eq(records.sourceId, sources.uuid), eq(sources.userId, userId)),
+    )
     .where(and(eq(records.uuid, uuid), eq(records.userId, userId)))
     .limit(1);
 

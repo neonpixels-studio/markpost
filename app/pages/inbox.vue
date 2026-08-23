@@ -197,7 +197,7 @@
               >
                 <span class="row gap-2" style="width: 120px">
                   <AppIcon
-                    :name="sourceTypeIcon(record.attributes.source)"
+                    :name="sourceTypeIcon(record.attributes.sourceType)"
                     :size="15"
                     :style="{ color: 'var(--accent)', flex: 'none' }"
                   />
@@ -211,7 +211,12 @@
                       text-overflow: ellipsis;
                     "
                   >
-                    {{ formatSourceLabel(record.attributes.source) }}
+                    {{
+                      formatSourceLabel(
+                        record.attributes.source,
+                        record.attributes.sourceType,
+                      )
+                    }}
                   </span>
                 </span>
                 <span

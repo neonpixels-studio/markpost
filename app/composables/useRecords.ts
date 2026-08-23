@@ -17,6 +17,7 @@ export type RecordAttributes = {
   content: string;
   sourceId: string | null;
   source: string | null;
+  sourceType: SourceType | null;
   status: RecordStatus;
   filePath: string | null;
   tags: unknown;
@@ -181,29 +182,51 @@ export const STATUS_TONE_MAP: Record<string, BadgeTone> = {
   error: "err",
 };
 
-export function sourceTypeIcon(source: string | null): string {
-  if (!source) {
-    return "zap";
+const DEFAULT_SOURCE_ICON = "zap";
+const UNKNOWN_SOURCE_LABEL = "unknown";
+
+// Icon per canonical source type (`sources.type`). Record rows resolve their
+// icon from the real type, not the free-text `source` display name (which never
+// carried a reliable type prefix). Keyed by SourceType so the compiler flags a
+// missing icon whenever a new source type is added to the shared contract.
+const SOURCE_TYPE_ICONS: Record<SourceType, string> = {
+  webhook: "zap",
+  email: "mail",
+  stripe: "card",
+  github: "github",
+  zapier: "zap",
+  shortcuts: "plug",
+};
+
+export function sourceTypeIcon(sourceType: string | null): string {
+  if (!sourceType || !isSourceType(sourceType)) {
+    return DEFAULT_SOURCE_ICON;
   }
 
-  if (source.startsWith("email/")) {
-    return "mail";
-  }
-
-  return "zap";
+  return SOURCE_TYPE_ICONS[sourceType];
 }
 
-export function formatSourceLabel(source: string | null): string {
-  if (!source) {
-    return "unknown";
-  }
-
-  const slashIndex = source.indexOf("/");
-  if (slashIndex === -1) {
+export function formatSourceLabel(
+  source: string | null,
+  sourceType: string | null,
+): string {
+  // Prefer the source's display name so two sources of the same type (e.g. two
+  // webhooks, "Prod deploys" and "Staging deploys") stay distinguishable — the
+  // real type is already conveyed by the icon. Fall back to the type name, then
+  // to "unknown", when no name is stored.
+  if (source) {
     return source;
   }
 
-  return source.slice(slashIndex + 1).replaceAll("/", " · ");
+  // Show whatever type the server resolved, even a legacy value outside the
+  // current SOURCE_TYPES set (sources.type is free text) — a real type name is
+  // a better label than "unknown". The output is escaped by Vue, so it needs
+  // no isSourceType guard here (the icon lookup still does).
+  if (sourceType) {
+    return sourceType;
+  }
+
+  return UNKNOWN_SOURCE_LABEL;
 }
 
 export function formatRelativeTime(isoString: string): string {

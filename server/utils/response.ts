@@ -17,6 +17,12 @@ type RecordAttributes = {
   content: string;
   sourceId: string | null;
   source: string | null;
+  // The canonical source type (`sources.type`), resolved by joining
+  // `records.sourceId → sources.uuid`. Distinct from `source`, which stores the
+  // free-text display name. Null when a record has no source (direct API create)
+  // or is returned by an endpoint that does not join sources (create/patch);
+  // the list and detail GET endpoints populate the real value.
+  sourceType: string | null;
   status: string;
   filePath: string | null;
   tags: unknown;
@@ -25,7 +31,11 @@ type RecordAttributes = {
   errorMessage: string | null;
 };
 
-type RecordInput = RecordAttributes;
+// Callers that do not join sources (create/patch/hooks) pass a plain record row
+// without `sourceType`; the serializer defaults it to null for them.
+type RecordInput = Omit<RecordAttributes, "sourceType"> & {
+  sourceType?: string | null;
+};
 
 type RecordResource = ApiResourceObject & {
   type: "records";
@@ -121,6 +131,7 @@ export function recordSerializer(
       content: record.content,
       sourceId: record.sourceId,
       source: record.source,
+      sourceType: record.sourceType ?? null,
       status: record.status,
       filePath: record.filePath,
       tags: record.tags,

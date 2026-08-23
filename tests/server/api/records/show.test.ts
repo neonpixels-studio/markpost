@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { H3Event } from "h3";
+import { sources } from "../../../../server/db/schema";
 
 const selectMock = vi.fn();
 
@@ -49,9 +50,10 @@ function buildEvent(contextUserId: string | undefined): H3Event {
 function stubSelectResult(rows: unknown[]) {
   const limit = vi.fn(() => Promise.resolve(rows));
   const where = vi.fn(() => ({ limit }));
-  const from = vi.fn(() => ({ where }));
+  const leftJoin = vi.fn(() => ({ where }));
+  const from = vi.fn(() => ({ leftJoin }));
   selectMock.mockReturnValue({ from });
-  return { from, where, limit };
+  return { from, leftJoin, where, limit };
 }
 
 beforeEach(() => {
@@ -86,6 +88,20 @@ describe("findRecordForUser", () => {
 
     expect(result).toBeNull();
   });
+
+  it("left-joins the sources table so the real source type is resolved", async () => {
+    const { leftJoin } = stubSelectResult([sampleRecord]);
+
+    const db = (await import("../../../../server/db")).getDb();
+    await findRecordForUser(db, validUuid, userId);
+
+    // The join predicate is tenant-scoped (records.sourceId = sources.uuid AND
+    // sources.userId = userId); the exact predicate shape is asserted with the
+    // mocked drizzle in list.test.ts. Here (real drizzle) we pin the joined
+    // table so removing the join fails loudly.
+    expect(leftJoin.mock.calls[0]?.[0]).toBe(sources);
+    expect(leftJoin.mock.calls[0]?.[1]).toBeDefined();
+  });
 });
 
 describe("GET /api/records/:uuid", () => {
@@ -106,6 +122,7 @@ describe("GET /api/records/:uuid", () => {
           content: sampleRecord.content,
           sourceId: null,
           source: null,
+          sourceType: null,
           status: "pending",
           filePath: null,
           tags: null,
@@ -116,6 +133,21 @@ describe("GET /api/records/:uuid", () => {
         links: { self: `/api/records/${validUuid}` },
       },
     });
+  });
+
+  it("surfaces the joined source type on the serialized record", async () => {
+    stubSelectResult([
+      {
+        ...sampleRecord,
+        sourceId: "550e8400-e29b-41d4-a716-446655440099",
+        source: "My Zapier hook",
+        sourceType: "zapier",
+      },
+    ]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data?.attributes.sourceType).toBe("zapier");
   });
 
   it("throws a 404 when no record exists for the authenticated user", async () => {

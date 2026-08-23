@@ -18,8 +18,9 @@ function makeRecord(overrides: Record<string, unknown> = {}) {
       userId: "user-1",
       title: "Test Record",
       content: "# Heading\n\nBody",
-      sourceId: null,
-      source: "webhook/github",
+      sourceId: "source-1",
+      source: "My GitHub hook",
+      sourceType: "github",
       status: "synced",
       filePath: "99-incoming/test.md",
       tags: null,
@@ -39,7 +40,7 @@ const stubs = {
     props: ["variant", "size", "icon"],
     emits: ["click"],
   },
-  AppIcon: { template: "<span />", props: ["name", "size"] },
+  AppIcon: { template: '<span :data-icon="name" />', props: ["name", "size"] },
   AppBadge: {
     template: '<span class="app-badge"><slot /></span>',
     props: ["tone", "dot"],
@@ -81,6 +82,20 @@ describe("RecordDetailModal", () => {
     const wrapper = mountModal();
     expect(wrapper.text()).toContain("Test Record");
     expect(wrapper.find(".app-code-block").text()).toContain("Heading");
+  });
+
+  it("resolves the source icon from the real type and labels with the source name", () => {
+    const wrapper = mountModal();
+    expect(wrapper.find("[data-icon]").attributes("data-icon")).toBe("github");
+    expect(wrapper.text()).toContain("My GitHub hook");
+  });
+
+  it("falls back to the zap icon and stored name when the source type is unresolved", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ sourceType: null, source: "Legacy hook" }),
+    });
+    expect(wrapper.find("[data-icon]").attributes("data-icon")).toBe("zap");
+    expect(wrapper.text()).toContain("Legacy hook");
   });
 
   it("shows a loading indicator while loading", () => {

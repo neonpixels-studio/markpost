@@ -15,6 +15,7 @@ const baseRecord = {
   content: "Some content here",
   sourceId: null,
   source: null,
+  sourceType: null,
   status: "pending",
   filePath: null,
   tags: null,
@@ -38,6 +39,7 @@ describe("recordSerializer", () => {
         content: baseRecord.content,
         sourceId: null,
         source: null,
+        sourceType: null,
         status: "pending",
         filePath: null,
         tags: null,
@@ -49,6 +51,31 @@ describe("recordSerializer", () => {
         self: `/api/records/${baseRecord.uuid}`,
       },
     });
+  });
+
+  it("exposes the joined source type when present", () => {
+    const recordWithType = {
+      ...baseRecord,
+      sourceId: "550e8400-e29b-41d4-a716-446655440099",
+      source: "My Zapier hook",
+      sourceType: "zapier",
+    };
+
+    const result = recordSerializer(recordWithType);
+
+    expect(result?.attributes.sourceType).toBe("zapier");
+    expect(result?.attributes.source).toBe("My Zapier hook");
+  });
+
+  it("defaults sourceType to null when the row was not joined to sources", () => {
+    const recordWithoutJoin = {
+      ...baseRecord,
+      sourceType: undefined,
+    };
+
+    const result = recordSerializer(recordWithoutJoin);
+
+    expect(result?.attributes.sourceType).toBeNull();
   });
 
   it("includes optional fields when present", () => {

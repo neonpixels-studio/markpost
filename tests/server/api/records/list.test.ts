@@ -14,6 +14,11 @@ vi.mock("drizzle-orm", () => ({
   count: () => ({ count: true }),
   desc: (column: unknown) => ({ desc: column }),
   eq: (column: unknown, value: unknown) => ({ eq: { column, value } }),
+  // The real handler spreads the record columns into the page select; the
+  // select router below only needs to tell the page query apart from the
+  // count/cursor/subquery selects, which it does via the sourceType key the
+  // page query adds, so this mock can return an empty column set.
+  getTableColumns: () => ({}),
   ilike: (column: unknown, pattern: unknown) => ({
     ilike: { column, pattern },
   }),
@@ -60,7 +65,8 @@ function stubSelectResults(
   const pageLimit = vi.fn(() => Promise.resolve(pageRows));
   const pageOrderBy = vi.fn(() => ({ limit: pageLimit }));
   const pageWhere = vi.fn(() => ({ orderBy: pageOrderBy }));
-  const pageFrom = vi.fn(() => ({ where: pageWhere }));
+  const pageLeftJoin = vi.fn(() => ({ where: pageWhere }));
+  const pageFrom = vi.fn(() => ({ leftJoin: pageLeftJoin }));
 
   // Cursor lookup selects { createdAt, uuid }; keep it distinct from the
   // source subquery (which selects { uuid } only) by checking createdAt first.
@@ -79,6 +85,13 @@ function stubSelectResults(
   // subquery and cursor lookup add extra db.select() calls, so a call-count
   // heuristic would misroute the count/page queries.
   selectMock.mockImplementation((columns?: Record<string, unknown>) => {
+    // The page query is the only select that adds a sourceType column (from the
+    // sources join), so match it on that key. Checked first so it can never be
+    // misrouted by the cursor/subquery column checks below.
+    if (columns && "sourceType" in columns) {
+      return { from: pageFrom };
+    }
+
     if (columns && "createdAt" in columns) {
       return { from: cursorFrom };
     }
@@ -94,7 +107,14 @@ function stubSelectResults(
     return { from: pageFrom };
   });
 
-  return { countWhere, pageWhere, sourceSubFrom, sourceSubWhere, cursorWhere };
+  return {
+    countWhere,
+    pageWhere,
+    pageLeftJoin,
+    sourceSubFrom,
+    sourceSubWhere,
+    cursorWhere,
+  };
 }
 
 function stubRequireUser(returnedUserId: string | undefined) {
@@ -309,6 +329,47 @@ describe("GET /api/records", () => {
 
     const pageWhereArg = pageWhere.mock.calls[0]?.[0] as { and: unknown[] };
     expect(findSourceIdInArray(pageWhereArg.and)).toBeDefined();
+  });
+
+  it("left-joins sources on records.sourceId so the real source type is available", async () => {
+    const { pageLeftJoin } = stubSelectResults({ value: 0 }, []);
+
+    await handler(buildEvent(userId));
+
+    const [joinedTable, joinPredicate] = pageLeftJoin.mock.calls[0] ?? [];
+    expect(joinedTable).toBe(sources);
+    const joinConditions = (joinPredicate as { and: unknown[] }).and;
+    expect(hasEqCondition(joinConditions, records.sourceId, sources.uuid)).toBe(
+      true,
+    );
+    // Tenant-scoped: the join must also pin sources.userId so it can never
+    // surface another user's source type.
+    expect(hasEqCondition(joinConditions, sources.userId, userId)).toBe(true);
+  });
+
+  it("exposes the joined source type on each serialized record", async () => {
+    stubSelectResults({ value: 1 }, [
+      {
+        uuid: "550e8400-e29b-41d4-a716-446655440000",
+        createdAt: new Date("2024-01-15T10:00:00Z"),
+        userId,
+        title: "Test",
+        content: "Body",
+        sourceId: "550e8400-e29b-41d4-a716-446655440099",
+        source: "My GitHub hook",
+        sourceType: "github",
+        status: "synced",
+        filePath: null,
+        tags: null,
+        frontmatter: null,
+        syncedAt: null,
+        errorMessage: null,
+      },
+    ]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data[0]?.attributes.sourceType).toBe("github");
   });
 
   // Regression guard for the original bug: type filtering matched
