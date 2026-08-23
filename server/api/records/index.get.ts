@@ -147,14 +147,19 @@ export function sourceTypeCondition(
 
 // Row-wise (a.k.a. tuple) keyset comparison instead of the equivalent
 // `OR(created_at < c, AND(created_at = c, uuid < u))`. Postgres can use a row
-// comparison as a single range qual, so it descends the composite index to the
-// cursor instead of re-walking the page from the top on deep pages; the OR form
-// it cannot turn into a range start at all. The tuple's column order must
-// mirror records_user_id_created_at_idx (created_at desc, uuid desc) for the
-// comparison to stay index-usable. Each cursor value is bound through its
-// column encoder (sql.param) so the Date is serialised as UTC exactly as the
-// prior lt(records.createdAt, …) did — a bare interpolation would ship the raw
-// Date to the driver with a local offset.
+// comparison as a single range qual, so on deep pages it descends the composite
+// index straight to the cursor instead of re-walking from the top; the planner
+// does not reduce the OR form to a range start, so that form re-scans. The
+// property holds only in combination with the `user_id = $n` equality qual that
+// buildFilterConditions always adds first: the backing index is
+// records_user_id_created_at_idx (user_id, created_at desc, uuid desc), so
+// user_id anchors the descent and (created_at, uuid) is the range within it —
+// the tuple's column/direction order must mirror those two trailing columns.
+// (Scoped to records only; the events list has the same OR shape but a
+// different, ascending index, so porting it is separate work.) Each cursor
+// value is bound through its column encoder (sql.param) so the Date serialises
+// as UTC exactly as the prior lt(records.createdAt, …) did — a bare
+// interpolation would ship the raw Date to the driver with a local offset.
 export function recordCursorCondition(cursor: CursorPosition): SQL {
   return sql`(${records.createdAt}, ${records.uuid}) < (${sql.param(cursor.createdAt, records.createdAt)}, ${sql.param(cursor.uuid, records.uuid)})`;
 }
