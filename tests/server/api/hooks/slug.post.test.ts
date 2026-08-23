@@ -441,6 +441,70 @@ describe("POST /api/hooks/[slug]", () => {
 
       expect(insertedValues.filePath).toBe("2026-01-01-hello.md");
     });
+
+    it("returns a non-retryable 409 (not 500) when the filePath retry budget is exhausted", async () => {
+      // Every insert loses the file_path race (23505), and each retry's
+      // collision lookup shows one more taken suffix so the resolver keeps
+      // handing back a genuinely new path until the attempt budget is spent and
+      // insertRecordWithUniqueFilePath re-throws the raw 23505. Left unmapped
+      // that surfaces as a 500 the provider (Stripe/GitHub) retries, risking a
+      // duplicate record; the handler must map it to the create handler's
+      // non-retryable 409 instead. Asserting 409 fails the moment the mapping
+      // regresses to a bare 500.
+      const rawBody = JSON.stringify({
+        title: "Hello",
+        content: "C",
+        created: "2026-01-01T00:00:00.000Z",
+      });
+
+      stubSourceAndSettings([sampleSource]);
+
+      // One retry-collision lookup per re-resolution: growing taken sets push
+      // the resolver to -2, -3, -4, -5 before the budget is spent.
+      const takenSuffixSets = [
+        ["2026-01-01-hello.md"],
+        ["2026-01-01-hello.md", "2026-01-01-hello-2.md"],
+        [
+          "2026-01-01-hello.md",
+          "2026-01-01-hello-2.md",
+          "2026-01-01-hello-3.md",
+        ],
+        [
+          "2026-01-01-hello.md",
+          "2026-01-01-hello-2.md",
+          "2026-01-01-hello-3.md",
+          "2026-01-01-hello-4.md",
+        ],
+      ];
+      for (const takenPaths of takenSuffixSets) {
+        const retryCollisionWhere = vi.fn(() =>
+          Promise.resolve(takenPaths.map((filePath) => ({ filePath }))),
+        );
+        const retryCollisionFrom = vi.fn(() => ({
+          where: retryCollisionWhere,
+        }));
+        selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+      }
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = vi.fn(() => Promise.reject(uniqueViolation));
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      // Never a 500, and the record was never written under a colliding path.
+      expect(mockSetResponseStatus).not.toHaveBeenCalledWith(
+        expect.anything(),
+        202,
+      );
+    });
   });
 
   describe("invalid body — non-object payload", () => {
