@@ -1,11 +1,20 @@
+import {
+  hasControlCharacters,
+  hasTraversalSegment,
+} from "#shared/utils/pathSafety";
+
 // filenameTemplate drives buildFilename() in server/utils/markdown.ts, which
 // substitutes the dynamic tokens below and uses the result as every record's
 // file_path. A template carrying none of those tokens (e.g. "notes.md") renders
 // to a constant path, so every record collides on the file_path unique index
 // and forces insertRecordWithUniqueFilePath to re-suffix on every insert. This
 // contract rejects that footgun (plus empty, over-long, and non-markdown
-// templates) so the value is validated the same way whether it arrives on
-// create or update. It validates values at write time only; rows written
+// templates). Because the rendered value is the leaf of the synced file path,
+// it also rejects the same traversal and control-character hazards vaultDir
+// does — buildFilename()'s sanitizeFilePath strips ".."/"." segments at render
+// time, but rejecting them here keeps the two path attributes symmetric and
+// catches control bytes it does not strip. It validates values the same way
+// whether they arrive on create or update, at write time only; rows written
 // before this existed are not covered here.
 
 export const FILENAME_TEMPLATE_MAX_LENGTH = 255;
@@ -24,6 +33,8 @@ export type FilenameTemplateViolation =
   | "not-a-string"
   | "empty"
   | "too-long"
+  | "traversal"
+  | "invalid-characters"
   | "missing-placeholder"
   | "missing-extension";
 
@@ -51,6 +62,12 @@ export function filenameTemplateViolation(
   }
   if (value.length > FILENAME_TEMPLATE_MAX_LENGTH) {
     return "too-long";
+  }
+  if (hasControlCharacters(value)) {
+    return "invalid-characters";
+  }
+  if (hasTraversalSegment(value)) {
+    return "traversal";
   }
   if (!hasDynamicPlaceholder(value)) {
     return "missing-placeholder";

@@ -29,6 +29,22 @@ describe("filenameTemplateViolation", () => {
     );
   });
 
+  const traversalTemplates = [
+    "../{{slug}}.md",
+    "{{date}}/../../{{slug}}.md",
+    "notes\\..\\{{slug}}.md",
+  ];
+
+  it.each(traversalTemplates)("rejects the traversal template %j", (value) => {
+    expect(filenameTemplateViolation(value)).toBe("traversal");
+  });
+
+  it("rejects a template containing a control character", () => {
+    expect(filenameTemplateViolation("{{slug}}\u0000.md")).toBe(
+      "invalid-characters",
+    );
+  });
+
   const constantTemplates = ["notes.md", "inbox/note.md", "a-b-c.md"];
 
   it.each(constantTemplates)(
