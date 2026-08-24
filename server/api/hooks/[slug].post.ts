@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { H3Event } from "h3";
 import { getDb } from "../../db";
 import { records, sources, userSettings } from "../../db/schema";
@@ -17,7 +17,11 @@ import {
   STRIPE_SIGNATURE_HEADER,
   verifyProviderSignature,
 } from "../../utils/signatureVerifier";
-import { writeEvent } from "../../utils/eventWriter";
+import {
+  writeEvent,
+  writeEventOncePerRecord,
+  type WriteEventInput,
+} from "../../utils/eventWriter";
 import {
   extractDeliveryId,
   GITHUB_DELIVERY_HEADER,
@@ -173,7 +177,12 @@ async function findRecordByDelivery(
   return row ?? null;
 }
 
-async function updateSourceStats(sourceId: string): Promise<void> {
+// Atomic lifetime counter bump. recordCount is a monotonic tally ("deliveries
+// ingested, ever") — deletes never decrement it — so the bump is an atomic
+// `+ 1`, never a COUNT-derived reconcile (a COUNT of live rows would clobber the
+// tally down to the current row count after any deletion). Only ever called by
+// the winner of claimStatsBump, so it runs exactly once per record.
+async function incrementSourceStats(sourceId: string): Promise<void> {
   const db = getDb();
   await db
     .update(sources)
@@ -184,6 +193,74 @@ async function updateSourceStats(sourceId: string): Promise<void> {
     .where(eq(sources.uuid, sourceId));
 }
 
+// Refresh only lastHitAt, leaving recordCount untouched. Used when the counter
+// bump was already claimed (an ordinary retry / race loser): the delivery
+// already counted, so the retry is a hit worth timestamping but must not bump.
+async function touchLastHitAt(sourceId: string): Promise<void> {
+  const db = getDb();
+  await db
+    .update(sources)
+    .set({ lastHitAt: new Date() })
+    .where(eq(sources.uuid, sourceId));
+}
+
+// Atomically claim this record's one-time counter bump. `records.counted_at` is
+// set exactly once; the guarded `UPDATE … WHERE counted_at IS NULL RETURNING`
+// means only the first caller — across the fresh insert and any concurrent or
+// later deduped retry — gets a row back. This is what makes recordCount
+// idempotent under retries AND concurrency without leaning on the prunable
+// events table: a redelivery whose original never bumped (crashed after insert)
+// still finds counted_at NULL and heals it, while an ordinary retry loses the
+// claim and does not double-count.
+async function claimStatsBump(recordUuid: string): Promise<boolean> {
+  const db = getDb();
+  const claimed = await db
+    .update(records)
+    .set({ countedAt: new Date() })
+    .where(and(eq(records.uuid, recordUuid), isNull(records.countedAt)))
+    .returning({ uuid: records.uuid });
+
+  return claimed.length > 0;
+}
+
+// Win the claim → bump the lifetime counter once; lose it → only refresh
+// lastHitAt. Either outcome still timestamps the hit, and recordCount moves at
+// most once per record regardless of how many deliveries (or races) touch it.
+//
+// The claim and the increment are two statements (the neon-http driver has no
+// interactive transactions), so a failure strictly between them leaves the
+// record claimed but the counter un-bumped — a permanent under-count of one for
+// that record. This window is far smaller than the insert→side-effects crash
+// window this change heals, and no worse than the single-statement bump it
+// replaced. Folding both into one atomic data-modifying CTE would close it and
+// is tracked as a follow-up.
+async function applyStatsBump(
+  sourceId: string,
+  recordUuid: string,
+): Promise<void> {
+  // A rejected claim is treated as "not claimed" so lastHitAt still refreshes
+  // (touchLastHitAt never touches recordCount, so this is safe either way) — a
+  // served 202 should never leave the hit timestamp stale.
+  const claimed = await claimStatsBump(recordUuid).catch((claimError) => {
+    logStatsError(claimError);
+    return false;
+  });
+
+  if (claimed) {
+    await incrementSourceStats(sourceId);
+    return;
+  }
+
+  await touchLastHitAt(sourceId);
+}
+
+// Flag a confirmation failure on the record, but never regress a record that
+// was already synced (a heal path can be re-run against a record ingested days
+// earlier). The guard admits `pending` (first failure) and `error` (a later,
+// possibly different failure refreshing the message) — since the err event is
+// deduped per record, this UPDATE is the only thing that keeps the record's
+// errorMessage current across repeated failures — while leaving `synced`
+// untouchable.
 async function markRecordError(
   recordUuid: string,
   errorMessage: string,
@@ -195,7 +272,12 @@ async function markRecordError(
       status: RECORD_STATUS_ERROR,
       errorMessage,
     })
-    .where(eq(records.uuid, recordUuid));
+    .where(
+      and(
+        eq(records.uuid, recordUuid),
+        inArray(records.status, [RECORD_STATUS_PENDING, RECORD_STATUS_ERROR]),
+      ),
+    );
 }
 
 function toErrorMessage(error: unknown): string {
@@ -391,9 +473,10 @@ async function buildAndInsertRecord(
 }
 
 // insertWebhookRecord returned no row. With a delivery id that means a
-// concurrent duplicate won the insert race — return its record as a dedup hit
-// so this delivery still gets a 202 with the canonical uuid. Without one it is
-// a genuine insert failure, which must fail loud.
+// concurrent duplicate won the insert race — return its record as a dedup hit so
+// this delivery still gets a 202 with the canonical uuid and its idempotent heal
+// side effects run. Without a delivery id it is a genuine insert failure, which
+// must fail loud.
 async function resolveInsertConflict(
   source: SourceRow,
   deliveryId: string | null,
@@ -436,15 +519,20 @@ function buildDeliveryHeaders(
   };
 }
 
-// The record already exists at this point (writeBestEffortSideEffects is only ever
-// called after a successful insert), so unlike the outer handler catch, we know
-// there is a real record to mark. The record's own content was parsed and stored
-// fine; what failed is confirming that in the activity log. We still flag the
-// record so the failure is visible in-app rather than only in server logs, but the
-// event/record messages deliberately say "failed to confirm", not "ingestion
-// failed" — the 202 response that follows is telling the sender the truth. Both
-// writes are themselves best-effort (each swallows its own failure) so this must
-// not throw, or it would defeat the "don't roll back the 202 response" guarantee.
+// A real record exists whenever this runs: the record was committed either by
+// this request (fresh path) or by a prior delivery (heal path), which is exactly
+// why markRecordError is status-guarded — it must flag a still-pending record but
+// never regress one an earlier delivery already moved past pending. The record's
+// own content was parsed and stored fine; what failed is confirming that in the
+// activity log, so the messages say "failed to confirm", not "ingestion failed"
+// — the 202 that follows is telling the sender the truth. Both writes are
+// best-effort (each swallows its own failure) so this must not throw, or it would
+// defeat the "don't roll back the 202 response" guarantee.
+//
+// Known gap (follow-up): if a record is left in `error` by a failed confirmation
+// and a later retry heals it (writes the ok event), the record's status is not
+// reconciled back — the ok event lands but the error status/message remain. That
+// status-machine reconciliation is out of scope here and tracked as a follow-up.
 async function recordIngestEventFailure(
   source: SourceRow,
   record: { uuid: string; title: string },
@@ -458,7 +546,9 @@ async function recordIngestEventFailure(
     markRecordError(record.uuid, errorMessage).catch((markError) => {
       console.error("[hooks/ingest] failed to mark record error:", markError);
     }),
-    writeEvent({
+    // Deduped by record so a provider that retries a persistently-failing
+    // delivery for hours appends at most one err event, not one per attempt.
+    writeEventOncePerRecord({
       userId: source.userId,
       kind: EVENT_KIND_ERR,
       message: `Failed to confirm webhook ingestion: ${errorMessage}`,
@@ -470,27 +560,44 @@ async function recordIngestEventFailure(
   ]);
 }
 
-async function writeBestEffortSideEffects(
+function okEventInput(
   source: SourceRow,
-  record: { uuid: string; title: string },
+  record: IngestedRecord,
+): WriteEventInput & { recordUuid: string } {
+  return {
+    userId: source.userId,
+    kind: EVENT_KIND_OK,
+    message: `Webhook received: ${record.title}`,
+    recordUuid: record.uuid,
+    sourceId: source.uuid,
+  };
+}
+
+function logStatsError(updateError: unknown): void {
+  console.error("[hooks/ingest] failed to update source stats:", updateError);
+}
+
+type OkEventWriter = (
+  input: WriteEventInput & { recordUuid: string },
+) => Promise<void>;
+
+// The ingest side effects, shared by every outcome. The stat bump is claimed
+// atomically (applyStatsBump) so it stays correct under retries and concurrent
+// duplicates regardless of the event write, and the ok event goes through the
+// caller-chosen writer: a fresh insert uses the plain `writeEvent` (a brand-new
+// record has no prior ok event, so the hot path skips the dedup read), while a
+// deduped retry uses `writeEventOncePerRecord` so the activity log keeps at most
+// one ok event per record. Stats and event run concurrently and independently;
+// both are best-effort — each swallows its own failure and neither rolls back
+// the record or the 202 response.
+async function writeIngestSideEffects(
+  source: SourceRow,
+  record: IngestedRecord,
+  writeOkEvent: OkEventWriter,
 ): Promise<void> {
-  // Stats and event writes are independent best-effort operations: run concurrently
-  // so failures in one do not delay the other, and neither rolls back the record
-  // or changes the 202 response, preventing cascading failures on a single ingest.
   await Promise.allSettled([
-    updateSourceStats(source.uuid).catch((updateError) => {
-      console.error(
-        "[hooks/ingest] failed to update source stats:",
-        updateError,
-      );
-    }),
-    writeEvent({
-      userId: source.userId,
-      kind: EVENT_KIND_OK,
-      message: `Webhook received: ${record.title}`,
-      recordUuid: record.uuid,
-      sourceId: source.uuid,
-    }).catch((writeError) =>
+    applyStatsBump(source.uuid, record.uuid).catch(logStatsError),
+    writeOkEvent(okEventInput(source, record)).catch((writeError) =>
       recordIngestEventFailure(source, record, writeError),
     ),
   ]);
@@ -549,7 +656,18 @@ export default defineEventHandler(async (event) => {
     );
     const alreadyIngested = await findAlreadyIngested(source, deliveryId);
 
+    // A retry whose record already exists still runs its side effects, with the
+    // record-deduped ok-event writer: a normal retry is a no-op (claim already
+    // taken, ok event already logged), but a first delivery that committed the
+    // record then crashed before its side effects ran is healed here — the claim
+    // is won and the missing ok event lands. The plan-limit budget is not spent
+    // again: the record already counted.
     if (alreadyIngested) {
+      await writeIngestSideEffects(
+        source,
+        alreadyIngested,
+        writeEventOncePerRecord,
+      );
       setResponseStatus(event, 202);
       return { data: { uuid: alreadyIngested.uuid } };
     }
@@ -562,17 +680,12 @@ export default defineEventHandler(async (event) => {
       deliveryId,
     );
 
-    // A dedup hit means this delivery's record already exists, so its side
-    // effects are skipped: re-running them on every normal retry would
-    // double-count recordCount and emit a duplicate "received" event for one
-    // logical delivery. The tradeoff is that if the very first delivery crashed
-    // after committing the insert but before its side effects ran, a later retry
-    // won't re-fire them (recordCount under-counts by one, no ok event). That
-    // rare crash-window loss is preferred over over-counting every honest retry;
-    // making side effects idempotent to close it is tracked as a follow-up.
-    if (!deduped) {
-      await writeBestEffortSideEffects(source, record);
-    }
+    // A fresh insert uses the plain ok-event write (no prior event to dedup); a
+    // concurrent-race dedup hit uses the record-deduped writer so it closes the
+    // same crash-window gap without duplicating the winner's ok event. Either
+    // way the atomic claim keeps recordCount from moving twice.
+    const writeOkEvent = deduped ? writeEventOncePerRecord : writeEvent;
+    await writeIngestSideEffects(source, record, writeOkEvent);
 
     setResponseStatus(event, 202);
     return { data: { uuid: record.uuid } };

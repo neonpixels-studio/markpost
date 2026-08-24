@@ -162,6 +162,14 @@ export const records = pgTable(
     frontmatter: jsonb("frontmatter"),
     syncedAt: timestamp("synced_at", { withTimezone: true }),
     errorMessage: text("error_message"),
+    // One-time idempotency marker for the source recordCount bump. Set exactly
+    // once — by whichever delivery first runs the ingest side effects (the fresh
+    // insert, or a deduped retry that heals a crash before the original bumped)
+    // — via a guarded `UPDATE … WHERE counted_at IS NULL RETURNING`. Because the
+    // claim is atomic and lives on the durable record row (not the prunable
+    // events table), recordCount moves at most once per record under retries and
+    // concurrency. NULL means "not yet counted". See server/api/hooks/[slug].post.ts.
+    countedAt: timestamp("counted_at", { withTimezone: true }),
   },
   (table) => [
     // records_user_id_idx is a strict leading-column prefix of the composite
