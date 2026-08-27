@@ -190,3 +190,34 @@ describe("sitemap.xml asset", () => {
     expect(sitemap).toContain("</urlset>");
   });
 });
+
+describe("app URL edge cases", () => {
+  it("throws when the app URL is not configured (fails loud)", () => {
+    delete process.env.NUXT_PUBLIC_APP_URL;
+
+    expect(() => buildOpenApiJson()).toThrow(/NUXT_PUBLIC_APP_URL/);
+    expect(() => buildLlmsTxt()).toThrow(/NUXT_PUBLIC_APP_URL/);
+    expect(() => buildSitemapXml()).toThrow(/NUXT_PUBLIC_APP_URL/);
+  });
+
+  it("never doubles the slash when the app URL has a trailing slash", () => {
+    process.env.NUXT_PUBLIC_APP_URL = `${TEST_APP_URL}/`;
+
+    expect(buildSitemapXml()).toContain(`<loc>${TEST_APP_URL}/docs</loc>`);
+    expect(buildSitemapXml()).not.toContain(`${TEST_APP_URL}//`);
+    expect(buildLlmsTxt()).not.toContain(`${TEST_APP_URL}//`);
+  });
+
+  it("keeps the openapi spec parseable when the app URL has a reserved character", () => {
+    process.env.NUXT_PUBLIC_APP_URL = 'https://example.com/"break';
+
+    expect(() => JSON.parse(buildOpenApiJson())).not.toThrow();
+  });
+
+  it("entity-escapes a reserved character in sitemap loc values", () => {
+    process.env.NUXT_PUBLIC_APP_URL = "https://example.com/a&b";
+
+    expect(buildSitemapXml()).toContain("https://example.com/a&amp;b/docs");
+    expect(buildSitemapXml()).not.toContain("a&b/docs");
+  });
+});

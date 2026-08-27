@@ -16,12 +16,31 @@ export const OPENAPI_CONTENT_TYPE = "application/json; charset=utf-8";
 export const LLMS_CONTENT_TYPE = "text/plain; charset=utf-8";
 export const SITEMAP_CONTENT_TYPE = "application/xml; charset=utf-8";
 
-function interpolateAppUrl(template: string): string {
-  return template.replaceAll(APP_URL_PLACEHOLDER, buildAppUrl());
+// The placeholder sits inside already-serialized JSON/XML, so the configured
+// origin is spliced in as raw text. Escape it for the target format at the seam
+// so an origin carrying a reserved character can't produce an unparseable body.
+function interpolate(template: string, value: string): string {
+  return template.replaceAll(APP_URL_PLACEHOLDER, value);
 }
 
+function jsonEscape(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+// The template is immutable, so serialize it once; only the origin varies.
+const OPENAPI_TEMPLATE_JSON = JSON.stringify(openApiTemplate, null, 2);
+
 export function buildOpenApiJson(): string {
-  return interpolateAppUrl(JSON.stringify(openApiTemplate, null, 2));
+  return interpolate(OPENAPI_TEMPLATE_JSON, jsonEscape(buildAppUrl()));
 }
 
 const LLMS_TXT_TEMPLATE = `# Markpost
@@ -53,7 +72,7 @@ The home page's Markdown is served from the root URL when requested with \`Accep
 `;
 
 export function buildLlmsTxt(): string {
-  return interpolateAppUrl(LLMS_TXT_TEMPLATE);
+  return interpolate(LLMS_TXT_TEMPLATE, buildAppUrl());
 }
 
 type SitemapEntry = {
@@ -73,7 +92,7 @@ const SITEMAP_ENTRIES: SitemapEntry[] = [
 
 function renderSitemapEntry(entry: SitemapEntry): string {
   return `  <url>
-    <loc>${APP_URL_PLACEHOLDER}${entry.path === "/" ? "/" : entry.path}</loc>
+    <loc>${APP_URL_PLACEHOLDER}${entry.path}</loc>
     <changefreq>${entry.changefreq}</changefreq>
     <priority>${entry.priority}</priority>
   </url>`;
@@ -81,10 +100,10 @@ function renderSitemapEntry(entry: SitemapEntry): string {
 
 export function buildSitemapXml(): string {
   const urls = SITEMAP_ENTRIES.map(renderSitemapEntry).join("\n");
-  const document = `<?xml version="1.0" encoding="UTF-8"?>
+  const sitemapDocument = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls}
 </urlset>
 `;
-  return interpolateAppUrl(document);
+  return interpolate(sitemapDocument, xmlEscape(buildAppUrl()));
 }

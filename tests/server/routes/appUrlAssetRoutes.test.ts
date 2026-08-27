@@ -16,18 +16,17 @@ const { default: sitemapHandler } =
 
 const event = {} as H3Event;
 
+vi.stubGlobal("setHeader", mockSetHeader);
+
 let previousAppUrl: string | undefined;
 
 beforeEach(() => {
   previousAppUrl = process.env.NUXT_PUBLIC_APP_URL;
   process.env.NUXT_PUBLIC_APP_URL = TEST_APP_URL;
-  vi.stubGlobal("setHeader", mockSetHeader);
   mockSetHeader.mockReset();
 });
 
 afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
   if (previousAppUrl === undefined) {
     delete process.env.NUXT_PUBLIC_APP_URL;
     return;
