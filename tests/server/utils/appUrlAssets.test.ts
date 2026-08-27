@@ -1,10 +1,14 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
-import { SCOPE_NAMES } from "../../server/utils/protectedResource";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SCOPE_NAMES } from "../../../server/utils/protectedResource";
+import openApiTemplate from "../../../server/utils/openapi.template.json";
+import {
+  buildLlmsTxt,
+  buildOpenApiJson,
+  buildSitemapXml,
+} from "../../../server/utils/appUrlAssets";
 
-const specPath = resolve(process.cwd(), "public/openapi.json");
-const spec = JSON.parse(readFileSync(specPath, "utf8"));
+const TEST_APP_URL = "https://custom.example.com";
+const STALE_ORIGIN = "dh-markpost.netlify.app";
 
 // Every REST endpoint the server exposes under /api, keyed without the /api
 // prefix (the spec's server URL already carries it). Keep this in lockstep with
@@ -67,21 +71,49 @@ function resolvePointer(root: unknown, ref: string): unknown {
   return current;
 }
 
-describe("public/openapi.json", () => {
+let previousAppUrl: string | undefined;
+
+beforeEach(() => {
+  previousAppUrl = process.env.NUXT_PUBLIC_APP_URL;
+  process.env.NUXT_PUBLIC_APP_URL = TEST_APP_URL;
+});
+
+afterEach(() => {
+  if (previousAppUrl === undefined) {
+    delete process.env.NUXT_PUBLIC_APP_URL;
+    return;
+  }
+  process.env.NUXT_PUBLIC_APP_URL = previousAppUrl;
+});
+
+describe("openapi.json asset", () => {
+  it("interpolates the configured app URL and drops the stale origin", () => {
+    const spec = JSON.parse(buildOpenApiJson());
+
+    expect(spec.servers?.[0]?.url).toBe(`${TEST_APP_URL}/api`);
+    expect(spec.info?.contact?.url).toBe(TEST_APP_URL);
+    expect(buildOpenApiJson()).not.toContain(STALE_ORIGIN);
+  });
+
   it("is a valid OpenAPI 3.1 document with the expected metadata", () => {
+    const spec = JSON.parse(buildOpenApiJson());
+
     expect(spec.openapi).toMatch(/^3\.1\./);
     expect(spec.info?.title).toBe("Markpost API");
     expect(spec.info?.version).toBeTypeOf("string");
-    expect(spec.servers?.[0]?.url).toBe("https://dh-markpost.netlify.app/api");
   });
 
   it("declares the bearer security scheme globally", () => {
+    const spec = JSON.parse(buildOpenApiJson());
     const scheme = spec.components?.securitySchemes?.bearerAuth;
+
     expect(scheme).toMatchObject({ type: "http", scheme: "bearer" });
     expect(spec.security).toContainEqual({ bearerAuth: [] });
   });
 
   it("documents exactly the REST endpoints the server exposes", () => {
+    const spec = JSON.parse(buildOpenApiJson());
+
     expect(Object.keys(spec.paths).sort()).toEqual(
       Object.keys(EXPECTED_OPERATIONS).sort(),
     );
@@ -97,24 +129,64 @@ describe("public/openapi.json", () => {
   });
 
   it("marks the public ingest endpoints as unauthenticated", () => {
+    const spec = JSON.parse(buildOpenApiJson());
+
     for (const [path, method] of PUBLIC_OPERATIONS) {
       expect(spec.paths[path][method].security).toEqual([]);
     }
   });
 
   it("catalogs the same scopes as the protected-resource metadata", () => {
-    expect(Object.keys(spec["x-scopes"]).sort()).toEqual(
+    expect(Object.keys(openApiTemplate["x-scopes"]).sort()).toEqual(
       [...SCOPE_NAMES].sort(),
     );
   });
 
   it("has no dangling internal $refs", () => {
+    const spec = JSON.parse(buildOpenApiJson());
     const refs = collectRefs(spec).filter((ref) => ref.startsWith("#/"));
+
     expect(refs.length).toBeGreaterThan(0);
 
     const dangling = refs.filter(
       (ref) => resolvePointer(spec, ref) === undefined,
     );
     expect(dangling).toEqual([]);
+  });
+});
+
+describe("llms.txt asset", () => {
+  it("interpolates the configured app URL and drops the stale origin", () => {
+    const llms = buildLlmsTxt();
+
+    expect(llms).toContain(`Base URL: ${TEST_APP_URL}.`);
+    expect(llms).toContain(`[Documentation](${TEST_APP_URL}/docs)`);
+    expect(llms).toContain(
+      `[OpenAPI specification](${TEST_APP_URL}/openapi.json)`,
+    );
+    expect(llms).not.toContain(STALE_ORIGIN);
+    expect(llms).not.toContain("{{APP_URL}}");
+  });
+});
+
+describe("sitemap.xml asset", () => {
+  it("interpolates the configured app URL and drops the stale origin", () => {
+    const sitemap = buildSitemapXml();
+
+    expect(sitemap).toContain(`<loc>${TEST_APP_URL}/</loc>`);
+    expect(sitemap).toContain(`<loc>${TEST_APP_URL}/docs</loc>`);
+    expect(sitemap).toContain(`<loc>${TEST_APP_URL}/login</loc>`);
+    expect(sitemap).not.toContain(STALE_ORIGIN);
+    expect(sitemap).not.toContain("{{APP_URL}}");
+  });
+
+  it("is a well-formed sitemap urlset", () => {
+    const sitemap = buildSitemapXml();
+
+    expect(sitemap).toMatch(/^<\?xml version="1\.0" encoding="UTF-8"\?>/);
+    expect(sitemap).toContain(
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    );
+    expect(sitemap).toContain("</urlset>");
   });
 });
