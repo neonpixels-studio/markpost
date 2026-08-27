@@ -39,6 +39,14 @@ export type UserSettings = {
 
 const SLUG_MAX_LENGTH = 80;
 const FALLBACK_SLUG = "untitled";
+// Combining diacritical marks left behind after NFKD decomposition (e.g. the
+// accent split off from "é"). Dropping them folds accented Latin to plain ASCII
+// ("café" -> "cafe") instead of deleting the whole letter.
+const COMBINING_MARKS_PATTERN = /\p{M}/gu;
+// Everything a slug may not contain. Non-Latin scripts (Cyrillic, CJK, Arabic)
+// survive NFKD, so this strips them entirely and the title falls back to
+// FALLBACK_SLUG rather than leaking undecomposable characters into the filename.
+const NON_SLUG_CHAR_PATTERN = /[^a-z0-9\s-]/g;
 
 const turndown = new TurndownService({
   headingStyle: "atx",
@@ -51,8 +59,10 @@ export function convertHtmlToMarkdown(html: string): string {
 
 export function titleToSlug(title: string): string {
   const slug = title
+    .normalize("NFKD")
+    .replace(COMBINING_MARKS_PATTERN, "")
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(NON_SLUG_CHAR_PATTERN, "")
     .trim()
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
