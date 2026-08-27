@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  PROTECTED_RESOURCE,
   PROTECTED_RESOURCE_PATH,
   SCOPE_NAMES,
   buildProtectedResourceMetadata,
 } from "../../../server/utils/protectedResource";
+
+const APP_URL = "https://custom-domain.example.com";
 
 describe("protectedResource", () => {
   it("serves metadata at the RFC 9728 well-known path", () => {
@@ -13,17 +14,25 @@ describe("protectedResource", () => {
     );
   });
 
-  it("builds RFC 9728 metadata for the API resource", () => {
-    const metadata = buildProtectedResourceMetadata();
+  it("builds RFC 9728 metadata from the supplied app URL", () => {
+    const metadata = buildProtectedResourceMetadata(APP_URL);
 
-    expect(metadata.resource).toBe(PROTECTED_RESOURCE);
-    expect(metadata.resource).toMatch(/\/api$/);
+    expect(metadata.resource).toBe(`${APP_URL}/api`);
+    expect(metadata.resource_documentation).toBe(`${APP_URL}/openapi.json`);
     expect(metadata.bearer_methods_supported).toEqual(["header"]);
-    expect(metadata.resource_documentation).toMatch(/\/openapi\.json$/);
+  });
+
+  it("does not advertise the hardcoded Netlify preview host", () => {
+    const metadata = buildProtectedResourceMetadata(APP_URL);
+
+    expect(metadata.resource).not.toContain("dh-markpost.netlify.app");
+    expect(metadata.resource_documentation).not.toContain(
+      "dh-markpost.netlify.app",
+    );
   });
 
   it("declares a read/write scope catalog", () => {
-    const metadata = buildProtectedResourceMetadata();
+    const metadata = buildProtectedResourceMetadata(APP_URL);
 
     expect(metadata.scopes_supported).toEqual(SCOPE_NAMES);
     expect(metadata.scopes_supported).toContain("records:read");

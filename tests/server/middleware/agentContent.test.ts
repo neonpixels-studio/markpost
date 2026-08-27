@@ -4,6 +4,16 @@ import type { H3Event } from "h3";
 const mockGetHeader = vi.fn();
 const mockSetResponseHeader = vi.fn();
 
+const APP_URL = "https://custom-domain.example.com";
+
+const { mockBuildAppUrl } = vi.hoisted(() => ({
+  mockBuildAppUrl: vi.fn(() => APP_URL),
+}));
+
+vi.mock("../../../server/utils/appUrl", () => ({
+  buildAppUrl: mockBuildAppUrl,
+}));
+
 vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
 
 const { default: handler } =
@@ -20,10 +30,14 @@ beforeEach(() => {
   vi.stubGlobal("setResponseHeader", mockSetResponseHeader);
   mockGetHeader.mockReset();
   mockSetResponseHeader.mockReset();
+  mockBuildAppUrl.mockReset();
+  mockBuildAppUrl.mockReturnValue(APP_URL);
+  vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("agentContent middleware", () => {
@@ -129,7 +143,38 @@ describe("agentContent middleware", () => {
     );
 
     const body = JSON.parse(await result.text());
-    expect(body.resource).toMatch(/\/api$/);
+    expect(body.resource).toBe(`${APP_URL}/api`);
+    expect(body.resource_documentation).toBe(`${APP_URL}/openapi.json`);
     expect(body.scopes_supported).toContain("records:read");
+  });
+
+  it("returns 503 on the well-known path when the app URL is unconfigured", async () => {
+    mockGetHeader.mockReturnValue(undefined);
+    mockBuildAppUrl.mockImplementation(() => {
+      throw new Error("NUXT_PUBLIC_APP_URL is not set");
+    });
+
+    const result = (await handler(
+      buildEvent("/.well-known/oauth-protected-resource"),
+    )) as unknown as Response;
+
+    expect(result).toBeInstanceOf(Response);
+    expect(result.status).toBe(503);
+    expect(result.headers.get("content-type")).toBe(
+      "application/json; charset=utf-8",
+    );
+    const body = JSON.parse(await result.text());
+    expect(body.error).toBe("server_error");
+  });
+
+  it("falls through to HTML for a content route when the app URL is unconfigured", async () => {
+    mockGetHeader.mockReturnValue("text/markdown");
+    mockBuildAppUrl.mockImplementation(() => {
+      throw new Error("NUXT_PUBLIC_APP_URL is not set");
+    });
+
+    const result = await handler(buildEvent("/docs"));
+
+    expect(result).toBeUndefined();
   });
 });
