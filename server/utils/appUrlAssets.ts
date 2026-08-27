@@ -19,8 +19,12 @@ export const SITEMAP_CONTENT_TYPE = "application/xml; charset=utf-8";
 // The placeholder sits inside already-serialized JSON/XML, so the configured
 // origin is spliced in as raw text. Escape it for the target format at the seam
 // so an origin carrying a reserved character can't produce an unparseable body.
+// A replacer function (not a string) is required so `$`-sequences in the origin
+// aren't reinterpreted by replaceAll as substitution patterns. llms.txt is
+// plain text/Markdown and a valid origin carries no Markdown metacharacters, so
+// it interpolates unescaped.
 function interpolate(template: string, value: string): string {
-  return template.replaceAll(APP_URL_PLACEHOLDER, value);
+  return template.replaceAll(APP_URL_PLACEHOLDER, () => value);
 }
 
 function jsonEscape(value: string): string {

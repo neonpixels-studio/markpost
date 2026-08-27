@@ -45,7 +45,7 @@ describe("GET /openapi.json", () => {
       "application/json; charset=utf-8",
     );
     expect(spec.servers?.[0]?.url).toBe(`${TEST_APP_URL}/api`);
-    expect(body).not.toContain("dh-markpost.netlify.app");
+    expect(body).not.toContain("{{APP_URL}}");
   });
 });
 
@@ -59,7 +59,7 @@ describe("GET /llms.txt", () => {
       "text/plain; charset=utf-8",
     );
     expect(body).toContain(`Base URL: ${TEST_APP_URL}.`);
-    expect(body).not.toContain("dh-markpost.netlify.app");
+    expect(body).not.toContain("{{APP_URL}}");
   });
 });
 
@@ -73,6 +73,6 @@ describe("GET /sitemap.xml", () => {
       "application/xml; charset=utf-8",
     );
     expect(body).toContain(`<loc>${TEST_APP_URL}/</loc>`);
-    expect(body).not.toContain("dh-markpost.netlify.app");
+    expect(body).not.toContain("{{APP_URL}}");
   });
 });
