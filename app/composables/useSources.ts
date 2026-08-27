@@ -107,8 +107,8 @@ const SOURCE_ACTIVE_WINDOW_DAYS = 7;
 const SOURCE_NEW_WINDOW_MINUTES = 5;
 
 export type SourceActivityStatus = {
-  tone: "ok" | "warn" | "accent";
-  label: "active" | "quiet" | "ready" | "idle";
+  tone: "" | "ok" | "warn" | "accent";
+  label: "active" | "quiet" | "ready" | "waiting" | "idle";
 };
 
 // A source that has ever delivered is either firing ("active") or has gone
@@ -122,12 +122,19 @@ function deliveredActivityStatus(lastHitAt: string): SourceActivityStatus {
   return { tone: "warn", label: "quiet" };
 }
 
-// A source that has never delivered is either brand new and awaiting its first
-// hit ("ready") or has sat unused since creation ("idle").
+// A source that has never delivered moves through three states so the warning
+// tone is reserved for a genuinely abandoned source, not one still being wired
+// up: "ready" for its first few minutes, then a neutral "waiting" while a first
+// delivery is still plausible, and only "idle" (warn) once a source has sat a
+// whole active window with nothing arriving. An unparseable createdAt can't be
+// vouched for, so it falls through to "idle".
 function undeliveredActivityStatus(createdAt: string): SourceActivityStatus {
   const sinceCreated = computeElapsedBuckets(createdAt);
   if (sinceCreated && sinceCreated.minutes < SOURCE_NEW_WINDOW_MINUTES) {
     return { tone: "accent", label: "ready" };
+  }
+  if (sinceCreated && sinceCreated.days < SOURCE_ACTIVE_WINDOW_DAYS) {
+    return { tone: "", label: "waiting" };
   }
   return { tone: "warn", label: "idle" };
 }

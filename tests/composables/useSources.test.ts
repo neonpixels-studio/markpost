@@ -200,7 +200,29 @@ describe("sourceActivityStatus", () => {
     expect(status).toEqual({ tone: "ok", label: "active" });
   });
 
-  it("is 'idle' (warn) for an older source that has never delivered", () => {
+  it("is a neutral 'waiting' once past the new window but still within the active window", () => {
+    const twoDaysAgo = new Date("2026-01-13T12:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: twoDaysAgo,
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "", label: "waiting" });
+  });
+
+  it("is 'waiting' (not a warning) at exactly the new-window boundary", () => {
+    const exactlyFiveMinutesAgo = new Date(
+      "2026-01-15T11:55:00Z",
+    ).toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: exactlyFiveMinutesAgo,
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "", label: "waiting" });
+  });
+
+  it("is 'idle' (warn) only once a whole active window has passed with no delivery", () => {
     const status = sourceActivityStatus({
       ...baseAttributes,
       createdAt: "2025-01-01T00:00:00Z",
@@ -209,13 +231,11 @@ describe("sourceActivityStatus", () => {
     expect(status).toEqual({ tone: "warn", label: "idle" });
   });
 
-  it("is 'idle' at exactly the new-window boundary (exclusive)", () => {
-    const exactlyFiveMinutesAgo = new Date(
-      "2026-01-15T11:55:00Z",
-    ).toISOString();
+  it("is 'idle' at exactly the active-window boundary for an undelivered source (exclusive)", () => {
+    const exactlySevenDaysAgo = new Date("2026-01-08T12:00:00Z").toISOString();
     const status = sourceActivityStatus({
       ...baseAttributes,
-      createdAt: exactlyFiveMinutesAgo,
+      createdAt: exactlySevenDaysAgo,
       lastHitAt: null,
     });
     expect(status).toEqual({ tone: "warn", label: "idle" });

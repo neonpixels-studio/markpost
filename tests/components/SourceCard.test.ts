@@ -238,6 +238,19 @@ describe("SourceCard", () => {
     expect(badge.classes()).toContain("accent");
   });
 
+  it("shows a neutral waiting badge for a recent source still awaiting its first delivery", () => {
+    const twoDaysAgo = new Date("2026-01-13T12:00:00Z").toISOString();
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: {
+        source: makeSource({ createdAt: twoDaysAgo, lastHitAt: null }),
+      },
+    });
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("waiting");
+    expect(badge.classes()).not.toContain("warn");
+  });
+
   it("emits remove with attributes.uuid (not source.id) when trash is clicked", async () => {
     const source: SourceResource = {
       type: "sources",
