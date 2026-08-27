@@ -147,7 +147,7 @@ export const FILE_PATH_UNIQUE_INDEX = "records_user_id_file_path_lower_unique";
 // small burst of concurrent ingests for the same path resolves in a couple of
 // rounds, and a bounded ceiling keeps a genuinely stuck insert from looping
 // forever instead of failing loud.
-const MAX_FILE_PATH_INSERT_ATTEMPTS = 5;
+export const MAX_FILE_PATH_INSERT_ATTEMPTS = 5;
 
 type PostgresError = {
   code?: string;
