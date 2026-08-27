@@ -141,9 +141,10 @@ function undeliveredActivityStatus(createdAt: string): SourceActivityStatus {
 
 // The status badge reflects whether the webhook is actually firing, derived
 // from real delivery activity rather than the source's age alone. It is a pure
-// read of the source's timestamps: consumers recompute it when the source prop
-// changes or the card re-renders, not on a timer, so a "ready" card only flips
-// to "idle" on the next render rather than the instant the window elapses.
+// read of the source's timestamps with no reactive clock, so a consuming
+// computed only re-evaluates when the source prop is replaced (e.g. the next
+// loadSources() refetch) — a card advances between states on the next fetch,
+// not the instant a window elapses.
 export function sourceActivityStatus(
   attributes: SourceAttributes,
 ): SourceActivityStatus {

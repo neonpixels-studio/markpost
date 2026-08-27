@@ -248,7 +248,8 @@ describe("SourceCard", () => {
     });
     const badge = wrapper.find(".badge");
     expect(badge.text()).toBe("waiting");
-    expect(badge.classes()).not.toContain("warn");
+    // The neutral state carries no tone modifier — just the base badge class.
+    expect(badge.classes()).toEqual(["badge"]);
   });
 
   it("emits remove with attributes.uuid (not source.id) when trash is clicked", async () => {
