@@ -3,6 +3,7 @@ import {
   buildEndpointUrl,
   formatLastHit,
   buildSourceMeta,
+  sourceActivityStatus,
   useSources,
 } from "../../app/composables/useSources";
 import type {
@@ -116,6 +117,77 @@ describe("buildSourceMeta", () => {
   it("shows 'never hit' when lastHitAt is null", () => {
     const meta = buildSourceMeta(baseAttributes);
     expect(meta[1]).toBe("never hit");
+  });
+});
+
+describe("sourceActivityStatus", () => {
+  const baseAttributes: SourceAttributes = {
+    uuid: "abc-123",
+    userId: "user-1",
+    createdAt: "2026-01-01T10:00:00Z",
+    type: "webhook",
+    name: "Webhook endpoint",
+    provider: null,
+    endpointSlug: "wh_abc12345",
+    routeFolder: "99-incoming/",
+    fieldMapping: null,
+    lastHitAt: null,
+    recordCount: 0,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-15T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("is 'active' (ok) when the source delivered within the active window", () => {
+    const recentHit = new Date("2026-01-14T12:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      lastHitAt: recentHit,
+    });
+    expect(status).toEqual({ tone: "ok", label: "active" });
+  });
+
+  it("is 'quiet' (warn) when the last delivery is older than the active window", () => {
+    const staleHit = new Date("2025-12-01T00:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      lastHitAt: staleHit,
+    });
+    expect(status).toEqual({ tone: "warn", label: "quiet" });
+  });
+
+  it("is 'ready' (accent) for a just-created source that has never delivered", () => {
+    const justCreated = new Date("2026-01-15T11:58:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: justCreated,
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "accent", label: "ready" });
+  });
+
+  it("is 'idle' (warn) for an older source that has never delivered", () => {
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: "2025-01-01T00:00:00Z",
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "warn", label: "idle" });
+  });
+
+  it("treats an unparseable lastHitAt as never delivered", () => {
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: "2025-01-01T00:00:00Z",
+      lastHitAt: "not-a-date",
+    });
+    expect(status).toEqual({ tone: "warn", label: "idle" });
   });
 });
 

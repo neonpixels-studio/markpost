@@ -6,7 +6,7 @@ exports[`SourceCard > matches snapshot for a preset (stripe) source 1`] = `
     <div class="row gap-3"><span style="width: 40px; height: 40px; border-radius: 9px; background: var(--accent-tint); color: var(--accent-700); display: grid; place-items: center; font-family: var(--mono); font-weight: 600; font-size: 17px; flex-grow: 0; flex-shrink: 0; flex-basis: auto;">S</span>
       <div class="col" style="gap: 3px;"><span class="row gap-2" style="align-items: center;"><span style="font-weight: 600; font-size: 15px;">Stripe</span><span class="chip" style="font-size: 10px; padding: 1px 6px;"> via webhook</span></span><span class="mono faint" style="font-size: 11.5px;"></span></div>
     </div>
-    <div class="row gap-2" style="align-items: center;"><span class="badge ok"><i class="dot"></i>active</span>
+    <div class="row gap-2" style="align-items: center;"><span class="badge warn"><i class="dot"></i>idle</span>
       <!--v-if--><button class="icon-btn" title="Remove source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="3 6 5 6 21 6"></polyline>
           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -33,7 +33,7 @@ exports[`SourceCard > matches snapshot for a webhook source 1`] = `
         <!--v-if--></span><span class="mono faint" style="font-size: 11.5px;">POST · any JSON payload</span>
       </div>
     </div>
-    <div class="row gap-2" style="align-items: center;"><span class="badge ok"><i class="dot"></i>active</span>
+    <div class="row gap-2" style="align-items: center;"><span class="badge warn"><i class="dot"></i>idle</span>
       <!--v-if--><button class="icon-btn" title="Remove source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="3 6 5 6 21 6"></polyline>
           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -60,7 +60,7 @@ exports[`SourceCard > matches snapshot for an email source 1`] = `
         <!--v-if--></span><span class="mono faint" style="font-size: 11.5px;">forward or send anything</span>
       </div>
     </div>
-    <div class="row gap-2" style="align-items: center;"><span class="badge ok"><i class="dot"></i>active</span>
+    <div class="row gap-2" style="align-items: center;"><span class="badge warn"><i class="dot"></i>idle</span>
       <!--v-if--><button class="icon-btn" title="Remove source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="3 6 5 6 21 6"></polyline>
           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>

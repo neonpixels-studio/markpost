@@ -185,19 +185,44 @@ describe("SourceCard", () => {
     expect(wrapper.emitted("rotate")?.[0]).toEqual(["test-uuid-1"]);
   });
 
-  it("shows 'active' badge for old sources", () => {
+  it("shows 'active' badge when the source delivered recently", () => {
+    const recentHit = new Date("2026-01-15T11:00:00Z").toISOString();
     const wrapper = mount(SourceCard, {
       ...globalConfig,
-      props: { source: makeSource({ createdAt: "2025-01-01T00:00:00Z" }) },
+      props: { source: makeSource({ lastHitAt: recentHit }) },
     });
     expect(wrapper.text()).toContain("active");
   });
 
-  it("shows 'ready' badge for sources created in the last 5 minutes", () => {
+  it("shows 'quiet' badge when the source delivered but not recently", () => {
+    const staleHit = new Date("2025-12-01T00:00:00Z").toISOString();
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource({ lastHitAt: staleHit }) },
+    });
+    expect(wrapper.text()).toContain("quiet");
+  });
+
+  it("shows 'idle' badge for an old source that has never delivered", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: {
+        source: makeSource({
+          createdAt: "2025-01-01T00:00:00Z",
+          lastHitAt: null,
+        }),
+      },
+    });
+    expect(wrapper.text()).toContain("idle");
+  });
+
+  it("shows 'ready' badge for a just-created source awaiting its first delivery", () => {
     const recentTime = new Date("2026-01-15T11:56:00Z").toISOString();
     const wrapper = mount(SourceCard, {
       ...globalConfig,
-      props: { source: makeSource({ createdAt: recentTime }) },
+      props: {
+        source: makeSource({ createdAt: recentTime, lastHitAt: null }),
+      },
     });
     expect(wrapper.text()).toContain("ready");
   });

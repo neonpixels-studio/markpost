@@ -97,6 +97,49 @@ export function buildSourceMeta(attributes: SourceAttributes): string[] {
   ];
 }
 
+// A freshly created source has no deliveries yet, so for its first few minutes
+// "no activity" is expected rather than a problem.
+const SOURCE_NEW_WINDOW_MS = 5 * 60 * 1000;
+
+// A source that delivered within the last week is treated as actively firing;
+// past that it has gone quiet and the badge should say so.
+const SOURCE_ACTIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type SourceActivityStatus = {
+  tone: "ok" | "warn" | "accent";
+  label: string;
+};
+
+// The status badge reflects whether the webhook is actually firing, derived
+// from real delivery activity rather than the source's age alone:
+//   active — delivered within the active window
+//   quiet  — delivered before, but not recently
+//   ready  — just created and still awaiting its first delivery
+//   idle   — created a while ago and has never delivered
+export function sourceActivityStatus(
+  attributes: SourceAttributes,
+): SourceActivityStatus {
+  const lastHit = attributes.lastHitAt
+    ? computeElapsedBuckets(attributes.lastHitAt)
+    : null;
+
+  if (lastHit) {
+    if (lastHit.seconds * 1000 < SOURCE_ACTIVE_WINDOW_MS) {
+      return { tone: "ok", label: "active" };
+    }
+    return { tone: "warn", label: "quiet" };
+  }
+
+  const created = computeElapsedBuckets(attributes.createdAt);
+  const isNew =
+    created !== null && created.seconds * 1000 < SOURCE_NEW_WINDOW_MS;
+
+  if (isNew) {
+    return { tone: "accent", label: "ready" };
+  }
+  return { tone: "warn", label: "idle" };
+}
+
 async function fetchSources(): Promise<SourceResource[]> {
   const response = await $fetch<SourceListResponse>("/api/sources");
   return response.data ?? [];
