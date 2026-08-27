@@ -1,9 +1,11 @@
 // Machine-readable static assets whose body embeds the site's own origin
 // (openapi.json, llms.txt, sitemap.xml). They used to be committed under
 // public/ with the origin baked in, so a custom-domain deploy served a stale
-// dh-markpost.netlify.app origin — breaking, among other things, the RFC 9728
-// resource_documentation link. Serving them from routes lets each interpolate
-// the configured app URL (buildAppUrl) at request time instead.
+// dh-markpost.netlify.app origin in each — the openapi contact/servers URLs, the
+// llms.txt links, and the sitemap loc entries. Serving them from routes lets each
+// interpolate the configured app URL (buildAppUrl) at request time instead.
+// (The RFC 9728 resource_documentation link lives in protectedResource.ts, which
+// still derives from its own SITE_URL constant — out of scope here.)
 
 import { buildAppUrl } from "./appUrl";
 import openApiTemplate from "./openapi.template.json";

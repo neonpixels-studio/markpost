@@ -215,7 +215,10 @@ describe("app URL edge cases", () => {
       "https://example.com/$&",
     ]) {
       process.env.NUXT_PUBLIC_APP_URL = origin;
-      expect(() => JSON.parse(buildOpenApiJson()), origin).not.toThrow();
+      const spec = JSON.parse(buildOpenApiJson());
+      // Round-trips exactly: escaping must not drop or mangle the origin.
+      expect(spec.servers[0].url, origin).toBe(`${origin}/api`);
+      expect(spec.info.contact.url, origin).toBe(origin);
     }
   });
 
