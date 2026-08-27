@@ -208,10 +208,26 @@ describe("app URL edge cases", () => {
     expect(buildLlmsTxt()).not.toContain(`${TEST_APP_URL}//`);
   });
 
-  it("keeps the openapi spec parseable when the app URL has a reserved character", () => {
-    process.env.NUXT_PUBLIC_APP_URL = 'https://example.com/"break';
+  it("keeps the openapi spec parseable when the app URL has reserved characters", () => {
+    for (const origin of [
+      'https://example.com/"break',
+      "https://example.com/$'",
+      "https://example.com/$&",
+    ]) {
+      process.env.NUXT_PUBLIC_APP_URL = origin;
+      expect(() => JSON.parse(buildOpenApiJson()), origin).not.toThrow();
+    }
+  });
 
-    expect(() => JSON.parse(buildOpenApiJson())).not.toThrow();
+  it("does not reinterpret a $-sequence in the origin as a replacement pattern", () => {
+    process.env.NUXT_PUBLIC_APP_URL = "https://example.com/$&x";
+
+    // With a string replacement, `$&` expands to the matched placeholder text,
+    // reinjecting `{{APP_URL}}`; the replacer function keeps it literal. llms.txt
+    // does no escaping, so the origin survives verbatim.
+    const llms = buildLlmsTxt();
+    expect(llms).not.toContain("{{APP_URL}}");
+    expect(llms).toContain("[Documentation](https://example.com/$&x/docs)");
   });
 
   it("entity-escapes a reserved character in sitemap loc values", () => {
