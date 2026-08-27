@@ -162,6 +162,23 @@ describe("sourceActivityStatus", () => {
     expect(status).toEqual({ tone: "warn", label: "quiet" });
   });
 
+  it("is 'quiet' at exactly the active-window boundary (exclusive)", () => {
+    const exactlySevenDaysAgo = new Date("2026-01-08T12:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      lastHitAt: exactlySevenDaysAgo,
+    });
+    expect(status).toEqual({ tone: "warn", label: "quiet" });
+  });
+
+  it("degrades to 'quiet' when lastHitAt is present but unparseable", () => {
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      lastHitAt: "not-a-date",
+    });
+    expect(status).toEqual({ tone: "warn", label: "quiet" });
+  });
+
   it("is 'ready' (accent) for a just-created source that has never delivered", () => {
     const justCreated = new Date("2026-01-15T11:58:00Z").toISOString();
     const status = sourceActivityStatus({
@@ -170,6 +187,17 @@ describe("sourceActivityStatus", () => {
       lastHitAt: null,
     });
     expect(status).toEqual({ tone: "accent", label: "ready" });
+  });
+
+  it("prefers real delivery over age: a recently-hit brand-new source is 'active'", () => {
+    const justCreated = new Date("2026-01-15T11:58:00Z").toISOString();
+    const recentHit = new Date("2026-01-15T11:59:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: justCreated,
+      lastHitAt: recentHit,
+    });
+    expect(status).toEqual({ tone: "ok", label: "active" });
   });
 
   it("is 'idle' (warn) for an older source that has never delivered", () => {
@@ -181,11 +209,23 @@ describe("sourceActivityStatus", () => {
     expect(status).toEqual({ tone: "warn", label: "idle" });
   });
 
-  it("treats an unparseable lastHitAt as never delivered", () => {
+  it("is 'idle' at exactly the new-window boundary (exclusive)", () => {
+    const exactlyFiveMinutesAgo = new Date(
+      "2026-01-15T11:55:00Z",
+    ).toISOString();
     const status = sourceActivityStatus({
       ...baseAttributes,
-      createdAt: "2025-01-01T00:00:00Z",
-      lastHitAt: "not-a-date",
+      createdAt: exactlyFiveMinutesAgo,
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "warn", label: "idle" });
+  });
+
+  it("is 'idle' when createdAt is unparseable and there is no delivery", () => {
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: "not-a-date",
+      lastHitAt: null,
     });
     expect(status).toEqual({ tone: "warn", label: "idle" });
   });

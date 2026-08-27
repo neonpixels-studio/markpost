@@ -77,6 +77,9 @@ describe("SourceCard", () => {
           type: "stripe",
           name: "Stripe",
           endpointSlug: "wh_stripe01",
+          // Recent delivery so the snapshot pins the active/ok badge path, not
+          // just the idle/warn default the other fixtures render.
+          lastHitAt: "2026-01-15T10:00:00Z",
         }),
       },
     });

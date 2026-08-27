@@ -97,47 +97,53 @@ export function buildSourceMeta(attributes: SourceAttributes): string[] {
   ];
 }
 
+// A source that delivered within the last week is treated as actively firing;
+// past that it has gone quiet and the badge should say so. Compared against the
+// bucket's whole-day count, so the boundary is exclusive (day 7 reads "quiet").
+const SOURCE_ACTIVE_WINDOW_DAYS = 7;
+
 // A freshly created source has no deliveries yet, so for its first few minutes
 // "no activity" is expected rather than a problem.
-const SOURCE_NEW_WINDOW_MS = 5 * 60 * 1000;
-
-// A source that delivered within the last week is treated as actively firing;
-// past that it has gone quiet and the badge should say so.
-const SOURCE_ACTIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const SOURCE_NEW_WINDOW_MINUTES = 5;
 
 export type SourceActivityStatus = {
   tone: "ok" | "warn" | "accent";
   label: string;
 };
 
-// The status badge reflects whether the webhook is actually firing, derived
-// from real delivery activity rather than the source's age alone:
-//   active — delivered within the active window
-//   quiet  — delivered before, but not recently
-//   ready  — just created and still awaiting its first delivery
-//   idle   — created a while ago and has never delivered
-export function sourceActivityStatus(
-  attributes: SourceAttributes,
-): SourceActivityStatus {
-  const lastHit = attributes.lastHitAt
-    ? computeElapsedBuckets(attributes.lastHitAt)
-    : null;
-
-  if (lastHit) {
-    if (lastHit.seconds * 1000 < SOURCE_ACTIVE_WINDOW_MS) {
-      return { tone: "ok", label: "active" };
-    }
-    return { tone: "warn", label: "quiet" };
+// A source that has ever delivered is either firing ("active") or has gone
+// silent ("quiet"). An unparseable timestamp still means it delivered, so it
+// degrades to "quiet" rather than pretending it never fired.
+function deliveredActivityStatus(lastHitAt: string): SourceActivityStatus {
+  const lastHit = computeElapsedBuckets(lastHitAt);
+  if (lastHit && lastHit.days < SOURCE_ACTIVE_WINDOW_DAYS) {
+    return { tone: "ok", label: "active" };
   }
+  return { tone: "warn", label: "quiet" };
+}
 
-  const created = computeElapsedBuckets(attributes.createdAt);
-  const isNew =
-    created !== null && created.seconds * 1000 < SOURCE_NEW_WINDOW_MS;
-
-  if (isNew) {
+// A source that has never delivered is either brand new and awaiting its first
+// hit ("ready") or has sat unused since creation ("idle").
+function undeliveredActivityStatus(createdAt: string): SourceActivityStatus {
+  const created = computeElapsedBuckets(createdAt);
+  if (created && created.minutes < SOURCE_NEW_WINDOW_MINUTES) {
     return { tone: "accent", label: "ready" };
   }
   return { tone: "warn", label: "idle" };
+}
+
+// The status badge reflects whether the webhook is actually firing, derived
+// from real delivery activity rather than the source's age alone. It is a pure
+// read of the source's timestamps: consumers recompute it when the source prop
+// changes or the card re-renders, not on a timer, so a "ready" card only flips
+// to "idle" on the next render rather than the instant the window elapses.
+export function sourceActivityStatus(
+  attributes: SourceAttributes,
+): SourceActivityStatus {
+  if (attributes.lastHitAt) {
+    return deliveredActivityStatus(attributes.lastHitAt);
+  }
+  return undeliveredActivityStatus(attributes.createdAt);
 }
 
 async function fetchSources(): Promise<SourceResource[]> {
