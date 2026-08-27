@@ -97,6 +97,63 @@ export function buildSourceMeta(attributes: SourceAttributes): string[] {
   ];
 }
 
+// A source that delivered within the last week is treated as actively firing;
+// past that it has gone quiet and the badge should say so. Compared against the
+// bucket's whole-day count, so the boundary is exclusive (day 7 reads "quiet").
+const SOURCE_ACTIVE_WINDOW_DAYS = 7;
+
+// A freshly created source has no deliveries yet, so for its first few minutes
+// "no activity" is expected rather than a problem.
+const SOURCE_NEW_WINDOW_MINUTES = 5;
+
+export type SourceActivityStatus = {
+  tone: "" | "ok" | "warn" | "accent";
+  label: "active" | "quiet" | "ready" | "waiting" | "idle";
+};
+
+// A source that has ever delivered is either firing ("active") or has gone
+// silent ("quiet"). An unparseable timestamp still means it delivered, so it
+// degrades to "quiet" rather than pretending it never fired.
+function deliveredActivityStatus(lastHitAt: string): SourceActivityStatus {
+  const sinceLastHit = computeElapsedBuckets(lastHitAt);
+  if (sinceLastHit && sinceLastHit.days < SOURCE_ACTIVE_WINDOW_DAYS) {
+    return { tone: "ok", label: "active" };
+  }
+  return { tone: "warn", label: "quiet" };
+}
+
+// A source that has never delivered moves through three states so the warning
+// tone is reserved for a genuinely abandoned source, not one still being wired
+// up: "ready" for its first few minutes, then a neutral "waiting" while a first
+// delivery is still plausible, and only "idle" (warn) once a source has sat a
+// whole active window with nothing arriving. An unparseable createdAt can't be
+// vouched for, so it falls through to "idle".
+function undeliveredActivityStatus(createdAt: string): SourceActivityStatus {
+  const sinceCreated = computeElapsedBuckets(createdAt);
+  if (sinceCreated && sinceCreated.minutes < SOURCE_NEW_WINDOW_MINUTES) {
+    return { tone: "accent", label: "ready" };
+  }
+  if (sinceCreated && sinceCreated.days < SOURCE_ACTIVE_WINDOW_DAYS) {
+    return { tone: "", label: "waiting" };
+  }
+  return { tone: "warn", label: "idle" };
+}
+
+// The status badge reflects whether the webhook is actually firing, derived
+// from real delivery activity rather than the source's age alone. It is a pure
+// read of the source's timestamps with no reactive clock, so a consuming
+// computed only re-evaluates when the source prop is replaced (e.g. the next
+// loadSources() refetch) — a card advances between states on the next fetch,
+// not the instant a window elapses.
+export function sourceActivityStatus(
+  attributes: SourceAttributes,
+): SourceActivityStatus {
+  if (attributes.lastHitAt) {
+    return deliveredActivityStatus(attributes.lastHitAt);
+  }
+  return undeliveredActivityStatus(attributes.createdAt);
+}
+
 async function fetchSources(): Promise<SourceResource[]> {
   const response = await $fetch<SourceListResponse>("/api/sources");
   return response.data ?? [];
