@@ -13,6 +13,7 @@ import {
 } from "../../../../server/utils/webhookBodyLimit";
 import { hashSharedSecret } from "../../../../server/utils/signatureVerifier";
 import { records } from "../../../../server/db/schema";
+import { MAX_FILE_PATH_INSERT_ATTEMPTS } from "../../../../server/utils/filePathCollision";
 import { SHARED_SECRET_HEADER } from "#shared/utils/webhookSecrets";
 
 const selectMock = vi.fn();
@@ -86,6 +87,13 @@ const USER_ID = "user_abc123";
 const SOURCE_NAME = "My Webhook";
 const STRIPE_SECRET = "whsec_test_stripe_secret";
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
+// Resolves to filePath "2026-01-01-hello.md" under the default template — the
+// shared body for the file_path collision tests.
+const SAMPLE_RAW_BODY = JSON.stringify({
+  title: "Hello",
+  content: "C",
+  created: "2026-01-01T00:00:00.000Z",
+});
 
 const sampleSource = {
   uuid: SOURCE_UUID,
@@ -160,6 +168,16 @@ function stubInsertRecord(row: unknown) {
   const values = vi.fn(() => ({ onConflictDoNothing }));
   insertMock.mockReturnValue({ values });
   return { values, onConflictDoNothing, returning };
+}
+
+// Every insert attempt rejects with `error`. Returns the `returning` spy so a
+// test can assert how many attempts ran before the handler gave up.
+function stubInsertRejecting(error: unknown) {
+  const returning = vi.fn(() => Promise.reject(error));
+  const onConflictDoNothing = vi.fn(() => ({ returning }));
+  const values = vi.fn(() => ({ onConflictDoNothing }));
+  insertMock.mockReturnValue({ values });
+  return returning;
 }
 
 function stubUpdateStats() {
@@ -440,6 +458,148 @@ describe("POST /api/hooks/[slug]", () => {
       )[0];
 
       expect(insertedValues.filePath).toBe("2026-01-01-hello.md");
+    });
+
+    it("returns a non-retryable 409 (not 500) when the filePath retry budget is exhausted", async () => {
+      // Every insert loses the file_path race (23505), and each retry's
+      // collision lookup shows one more taken suffix so the resolver keeps
+      // handing back a genuinely new path until the attempt budget is spent and
+      // insertRecordWithUniqueFilePath re-throws the raw 23505. Left unmapped
+      // that surfaces as a 500 the provider (Stripe/GitHub) retries, risking a
+      // duplicate record; the handler must map it to the create handler's
+      // non-retryable 409 instead. Asserting 409 fails the moment the mapping
+      // regresses to a bare 500.
+      stubSourceAndSettings([sampleSource]);
+
+      // One retry-collision lookup per re-resolution (attempts 0..N-2 re-resolve;
+      // the final attempt exhausts the budget without another lookup). Each
+      // lookup shows one more taken suffix so the resolver keeps handing back a
+      // genuinely new path. Generated from the real budget so bumping
+      // MAX_FILE_PATH_INSERT_ATTEMPTS keeps the fixtures in lockstep.
+      const takenSuffixSets = Array.from(
+        { length: MAX_FILE_PATH_INSERT_ATTEMPTS - 1 },
+        (_unused, lookupIndex) => [
+          "2026-01-01-hello.md",
+          ...Array.from(
+            { length: lookupIndex },
+            (_unusedSuffix, suffixIndex) =>
+              `2026-01-01-hello-${suffixIndex + 2}.md`,
+          ),
+        ],
+      );
+      for (const takenPaths of takenSuffixSets) {
+        const retryCollisionWhere = vi.fn(() =>
+          Promise.resolve(takenPaths.map((filePath) => ({ filePath }))),
+        );
+        const retryCollisionFrom = vi.fn(() => ({
+          where: retryCollisionWhere,
+        }));
+        selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+      }
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = stubInsertRejecting(uniqueViolation);
+      mockReadRawBody.mockResolvedValue(SAMPLE_RAW_BODY);
+      const consoleErrorSpy = spyConsoleError();
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      // Every attempt in the budget was spent before the 409, so the mapping
+      // fires on genuine exhaustion — not by short-circuiting the first
+      // collision straight to 409 (which would leave these inserts uncalled).
+      expect(returning).toHaveBeenCalledTimes(MAX_FILE_PATH_INSERT_ATTEMPTS);
+      // Fail loud with actionable context: the swallowed 23505 is logged with
+      // the source/delivery/path identifiers, so an operator can trace it.
+      // Deleting the console.error regresses this.
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[hooks/ingest]"),
+        expect.objectContaining({
+          sourceId: SOURCE_UUID,
+          userId: USER_ID,
+          filePath: "2026-01-01-hello.md",
+          error: uniqueViolation,
+        }),
+      );
+      // Webhook senders post a raw provider payload, so the 409 must not carry
+      // the create handler's `/data/attributes/filePath` JSON:API pointer for a
+      // field the sender never set.
+      const errorArgs = mockCreateError.mock.calls.at(-1)?.[0] as {
+        data: { errors: Array<{ source?: unknown }> };
+      };
+      expect(errorArgs.data.errors[0].source).toBeUndefined();
+    });
+
+    it("maps a single-attempt unresolvable collision to the same 409", async () => {
+      // The other re-throw branch: the first insert 23505s and the resolver can
+      // only hand back the path that just failed (nothing new is visible yet), so
+      // insertRecordWithUniqueFilePath re-throws on attempt 0 without exhausting
+      // the budget. That still maps to the 409, not a 500. The pre-insert lookup
+      // and the retry lookup both see nothing taken, so the resolver returns the
+      // unchanged "…hello.md" — equal to the failed path — and gives up.
+      stubSourceAndSettings([sampleSource]);
+      const retryCollisionWhere = vi.fn(() => Promise.resolve([]));
+      const retryCollisionFrom = vi.fn(() => ({ where: retryCollisionWhere }));
+      selectMock.mockReturnValueOnce({ from: retryCollisionFrom });
+
+      const uniqueViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_user_id_file_path_lower_unique",
+      });
+      const returning = stubInsertRejecting(uniqueViolation);
+      mockReadRawBody.mockResolvedValue(SAMPLE_RAW_BODY);
+      spyConsoleError();
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 409,
+      });
+      // Gave up on attempt 0 — a single insert, no budget-exhausting retry loop.
+      expect(returning).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-throws a non-file-path insert failure as a 500 (mapping is scoped to 23505)", async () => {
+      // A DB failure that is NOT the file_path unique violation (e.g. a dropped
+      // connection) must propagate untouched to the generic 500 handler, never
+      // get masked as a 409. Guards the `isFilePathUniqueViolation` branch so
+      // blanket-mapping every error to 409 fails here.
+      stubSourceAndSettings([sampleSource]);
+      const connectionError = Object.assign(
+        new Error("connection terminated unexpectedly"),
+        { code: "57P01" },
+      );
+      const returning = stubInsertRejecting(connectionError);
+      mockReadRawBody.mockResolvedValue(SAMPLE_RAW_BODY);
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 500,
+      });
+      // Not retried as a file_path collision — one insert attempt, then propagate.
+      expect(returning).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-throws a 23505 on a different unique index as a 500, not a 409", async () => {
+      // isFilePathUniqueViolation matches on BOTH code and the file_path
+      // constraint name. A 23505 on a different unique index (e.g. the
+      // source_id/delivery_id dedup index) is not a file_path collision, so it
+      // must surface as a 500 — never get mislabeled a file-path 409. Guards
+      // against isFilePathUniqueViolation regressing to a code-only check.
+      stubSourceAndSettings([sampleSource]);
+      const otherViolation = Object.assign(new Error("duplicate key value"), {
+        code: "23505",
+        constraint: "records_source_id_delivery_id_unique",
+      });
+      const returning = stubInsertRejecting(otherViolation);
+      mockReadRawBody.mockResolvedValue(SAMPLE_RAW_BODY);
+      spyConsoleError();
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 500,
+      });
+      // Not treated as a file_path collision — no retry loop.
+      expect(returning).toHaveBeenCalledTimes(1);
     });
   });
 
