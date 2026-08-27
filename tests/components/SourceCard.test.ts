@@ -188,25 +188,29 @@ describe("SourceCard", () => {
     expect(wrapper.emitted("rotate")?.[0]).toEqual(["test-uuid-1"]);
   });
 
-  it("shows 'active' badge when the source delivered recently", () => {
+  it("shows an active (ok) badge when the source delivered recently", () => {
     const recentHit = new Date("2026-01-15T11:00:00Z").toISOString();
     const wrapper = mount(SourceCard, {
       ...globalConfig,
       props: { source: makeSource({ lastHitAt: recentHit }) },
     });
-    expect(wrapper.text()).toContain("active");
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("active");
+    expect(badge.classes()).toContain("ok");
   });
 
-  it("shows 'quiet' badge when the source delivered but not recently", () => {
+  it("shows a quiet (warn) badge when the source delivered but not recently", () => {
     const staleHit = new Date("2025-12-01T00:00:00Z").toISOString();
     const wrapper = mount(SourceCard, {
       ...globalConfig,
       props: { source: makeSource({ lastHitAt: staleHit }) },
     });
-    expect(wrapper.text()).toContain("quiet");
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("quiet");
+    expect(badge.classes()).toContain("warn");
   });
 
-  it("shows 'idle' badge for an old source that has never delivered", () => {
+  it("shows an idle (warn) badge for an old source that has never delivered", () => {
     const wrapper = mount(SourceCard, {
       ...globalConfig,
       props: {
@@ -216,10 +220,12 @@ describe("SourceCard", () => {
         }),
       },
     });
-    expect(wrapper.text()).toContain("idle");
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("idle");
+    expect(badge.classes()).toContain("warn");
   });
 
-  it("shows 'ready' badge for a just-created source awaiting its first delivery", () => {
+  it("shows a ready (accent) badge for a just-created source awaiting its first delivery", () => {
     const recentTime = new Date("2026-01-15T11:56:00Z").toISOString();
     const wrapper = mount(SourceCard, {
       ...globalConfig,
@@ -227,7 +233,9 @@ describe("SourceCard", () => {
         source: makeSource({ createdAt: recentTime, lastHitAt: null }),
       },
     });
-    expect(wrapper.text()).toContain("ready");
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("ready");
+    expect(badge.classes()).toContain("accent");
   });
 
   it("emits remove with attributes.uuid (not source.id) when trash is clicked", async () => {

@@ -108,15 +108,15 @@ const SOURCE_NEW_WINDOW_MINUTES = 5;
 
 export type SourceActivityStatus = {
   tone: "ok" | "warn" | "accent";
-  label: string;
+  label: "active" | "quiet" | "ready" | "idle";
 };
 
 // A source that has ever delivered is either firing ("active") or has gone
 // silent ("quiet"). An unparseable timestamp still means it delivered, so it
 // degrades to "quiet" rather than pretending it never fired.
 function deliveredActivityStatus(lastHitAt: string): SourceActivityStatus {
-  const lastHit = computeElapsedBuckets(lastHitAt);
-  if (lastHit && lastHit.days < SOURCE_ACTIVE_WINDOW_DAYS) {
+  const sinceLastHit = computeElapsedBuckets(lastHitAt);
+  if (sinceLastHit && sinceLastHit.days < SOURCE_ACTIVE_WINDOW_DAYS) {
     return { tone: "ok", label: "active" };
   }
   return { tone: "warn", label: "quiet" };
@@ -125,8 +125,8 @@ function deliveredActivityStatus(lastHitAt: string): SourceActivityStatus {
 // A source that has never delivered is either brand new and awaiting its first
 // hit ("ready") or has sat unused since creation ("idle").
 function undeliveredActivityStatus(createdAt: string): SourceActivityStatus {
-  const created = computeElapsedBuckets(createdAt);
-  if (created && created.minutes < SOURCE_NEW_WINDOW_MINUTES) {
+  const sinceCreated = computeElapsedBuckets(createdAt);
+  if (sinceCreated && sinceCreated.minutes < SOURCE_NEW_WINDOW_MINUTES) {
     return { tone: "accent", label: "ready" };
   }
   return { tone: "warn", label: "idle" };
