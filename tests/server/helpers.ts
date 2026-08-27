@@ -38,6 +38,15 @@ export function stubFailingUpdate(updateMock: ReturnType<typeof vi.fn>): void {
   updateMock.mockReturnValue({ set });
 }
 
+// Unlike stubFailingUpdate (a rejected query promise), this throws
+// synchronously when the update builder is entered — modelling getDb() or the
+// builder chain blowing up before any promise exists.
+export function stubThrowingUpdate(updateMock: ReturnType<typeof vi.fn>): void {
+  updateMock.mockImplementation(() => {
+    throw new Error("db error");
+  });
+}
+
 export function spyConsoleError(): ReturnType<typeof vi.spyOn> {
   return vi.spyOn(console, "error").mockImplementation(() => {});
 }

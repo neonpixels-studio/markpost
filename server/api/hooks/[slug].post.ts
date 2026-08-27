@@ -201,6 +201,33 @@ async function updateSourceStats(sourceId: string): Promise<void> {
     .where(eq(sources.uuid, sourceId));
 }
 
+// A deduped delivery (a provider redelivery, or the loser of the unique-index
+// race) creates no new record, so updateSourceStats never runs and lastHitAt
+// would freeze under a redelivery storm. Advance lastHitAt so the UI reflects
+// the live hit, but WITHOUT bumping recordCount: that column counts stored
+// records, and this delivery's record already counted on its first, non-deduped
+// ingest. Scope note: this covers the accepted-but-deduped paths only; a
+// rejected delivery (401/400/429/409) deliberately does not count as a hit.
+async function touchSourceLastHit(sourceId: string): Promise<void> {
+  // Best-effort: the whole body is wrapped (not just the query promise) so a
+  // synchronous throw from the builder chain is swallowed too. A failed touch is
+  // a stale timestamp, not a lost delivery, and must never surface a 500 the
+  // provider would read as failure and redeliver — looping a mere timestamp
+  // touch into repeated reprocessing of an already-stored delivery.
+  try {
+    const db = getDb();
+    await db
+      .update(sources)
+      .set({ lastHitAt: new Date() })
+      .where(eq(sources.uuid, sourceId));
+  } catch (touchError) {
+    console.error(
+      "[hooks/ingest] failed to touch source lastHitAt:",
+      touchError,
+    );
+  }
+}
+
 async function markRecordError(
   recordUuid: string,
   errorMessage: string,
@@ -602,6 +629,7 @@ export default defineEventHandler(async (event) => {
     const alreadyIngested = await findAlreadyIngested(source, deliveryId);
 
     if (alreadyIngested) {
+      await touchSourceLastHit(source.uuid);
       setResponseStatus(event, 202);
       return { data: { uuid: alreadyIngested.uuid } };
     }
@@ -614,15 +642,18 @@ export default defineEventHandler(async (event) => {
       deliveryId,
     );
 
-    // A dedup hit means this delivery's record already exists, so its side
-    // effects are skipped: re-running them on every normal retry would
-    // double-count recordCount and emit a duplicate "received" event for one
-    // logical delivery. The tradeoff is that if the very first delivery crashed
-    // after committing the insert but before its side effects ran, a later retry
-    // won't re-fire them (recordCount under-counts by one, no ok event). That
-    // rare crash-window loss is preferred over over-counting every honest retry;
-    // making side effects idempotent to close it is tracked as a follow-up.
-    if (!deduped) {
+    // A dedup hit means this delivery's record already exists, so the
+    // count-and-event side effects are skipped: re-running them on every normal
+    // retry would double-count recordCount and emit a duplicate "received" event
+    // for one logical delivery. The tradeoff is that if the very first delivery
+    // crashed after committing the insert but before its side effects ran, a
+    // later retry won't re-fire them (recordCount under-counts by one, no ok
+    // event). That rare crash-window loss is preferred over over-counting every
+    // honest retry; making side effects idempotent to close it is tracked as a
+    // follow-up. The dedup branch still touches lastHitAt (see touchSourceLastHit).
+    if (deduped) {
+      await touchSourceLastHit(source.uuid);
+    } else {
       await writeBestEffortSideEffects(source, record);
     }
 

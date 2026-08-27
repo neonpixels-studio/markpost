@@ -4,6 +4,7 @@ import {
   buildValidStripeHeader,
   buildValidGithubHeader,
   stubFailingUpdate,
+  stubThrowingUpdate,
   spyConsoleError,
 } from "../../helpers";
 import { ApiError } from "../../../../server/utils/errors";
@@ -531,6 +532,8 @@ describe("POST /api/hooks/[slug]", () => {
         data: { errors: Array<{ source?: unknown }> };
       };
       expect(errorArgs.data.errors[0].source).toBeUndefined();
+      // A 409 delivery was not stored, so it must not advance lastHitAt.
+      expect(updateMock).not.toHaveBeenCalled();
     });
 
     it("maps a single-attempt unresolvable collision to the same 409", async () => {
@@ -729,6 +732,11 @@ describe("POST /api/hooks/[slug]", () => {
       expect(mockCreateError).toHaveBeenCalledWith(
         expect.objectContaining({ statusCode: 401 }),
       );
+      // A rejected (unsigned) delivery must not advance lastHitAt: only
+      // accepted deliveries count as hits. Guards against a refactor that hoists
+      // the touch above checkSignature, which would let a slug-only caller bump
+      // another user's lastHitAt with an unsigned body.
+      expect(updateMock).not.toHaveBeenCalled();
     });
 
     // Signature verification must run before body validation: an unsigned caller
@@ -1253,6 +1261,8 @@ describe("POST /api/hooks/[slug]", () => {
         "Retry-After",
         "42",
       );
+      // A throttled delivery is rejected, so it must not advance lastHitAt.
+      expect(updateMock).not.toHaveBeenCalled();
     });
 
     it("does not insert a record when throttled", async () => {
@@ -1474,18 +1484,27 @@ describe("POST /api/hooks/[slug]", () => {
         [stripeSource],
         [{ uuid: sampleRecord.uuid, title: "Charge" }],
       );
+      const { set: updateSet, where: updateWhere } = stubUpdateStats();
       mockReadRawBody.mockResolvedValue(rawBody);
       stubStripeHeader(rawBody);
 
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-      // A retry must not insert again, spend plan-limit budget, or re-emit
-      // side effects for a record that already landed.
+      // A retry must not insert again, spend plan-limit budget, or re-emit the
+      // ok event for a record that already landed.
       expect(insertMock).not.toHaveBeenCalled();
       expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
       expect(mockWriteEvent).not.toHaveBeenCalled();
-      expect(updateMock).not.toHaveBeenCalled();
+      // Exactly one update, carrying lastHitAt ONLY (no recordCount — the record
+      // already counted on its first, non-deduped ingest), scoped to THIS source.
+      // The single exact-match call plus the call count is what pins "advanced
+      // lastHitAt, nothing else"; a stray recordCount bump would fail the match.
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      expect(updateSet).toHaveBeenCalledWith({ lastHitAt: expect.any(Date) });
+      expect(updateWhere).toHaveBeenCalledWith(
+        expect.objectContaining({ value: SOURCE_UUID }),
+      );
       // Cross-tenant guard: the lookup must be scoped by BOTH this source's uuid
       // and the delivery id, never delivery id alone — otherwise a colliding id
       // could return another source's record. (The eq() mock returns
@@ -1499,6 +1518,67 @@ describe("POST /api/hooks/[slug]", () => {
           expect.objectContaining({ value: "evt_123" }),
         ]),
       );
+    });
+
+    // The lastHitAt touch is best-effort: a stale timestamp is not a lost
+    // delivery, so a failing update must be swallowed and logged, never roll
+    // back the 202 the retried delivery already earned.
+    it("still returns 202 when advancing lastHitAt fails on a deduped retry", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_touch_fail",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      stubFailingUpdate(updateMock);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      const consoleErrorSpy = spyConsoleError();
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[hooks/ingest] failed to touch source lastHitAt:",
+        ),
+        expect.any(Error),
+      );
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    // The swallow covers the update builder throwing SYNCHRONOUSLY (the whole
+    // touch body is wrapped, not just the query promise), not only a rejected
+    // query promise — so this still returns 202 rather than a 500 that would
+    // provoke a redelivery of an already-stored delivery.
+    it("still returns 202 when the lastHitAt update throws synchronously on a deduped retry", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_sync_throw",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      stubThrowingUpdate(updateMock);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      const consoleErrorSpy = spyConsoleError();
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[hooks/ingest] failed to touch source lastHitAt:",
+        ),
+        expect.any(Error),
+      );
+
+      consoleErrorSpy.mockRestore();
     });
 
     it("stores the Stripe event id on the inserted record so a later retry is detectable", async () => {
@@ -1534,6 +1614,7 @@ describe("POST /api/hooks/[slug]", () => {
         [githubSource],
         [{ uuid: sampleRecord.uuid, title: "Push" }],
       );
+      const { set: updateSet, where: updateWhere } = stubUpdateStats();
       mockReadRawBody.mockResolvedValue(rawBody);
       stubGithubHeaders(rawBody, "d34db33f-0000-0000-0000-000000000000");
 
@@ -1542,6 +1623,13 @@ describe("POST /api/hooks/[slug]", () => {
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
       expect(insertMock).not.toHaveBeenCalled();
       expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
+      // lastHitAt advances on the deduped retry (this source only), recordCount
+      // does not: one update, exact { lastHitAt } payload.
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      expect(updateSet).toHaveBeenCalledWith({ lastHitAt: expect.any(Date) });
+      expect(updateWhere).toHaveBeenCalledWith(
+        expect.objectContaining({ value: SOURCE_UUID }),
+      );
     });
 
     it("stores the X-GitHub-Delivery id on the inserted record", async () => {
@@ -1587,8 +1675,14 @@ describe("POST /api/hooks/[slug]", () => {
         values.mock.calls[0] as [Record<string, unknown>]
       )[0];
       expect(insertedValues.deliveryId).toBeNull();
-      // Side effects still run for a genuinely new (non-deduped) record.
-      expect(updateSet).toHaveBeenCalled();
+      // Side effects still run for a genuinely new (non-deduped) record: the
+      // fresh-ingest stats write bumps recordCount alongside lastHitAt. This is
+      // the positive counterpart to the dedup tests' "recordCount untouched"
+      // assertion — without it, dropping the recordCount bump would go unnoticed.
+      expect(updateSet).toHaveBeenCalledWith({
+        lastHitAt: expect.any(Date),
+        recordCount: expect.anything(),
+      });
       expect(mockWriteEvent).toHaveBeenCalled();
     });
 
@@ -1640,15 +1734,69 @@ describe("POST /api/hooks/[slug]", () => {
       const onConflictDoNothing = vi.fn(() => ({ returning }));
       const values = vi.fn(() => ({ onConflictDoNothing }));
       insertMock.mockReturnValue({ values });
-      const { set: updateSet } = stubUpdateStats();
+      const { set: updateSet, where: updateWhere } = stubUpdateStats();
       mockReadRawBody.mockResolvedValue(rawBody);
       stubStripeHeader(rawBody);
 
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-      expect(updateSet).not.toHaveBeenCalled();
+      // The race loser advances lastHitAt (the source is live) but must not
+      // bump recordCount or re-emit the ok event for the winner's record: one
+      // update, exact { lastHitAt } payload, scoped to this source.
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      expect(updateSet).toHaveBeenCalledWith({ lastHitAt: expect.any(Date) });
+      expect(updateWhere).toHaveBeenCalledWith(
+        expect.objectContaining({ value: SOURCE_UUID }),
+      );
       expect(mockWriteEvent).not.toHaveBeenCalled();
+    });
+
+    // The touch is best-effort on the race-loser branch too, not just the
+    // pre-insert dedup path: a failing lastHitAt update after losing the
+    // unique-index race must still resolve the 202 with the winner's uuid, or a
+    // provider would redeliver a delivery that already landed.
+    it("still returns 202 when advancing lastHitAt fails on the race-loser branch", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_race_touch_fail",
+        type: "charge.succeeded",
+      });
+      const sourceChain = makeSelectChain([stripeSource]);
+      const preCheckChain = makeSelectChain([]);
+      const settingsChain = makeSelectChain([
+        { filenameTemplate: DEFAULT_FILENAME_TEMPLATE },
+      ]);
+      const collisionChain = makeWhereResolvingChain([]);
+      const raceLookupChain = makeSelectChain([
+        { uuid: sampleRecord.uuid, title: "Charge" },
+      ]);
+      selectMock
+        .mockReturnValueOnce({ from: sourceChain.from })
+        .mockReturnValueOnce({ from: preCheckChain.from })
+        .mockReturnValueOnce({ from: settingsChain.from })
+        .mockReturnValueOnce({ from: collisionChain.from })
+        .mockReturnValueOnce({ from: raceLookupChain.from });
+
+      const returning = vi.fn(() => Promise.resolve([]));
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      stubFailingUpdate(updateMock);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      const consoleErrorSpy = spyConsoleError();
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[hooks/ingest] failed to touch source lastHitAt:",
+        ),
+        expect.any(Error),
+      );
+
+      consoleErrorSpy.mockRestore();
     });
 
     // Fail loud, don't fabricate: if the insert returns no row AND the follow-up
