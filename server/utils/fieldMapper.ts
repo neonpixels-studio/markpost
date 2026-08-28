@@ -79,6 +79,7 @@ function pickStringField(
 }
 
 const TAG_STRING_DELIMITER = ",";
+const JSON_ARRAY_PREFIX = "[";
 const TAG_OBJECT_KEYS = ["name", "title", "label", "value"] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -145,8 +146,30 @@ function coerceTagItem(item: unknown): string | undefined {
   return undefined;
 }
 
+function tryParseJsonArray(value: string): unknown[] | undefined {
+  const trimmed = value.trim();
+
+  if (!trimmed.startsWith(JSON_ARRAY_PREFIX)) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function coerceTagsValue(value: unknown): string[] | undefined {
   if (typeof value === "string") {
+    const parsedArray = tryParseJsonArray(value);
+
+    if (parsedArray !== undefined) {
+      return coerceTagsValue(parsedArray);
+    }
+
     return splitCommaSeparatedTags(value);
   }
 

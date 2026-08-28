@@ -65,6 +65,22 @@ describe("buildRawWebhookPayload", () => {
     expect(result.tags).toBeUndefined();
   });
 
+  it("parses a JSON-encoded array string into tags on the raw path", () => {
+    const result = buildRawWebhookPayload(
+      { title: "T", content: "C", tags: '["a","b"]' },
+      "src",
+    );
+    expect(result.tags).toEqual(["a", "b"]);
+  });
+
+  it("returns undefined for a null tags value on the raw path", () => {
+    const result = buildRawWebhookPayload(
+      { title: "T", content: "C", tags: null },
+      "src",
+    );
+    expect(result.tags).toBeUndefined();
+  });
+
   it("sets source to the sourceName when no source field in payload", () => {
     const result = buildRawWebhookPayload(
       { title: "T", content: "C" },
@@ -298,6 +314,52 @@ describe("applyFieldMapping", () => {
   it("returns an empty array for a tags string with no usable values", () => {
     const result = applyFieldMapping(
       { labels: " , , " },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([]);
+  });
+
+  it("parses a JSON-encoded array string into tags instead of splitting on commas", () => {
+    const result = applyFieldMapping(
+      { labels: '["infra","urgent"]' },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["infra", "urgent"]);
+  });
+
+  it("parses a JSON-encoded array of label objects into tags", () => {
+    const result = applyFieldMapping(
+      { labels: '[{"name":"bug"},{"name":"help wanted"}]' },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["bug", "help wanted"]);
+  });
+
+  it("falls back to comma splitting when a bracketed string is not valid JSON", () => {
+    const result = applyFieldMapping(
+      { labels: "[infra, urgent" },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["[infra", "urgent"]);
+  });
+
+  it("returns undefined for tags when the mapped path does not exist", () => {
+    const result = applyFieldMapping({}, { tags: "labels.missing" }, "src");
+    expect(result.tags).toBeUndefined();
+  });
+
+  it("returns undefined for tags when the mapped path traverses a prototype key", () => {
+    const result = applyFieldMapping({}, { tags: "__proto__.polluted" }, "src");
+    expect(result.tags).toBeUndefined();
+  });
+
+  it("drops non-string entries from a JSON-encoded array of numbers, matching the array rule", () => {
+    const result = applyFieldMapping(
+      { labels: "[1,2,3]" },
       { tags: "labels" },
       "src",
     );
