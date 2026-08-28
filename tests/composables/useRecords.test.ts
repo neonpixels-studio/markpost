@@ -145,6 +145,16 @@ describe("formatSourceLabel", () => {
   it("returns 'unknown' only when neither a source name nor a type is present", () => {
     expect(formatSourceLabel(null, null)).toBe("unknown");
   });
+
+  // Deliberate: a legacy `type/`-prefixed source name renders verbatim rather
+  // than being split on `/`. Re-adding slash-stripping would reintroduce the
+  // fragile prefix-parsing this change removed; the icon now conveys the type,
+  // and the stored name is shown honestly. Pinned so the behavior stays chosen.
+  it("renders a legacy prefixed source name verbatim (no slash-stripping)", () => {
+    expect(formatSourceLabel("webhook/github", "webhook")).toBe(
+      "webhook/github",
+    );
+  });
 });
 
 describe("formatRelativeTime", () => {

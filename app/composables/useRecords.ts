@@ -17,7 +17,11 @@ export type RecordAttributes = {
   content: string;
   sourceId: string | null;
   source: string | null;
-  sourceType: SourceType | null;
+  // Free text on the server (sources.type has no CHECK constraint), so the
+  // contract is `string | null`, not `SourceType | null` — a legacy value
+  // outside SOURCE_TYPES can arrive. Consumers (sourceTypeIcon) narrow with
+  // isSourceType at the point of use.
+  sourceType: string | null;
   status: RecordStatus;
   filePath: string | null;
   tags: unknown;

@@ -26,11 +26,12 @@ vi.mock("drizzle-orm", () => ({
   count: () => ({ count: true }),
   desc: (column: unknown) => ({ desc: column }),
   eq: (column: unknown, value: unknown) => ({ eq: { column, value } }),
-  // The real handler spreads the record columns into the page select; the
-  // select router below only needs to tell the page query apart from the
-  // count/cursor/subquery selects, which it does via the sourceType key the
-  // page query adds, so this mock can return an empty column set.
-  getTableColumns: () => ({}),
+  // Echo the table so the page select carries the real record columns; the
+  // router below still tells the page query apart via the sourceType key it
+  // adds (checked first), and a test can assert the record columns are actually
+  // selected (a dropped `...getTableColumns(records)` spread would otherwise
+  // stay green while returning sourceType-only rows).
+  getTableColumns: (table: Record<string, unknown>) => table,
   ilike: (column: unknown, pattern: unknown) => ({
     ilike: { column, pattern },
   }),
@@ -431,6 +432,24 @@ describe("GET /api/records", () => {
     const response = await handler(buildEvent(userId));
 
     expect(response.data[0]?.attributes.sourceType).toBe("github");
+  });
+
+  it("selects the record columns alongside the joined sourceType", async () => {
+    stubSelectResults({ value: 0 }, []);
+
+    await handler(buildEvent(userId));
+
+    // Pin that the page select spreads the record columns; without this a
+    // dropped `...getTableColumns(records)` spread would return sourceType-only
+    // rows (undefined title/content/status) yet keep the suite green.
+    expect(selectMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uuid: records.uuid,
+        createdAt: records.createdAt,
+        status: records.status,
+        sourceType: sources.type,
+      }),
+    );
   });
 
   // Regression guard for the original bug: type filtering matched

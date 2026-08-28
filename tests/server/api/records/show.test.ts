@@ -1,6 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { H3Event } from "h3";
-import { sources } from "../../../../server/db/schema";
+import { records, sources } from "../../../../server/db/schema";
+
+// Walks a real drizzle SQL predicate's queryChunks, collecting the Column
+// objects it references (by identity) and any bound Param values, so a test
+// can assert the predicate's structure without depending on generated SQL text.
+function collectPredicate(
+  node: unknown,
+  columns: Set<unknown> = new Set(),
+  paramValues: unknown[] = [],
+): { columns: Set<unknown>; paramValues: unknown[] } {
+  if (!node || typeof node !== "object") {
+    return { columns, paramValues };
+  }
+
+  const candidate = node as {
+    queryChunks?: unknown[];
+    value?: unknown;
+    constructor?: { name?: string };
+  };
+
+  if (candidate.constructor?.name === "Param") {
+    paramValues.push(candidate.value);
+  }
+
+  if ("table" in node && "name" in node) {
+    columns.add(node);
+  }
+
+  if (Array.isArray(candidate.queryChunks)) {
+    for (const chunk of candidate.queryChunks) {
+      collectPredicate(chunk, columns, paramValues);
+    }
+  }
+
+  return { columns, paramValues };
+}
 
 const selectMock = vi.fn();
 
@@ -89,18 +124,25 @@ describe("findRecordForUser", () => {
     expect(result).toBeNull();
   });
 
-  it("left-joins the sources table so the real source type is resolved", async () => {
+  it("left-joins the sources table with a tenant-scoped predicate", async () => {
     const { leftJoin } = stubSelectResult([sampleRecord]);
 
     const db = (await import("../../../../server/db")).getDb();
     await findRecordForUser(db, validUuid, userId);
 
-    // The join predicate is tenant-scoped (records.sourceId = sources.uuid AND
-    // sources.userId = userId); the exact predicate shape is asserted with the
-    // mocked drizzle in list.test.ts. Here (real drizzle) we pin the joined
-    // table so removing the join fails loudly.
     expect(leftJoin.mock.calls[0]?.[0]).toBe(sources);
-    expect(leftJoin.mock.calls[0]?.[1]).toBeDefined();
+
+    // Tenant-scoping is the security-relevant half of the join: without
+    // `sources.userId = userId` a record could surface another user's source
+    // type. Walk the real drizzle predicate's chunks and assert it references
+    // the sources.userId column and binds this userId, so deleting that clause
+    // fails loudly (list.test.ts pins the same shape via mocked drizzle).
+    const joinPredicate = leftJoin.mock.calls[0]?.[1];
+    const { columns, paramValues } = collectPredicate(joinPredicate);
+    expect(columns.has(records.sourceId)).toBe(true);
+    expect(columns.has(sources.uuid)).toBe(true);
+    expect(columns.has(sources.userId)).toBe(true);
+    expect(paramValues).toContain(userId);
   });
 });
 
