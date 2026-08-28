@@ -6,10 +6,11 @@
 // yet wired up (today's bearer tokens are all-access), so this metadata is a
 // forward-looking contract, not a claim that requests are currently scoped.
 
-import { SITE_URL } from "./agentContent";
-
-// The resource identifier this metadata describes: the API base, per RFC 9728.
-export const PROTECTED_RESOURCE = `${SITE_URL}/api`;
+// Path segments appended to the configured app URL to form the resource id and
+// its documentation link, per RFC 9728. The caller resolves the app URL so this
+// stays a pure builder, testable without the environment.
+const API_BASE_PATH = "/api";
+const OPENAPI_DOCUMENTATION_PATH = "/openapi.json";
 
 // RFC 9728 default well-known location for a protected resource's metadata.
 export const PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource";
@@ -63,12 +64,12 @@ export const SCOPE_NAMES: string[] = SCOPES.map((scope) => scope.name);
 // not yet front the API with an OAuth authorization server, and RFC 9728 makes
 // that member optional. `resource_documentation` points agents at the full
 // OpenAPI surface.
-export function buildProtectedResourceMetadata() {
+export function buildProtectedResourceMetadata(appUrl: string) {
   return {
-    resource: PROTECTED_RESOURCE,
+    resource: `${appUrl}${API_BASE_PATH}`,
     resource_name: "Markpost API",
     scopes_supported: SCOPE_NAMES,
     bearer_methods_supported: ["header"],
-    resource_documentation: `${SITE_URL}/openapi.json`,
+    resource_documentation: `${appUrl}${OPENAPI_DOCUMENTATION_PATH}`,
   };
 }

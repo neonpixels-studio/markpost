@@ -237,6 +237,133 @@ describe("PUT /api/settings", () => {
     });
   });
 
+  it("throws a 422 when filenameTemplate has no dynamic placeholder", async () => {
+    mockReadBody.mockResolvedValue(buildBody({ filenameTemplate: "notes.md" }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            source: { pointer: "/data/attributes/filenameTemplate" },
+            detail: expect.stringContaining("{{slug}}"),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 422 when filenameTemplate lacks a .md extension", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({ filenameTemplate: "{{slug}}.txt" }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            detail: expect.stringContaining(".md"),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 422 when vaultDir contains a traversal segment", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({ vaultDir: "~/notes/../../etc" }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            source: { pointer: "/data/attributes/vaultDir" },
+            detail: expect.stringContaining(".."),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 422 when vaultDir contains a control character", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({ vaultDir: "~/notes\u001f/vault" }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            source: { pointer: "/data/attributes/vaultDir" },
+            detail: expect.stringContaining("control characters"),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 422 when filenameTemplate contains a traversal segment", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({ filenameTemplate: "../{{slug}}.md" }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "422",
+            source: { pointer: "/data/attributes/filenameTemplate" },
+            detail: expect.stringContaining(".."),
+          }),
+        ],
+      },
+    });
+  });
+
+  it("persists a valid filenameTemplate and vaultDir unchanged", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        filenameTemplate: "{{date}}-{{slug}}.md",
+        vaultDir: "~/Documents/Vault",
+      }),
+    );
+    const { values } = stubUpsertResult([sampleSettings]);
+
+    const response = await handler(buildEvent(userId));
+
+    const insertedValues = (values as ReturnType<typeof vi.fn>).mock
+      .calls[0][0];
+    expect(insertedValues.filenameTemplate).toBe("{{date}}-{{slug}}.md");
+    expect(insertedValues.vaultDir).toBe("~/Documents/Vault");
+    expect(response).toEqual({
+      data: expect.objectContaining({ type: "user_settings" }),
+    });
+  });
+
   it("throws a 401 when the user is not authenticated", async () => {
     mockReadBody.mockResolvedValue(buildBody({ vaultDir: "~/Notes" }));
 

@@ -1,4 +1,14 @@
-import { and, count, desc, eq, ilike, inArray, lt, or, SQL } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  or,
+  sql,
+  SQL,
+} from "drizzle-orm";
 import { getDb } from "../../db";
 import { records, RECORD_STATUSES, sources } from "../../db/schema";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
@@ -135,6 +145,19 @@ export function sourceTypeCondition(
   return inArray(records.sourceId, matchingSourceIds);
 }
 
+// Row-wise comparison, not the equivalent `OR(a<c, AND(a=c, b<u))` form the
+// planner cannot reduce to a range start. Postgres uses this as a range qual
+// on records_user_id_created_at_idx (see schema.ts) so deep pages seek to the
+// cursor instead of re-scanning; column order and direction must mirror that
+// index's trailing columns and the ORDER BY below, and it only ranges once the
+// `user_id = $n` equality qual buildFilterConditions adds first anchors it.
+// sql.param binds each value through its column encoder so the Date serialises
+// as UTC, exactly as the prior lt(records.createdAt, …) did — a bare
+// interpolation would ship a local-offset Date to the driver.
+export function recordCursorCondition(cursor: CursorPosition): SQL {
+  return sql`(${records.createdAt}, ${records.uuid}) < (${sql.param(cursor.createdAt, records.createdAt)}, ${sql.param(cursor.uuid, records.uuid)})`;
+}
+
 function buildFilterConditions(
   db: Database,
   userId: string,
@@ -159,14 +182,7 @@ function buildFilterConditions(
   }
 
   if (cursor) {
-    const beforeCursor = or(
-      lt(records.createdAt, cursor.createdAt),
-      and(
-        eq(records.createdAt, cursor.createdAt),
-        lt(records.uuid, cursor.uuid),
-      ),
-    );
-    conditions.push(beforeCursor);
+    conditions.push(recordCursorCondition(cursor));
   }
 
   return and(...conditions);

@@ -3,7 +3,6 @@ import type { H3Event } from "h3";
 import {
   buildValidStripeHeader,
   buildValidGithubHeader,
-  stubFailingUpdate,
   spyConsoleError,
 } from "../../helpers";
 import { ApiError } from "../../../../server/utils/errors";
@@ -12,7 +11,7 @@ import {
   MAX_WEBHOOK_BODY_BYTES,
 } from "../../../../server/utils/webhookBodyLimit";
 import { hashSharedSecret } from "../../../../server/utils/signatureVerifier";
-import { records } from "../../../../server/db/schema";
+import { records, sources } from "../../../../server/db/schema";
 import { MAX_FILE_PATH_INSERT_ATTEMPTS } from "../../../../server/utils/filePathCollision";
 import { SHARED_SECRET_HEADER } from "#shared/utils/webhookSecrets";
 
@@ -31,7 +30,13 @@ vi.mock("../../../../server/db", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
   and: (...conditions: unknown[]) => ({ op: "and", conditions }),
+  isNull: (column: unknown) => ({ op: "isNull", column }),
   isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
+  inArray: (column: unknown, values: unknown) => ({
+    op: "inArray",
+    column,
+    values,
+  }),
   ilike: (column: unknown, pattern: unknown) => ({
     op: "ilike",
     column,
@@ -44,9 +49,12 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 const mockWriteEvent = vi.fn();
+const mockWriteEventOncePerRecord = vi.fn();
 
 vi.mock("../../../../server/utils/eventWriter", () => ({
   writeEvent: (...args: unknown[]) => mockWriteEvent(...args),
+  writeEventOncePerRecord: (...args: unknown[]) =>
+    mockWriteEventOncePerRecord(...args),
 }));
 
 // The Hobby plan cap check is a separate concern with its own test coverage
@@ -180,11 +188,62 @@ function stubInsertRejecting(error: unknown) {
   return returning;
 }
 
-function stubUpdateStats() {
-  const where = vi.fn(() => Promise.resolve());
+// All stats writes go through updateMock. claimStatsBump does
+// update→set→where→returning; incrementSourceStats / touchLastHitAt /
+// markRecordError do update→set→where (awaited). One stub serves both shapes:
+// `where` returns a resolved promise that also carries `.returning`. Pass
+// claimWins=false to model an already-counted record (the claim returns no row,
+// so the caller only refreshes lastHitAt).
+function stubUpdateStats(claimWins = true) {
+  const returning = vi.fn(() =>
+    Promise.resolve(claimWins ? [{ uuid: sampleRecord.uuid }] : []),
+  );
+  const where = vi.fn(() => {
+    const settled = Promise.resolve() as Promise<void> & {
+      returning: typeof returning;
+    };
+    settled.returning = returning;
+    return settled;
+  });
   const set = vi.fn(() => ({ where }));
   updateMock.mockReturnValue({ set });
-  return { set, where };
+  return { set, where, returning };
+}
+
+// Like stubFailingUpdate, but the rejecting `where` still exposes a rejecting
+// `.returning` so claimStatsBump's chain rejects too — modelling a stats write
+// that fails at the DB.
+function stubFailingStatsUpdate() {
+  const returning = vi.fn(() => Promise.reject(new Error("db error")));
+  const where = vi.fn(() => {
+    const rejected = Promise.reject(new Error("db error")) as Promise<void> & {
+      returning: typeof returning;
+    };
+    rejected.catch(() => {});
+    rejected.returning = returning;
+    return rejected;
+  });
+  const set = vi.fn(() => ({ where }));
+  updateMock.mockReturnValue({ set });
+  return { set, where, returning };
+}
+
+// The orphaned-claim window: the claim's `.returning()` resolves (claim won),
+// but awaiting `where()` for the follow-up increment rejects. Models a DB
+// failure landing between the two statements of applyStatsBump.
+function stubClaimWinsIncrementFails() {
+  const returning = vi.fn(() => Promise.resolve([{ uuid: sampleRecord.uuid }]));
+  const where = vi.fn(() => {
+    const rejected = Promise.reject(new Error("db error")) as Promise<void> & {
+      returning: typeof returning;
+    };
+    rejected.catch(() => {});
+    rejected.returning = returning;
+    return rejected;
+  });
+  const set = vi.fn(() => ({ where }));
+  updateMock.mockReturnValue({ set });
+  return { set, where, returning };
 }
 
 function expect202Success(
@@ -238,6 +297,8 @@ beforeEach(() => {
   updateMock.mockReset();
   mockWriteEvent.mockReset();
   mockWriteEvent.mockResolvedValue(undefined);
+  mockWriteEventOncePerRecord.mockReset();
+  mockWriteEventOncePerRecord.mockResolvedValue(undefined);
   mockAssertWithinRecordLimit.mockReset();
   mockAssertWithinRecordLimit.mockResolvedValue(undefined);
   mockRecordWebhookHit.mockReset();
@@ -1118,10 +1179,90 @@ describe("POST /api/hooks/[slug]", () => {
   });
 
   describe("source stats update", () => {
-    it("does not throw when updateSourceStats fails", async () => {
+    it("does not throw when the stats update fails", async () => {
       await expectBestEffortFailureHandled(() => {
-        stubFailingUpdate(updateMock);
+        stubFailingStatsUpdate();
       });
+    });
+
+    // The orphaned-claim edge: the record is claimed (counted_at set) but the
+    // follow-up increment fails. The handler must still return 202 and log —
+    // never surface the best-effort stats failure to the sender.
+    it("still returns 202 when the claim wins but the counter increment fails", async () => {
+      const rawBody = JSON.stringify({ title: "T", content: "C" });
+
+      stubSourceAndSettings([sampleSource]);
+      stubInsertRecord(sampleRecord);
+      stubClaimWinsIncrementFails();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      const consoleErrorSpy = spyConsoleError();
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[hooks/ingest] failed to update source stats:",
+        ),
+        expect.any(Error),
+      );
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("claims the bump then increments recordCount atomically on a fresh insert", async () => {
+      const rawBody = JSON.stringify({ title: "T", content: "C" });
+
+      stubSourceAndSettings([sampleSource]);
+      stubInsertRecord(sampleRecord);
+      const { set: updateSet, where: updateWhere } = stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+
+      await handler(buildEvent());
+
+      // The claim marks the record counted (counted_at set on the records table)...
+      const claimSet = updateSet.mock.calls.find(
+        ([set]) => (set as { countedAt?: unknown }).countedAt !== undefined,
+      );
+      expect(claimSet).toBeDefined();
+      expect(updateMock).toHaveBeenCalledWith(records);
+      // ...and the claim is guarded by (records.uuid AND records.counted_at IS
+      // NULL). Asserting the isNull guard specifically means dropping it (which
+      // would make every retry re-win the claim and double-count) fails here.
+      const claimGuard = updateWhere.mock.calls
+        .map(
+          ([condition]) =>
+            condition as {
+              op?: string;
+              conditions?: Array<{ op?: string; column?: unknown }>;
+            },
+        )
+        .find(
+          (condition) =>
+            condition.op === "and" &&
+            condition.conditions?.some(
+              (inner) =>
+                inner.op === "isNull" && inner.column === records.countedAt,
+            ),
+        );
+      expect(claimGuard).toBeDefined();
+      expect(claimGuard?.conditions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            column: records.uuid,
+            value: sampleRecord.uuid,
+          }),
+        ]),
+      );
+      // ...and the winner bumps the counter on the sources table with an atomic
+      // `recordCount + 1` (a sql expression), never a read-modify-write literal.
+      // The mocked `sql` tag records the template.
+      expect(updateMock).toHaveBeenCalledWith(sources);
+      const incrementSet = updateSet.mock.calls.find(
+        ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
+      )?.[0] as { recordCount: { strings: string[] } };
+      expect(incrementSet).toBeDefined();
+      expect(incrementSet.recordCount.strings.join("")).toContain("+ 1");
     });
   });
 
@@ -1139,6 +1280,8 @@ describe("POST /api/hooks/[slug]", () => {
 
       await handler(buildEvent());
 
+      // The fresh-insert path writes the ok event with a plain insert (the record
+      // is brand new, so no dedup read is needed).
       expect(mockWriteEvent).toHaveBeenCalledWith({
         userId: USER_ID,
         kind: "ok",
@@ -1149,12 +1292,13 @@ describe("POST /api/hooks/[slug]", () => {
       // The success path writes only the "ok" event: no "err" event, and the
       // record is never marked "error" alongside it.
       expect(mockWriteEvent).toHaveBeenCalledTimes(1);
+      expect(mockWriteEventOncePerRecord).not.toHaveBeenCalled();
       expect(updateSet).not.toHaveBeenCalledWith(
         expect.objectContaining({ status: "error" }),
       );
     });
 
-    it("does not throw when writeEvent fails", async () => {
+    it("does not throw when the ok event write fails", async () => {
       await expectBestEffortFailureHandled(() => {
         stubUpdateStats();
         mockWriteEvent.mockRejectedValue(new Error("event write error"));
@@ -1169,15 +1313,16 @@ describe("POST /api/hooks/[slug]", () => {
       stubInsertRecord(sampleRecord);
       const { set: updateSet } = stubUpdateStats();
       mockReadRawBody.mockResolvedValue(rawBody);
-      mockWriteEvent.mockImplementation((input: { kind: string }) =>
-        input.kind === "ok" ? Promise.reject(writeError) : Promise.resolve(),
-      );
+      // The fresh path writes the ok event via writeEvent; make it fail.
+      mockWriteEvent.mockRejectedValue(writeError);
       const consoleErrorSpy = spyConsoleError();
 
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-      expect(mockWriteEvent).toHaveBeenCalledWith(
+      // The err event is written through the record-deduped writer so a retry
+      // storm can't append one err event per attempt.
+      expect(mockWriteEventOncePerRecord).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: USER_ID,
           kind: "err",
@@ -1201,7 +1346,7 @@ describe("POST /api/hooks/[slug]", () => {
 
       stubSourceAndSettings([sampleSource]);
       stubInsertRecord(sampleRecord);
-      stubFailingUpdate(updateMock);
+      stubFailingStatsUpdate();
       mockReadRawBody.mockResolvedValue(rawBody);
       mockWriteEvent.mockRejectedValue(new Error("event write error"));
       const consoleErrorSpy = spyConsoleError();
@@ -1465,7 +1610,7 @@ describe("POST /api/hooks/[slug]", () => {
         .mockReturnValueOnce({ from: collisionChain.from });
     }
 
-    it("returns the existing record without inserting when a Stripe event id was already ingested", async () => {
+    it("heals a crash-window retry by writing the missing ok event and bumping the counter once", async () => {
       const rawBody = JSON.stringify({
         id: "evt_123",
         type: "charge.succeeded",
@@ -1474,22 +1619,34 @@ describe("POST /api/hooks/[slug]", () => {
         [stripeSource],
         [{ uuid: sampleRecord.uuid, title: "Charge" }],
       );
+      // The first delivery crashed before claiming the bump, so counted_at is
+      // still NULL and this retry wins the claim.
+      const { set: statsSet } = stubUpdateStats(true);
       mockReadRawBody.mockResolvedValue(rawBody);
       stubStripeHeader(rawBody);
 
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-      // A retry must not insert again, spend plan-limit budget, or re-emit
-      // side effects for a record that already landed.
+      // A retry must not insert again or spend plan-limit budget for a record
+      // that already landed.
       expect(insertMock).not.toHaveBeenCalled();
       expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
+      // The missing ok event is re-emitted (record-deduped), and because the
+      // claim was won the counter is bumped with an atomic `+ 1` (a sql
+      // expression), never a COUNT reconcile that would clobber the lifetime tally.
+      expect(mockWriteEventOncePerRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ recordUuid: sampleRecord.uuid, kind: "ok" }),
+      );
       expect(mockWriteEvent).not.toHaveBeenCalled();
-      expect(updateMock).not.toHaveBeenCalled();
-      // Cross-tenant guard: the lookup must be scoped by BOTH this source's uuid
-      // and the delivery id, never delivery id alone — otherwise a colliding id
-      // could return another source's record. (The eq() mock returns
-      // {column, value}; and() wraps them under conditions.)
+      const incrementSet = statsSet.mock.calls.find(
+        ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
+      )?.[0] as { recordCount: { strings: string[] } };
+      expect(incrementSet).toBeDefined();
+      expect(incrementSet.recordCount.strings.join("")).toContain("+ 1");
+      // Cross-tenant guard: the delivery lookup must be scoped by BOTH this
+      // source's uuid and the delivery id, never delivery id alone — otherwise a
+      // colliding id could return another source's record.
       const whereArg = deliveryChain.where.mock.calls[0]?.[0] as {
         conditions: Array<{ value: unknown }>;
       };
@@ -1499,6 +1656,140 @@ describe("POST /api/hooks/[slug]", () => {
           expect.objectContaining({ value: "evt_123" }),
         ]),
       );
+    });
+
+    // An ordinary retry (the record was already counted) must not double-count:
+    // the claim finds counted_at already set and returns no row, so only
+    // lastHitAt is refreshed and recordCount is left untouched.
+    it("does not re-bump the counter on an ordinary retry that was already counted", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_dup",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      // claimWins=false: counted_at already set, so the claim loses.
+      const { set: statsSet } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      // No set call carries recordCount — the counter was never touched.
+      const bumped = statsSet.mock.calls.some(
+        ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
+      );
+      expect(bumped).toBe(false);
+      const lastCall = (
+        statsSet.mock.calls.at(-1) as [Record<string, unknown>]
+      )[0];
+      expect(lastCall).toHaveProperty("lastHitAt");
+    });
+
+    // Regression guard for the heal path: a retry can land against a record an
+    // earlier delivery already synced. If the ok event re-write fails, the err
+    // handler must not regress that record — the markRecordError UPDATE is scoped
+    // to records still in (pending, error), so `synced` is untouchable while the
+    // latest error message can still refresh an already-errored record.
+    it("does not flip an already-synced record to error when a retry's event write fails", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_synced",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      const { set: updateSet, where: updateWhere } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      mockWriteEventOncePerRecord.mockRejectedValue(
+        new Error("event write error"),
+      );
+      const consoleErrorSpy = spyConsoleError();
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      // The err handler does attempt markRecordError...
+      const markErrorCall = updateSet.mock.calls.find(
+        ([set]) => (set as { status?: string }).status === "error",
+      );
+      expect(markErrorCall).toBeDefined();
+      // ...but its UPDATE is scoped to (records.uuid AND records.status IN
+      // (pending, error)) — asserting the column too, so a guard on the wrong
+      // column would fail this. `synced` is excluded, so a synced record is left
+      // untouched. (Pick the markRecordError guard specifically: the claim UPDATE
+      // also uses `and`.)
+      const guard = updateWhere.mock.calls
+        .map(
+          ([condition]) =>
+            condition as {
+              op?: string;
+              conditions?: Array<{ op?: string; column?: unknown }>;
+            },
+        )
+        .find(
+          (condition) =>
+            condition.op === "and" &&
+            condition.conditions?.some(
+              (inner) =>
+                inner.op === "inArray" && inner.column === records.status,
+            ),
+        ) as {
+        conditions: Array<{
+          column: unknown;
+          value?: unknown;
+          values?: unknown;
+        }>;
+      };
+      expect(guard.conditions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            column: records.uuid,
+            value: sampleRecord.uuid,
+          }),
+          expect.objectContaining({
+            op: "inArray",
+            column: records.status,
+            values: ["pending", "error"],
+          }),
+        ]),
+      );
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    // The heal stats write is best-effort too: a retry still returns 202 even if
+    // the counter bump fails after the ok event healed the crash window.
+    it("still returns 202 when the heal stats bump fails", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_stats_fail",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      stubFailingStatsUpdate();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      const consoleErrorSpy = spyConsoleError();
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[hooks/ingest] failed to update source stats:",
+        ),
+        expect.any(Error),
+      );
+
+      consoleErrorSpy.mockRestore();
     });
 
     it("stores the Stripe event id on the inserted record so a later retry is detectable", async () => {
@@ -1534,6 +1825,7 @@ describe("POST /api/hooks/[slug]", () => {
         [githubSource],
         [{ uuid: sampleRecord.uuid, title: "Push" }],
       );
+      stubUpdateStats();
       mockReadRawBody.mockResolvedValue(rawBody);
       stubGithubHeaders(rawBody, "d34db33f-0000-0000-0000-000000000000");
 
@@ -1640,15 +1932,27 @@ describe("POST /api/hooks/[slug]", () => {
       const onConflictDoNothing = vi.fn(() => ({ returning }));
       const values = vi.fn(() => ({ onConflictDoNothing }));
       insertMock.mockReturnValue({ values });
-      const { set: updateSet } = stubUpdateStats();
+      // The winner already claimed the bump, so the loser's claim finds
+      // counted_at set and loses — it must not re-bump the winner's count.
+      const { set: updateSet } = stubUpdateStats(false);
       mockReadRawBody.mockResolvedValue(rawBody);
       stubStripeHeader(rawBody);
 
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-      expect(updateSet).not.toHaveBeenCalled();
-      expect(mockWriteEvent).not.toHaveBeenCalled();
+      // The race loser resolves to the winner's record and runs the heal side
+      // effects, but the atomic claim keeps the counter from moving twice: it
+      // only refreshes lastHitAt and adds at most a deduped event.
+      expect(mockWriteEventOncePerRecord).toHaveBeenCalled();
+      const bumped = updateSet.mock.calls.some(
+        ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
+      );
+      expect(bumped).toBe(false);
+      const lastCall = (
+        updateSet.mock.calls.at(-1) as [Record<string, unknown>]
+      )[0];
+      expect(lastCall).toHaveProperty("lastHitAt");
     });
 
     // Fail loud, don't fabricate: if the insert returns no row AND the follow-up
