@@ -50,8 +50,8 @@
         </div>
       </div>
       <div class="row gap-2" style="align-items: center">
-        <AppBadge :tone="isNewSource ? 'accent' : 'ok'" dot>
-          {{ isNewSource ? "ready" : "active" }}
+        <AppBadge :tone="activityStatus.tone" dot>
+          {{ activityStatus.label }}
         </AppBadge>
         <button
           v-if="isRotatable"
@@ -111,7 +111,11 @@
 </template>
 
 <script setup lang="ts">
-import { buildEndpointUrl, buildSourceMeta } from "~/composables/useSources";
+import {
+  buildEndpointUrl,
+  buildSourceMeta,
+  sourceActivityStatus,
+} from "~/composables/useSources";
 import type { SourceResource } from "~/composables/useSources";
 import { PROVIDER_SECRET_HINT } from "../utils/providerSecretCopy";
 import {
@@ -242,11 +246,9 @@ const endpointAfter = computed(() => {
   return endpointUrl.value.slice(slugIndex.value + slug.length);
 });
 
-const isNewSource = computed(() => {
-  const createdAt = new Date(props.source.attributes.createdAt).getTime();
-  const fiveMinutesMs = 5 * 60 * 1000;
-  return Date.now() - createdAt < fiveMinutesMs;
-});
+const activityStatus = computed(() =>
+  sourceActivityStatus(props.source.attributes),
+);
 
 const meta = computed(() => buildSourceMeta(props.source.attributes));
 </script>

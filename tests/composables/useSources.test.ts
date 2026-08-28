@@ -3,6 +3,7 @@ import {
   buildEndpointUrl,
   formatLastHit,
   buildSourceMeta,
+  sourceActivityStatus,
   useSources,
 } from "../../app/composables/useSources";
 import type {
@@ -116,6 +117,137 @@ describe("buildSourceMeta", () => {
   it("shows 'never hit' when lastHitAt is null", () => {
     const meta = buildSourceMeta(baseAttributes);
     expect(meta[1]).toBe("never hit");
+  });
+});
+
+describe("sourceActivityStatus", () => {
+  const baseAttributes: SourceAttributes = {
+    uuid: "abc-123",
+    userId: "user-1",
+    createdAt: "2026-01-01T10:00:00Z",
+    type: "webhook",
+    name: "Webhook endpoint",
+    provider: null,
+    endpointSlug: "wh_abc12345",
+    routeFolder: "99-incoming/",
+    fieldMapping: null,
+    lastHitAt: null,
+    recordCount: 0,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-15T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("is 'active' (ok) when the source delivered within the active window", () => {
+    const recentHit = new Date("2026-01-14T12:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      lastHitAt: recentHit,
+    });
+    expect(status).toEqual({ tone: "ok", label: "active" });
+  });
+
+  it("is 'quiet' (warn) when the last delivery is older than the active window", () => {
+    const staleHit = new Date("2025-12-01T00:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      lastHitAt: staleHit,
+    });
+    expect(status).toEqual({ tone: "warn", label: "quiet" });
+  });
+
+  it("is 'quiet' at exactly the active-window boundary (exclusive)", () => {
+    const exactlySevenDaysAgo = new Date("2026-01-08T12:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      lastHitAt: exactlySevenDaysAgo,
+    });
+    expect(status).toEqual({ tone: "warn", label: "quiet" });
+  });
+
+  it("degrades to 'quiet' when lastHitAt is present but unparseable", () => {
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      lastHitAt: "not-a-date",
+    });
+    expect(status).toEqual({ tone: "warn", label: "quiet" });
+  });
+
+  it("is 'ready' (accent) for a just-created source that has never delivered", () => {
+    const justCreated = new Date("2026-01-15T11:58:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: justCreated,
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "accent", label: "ready" });
+  });
+
+  it("prefers real delivery over age: a recently-hit brand-new source is 'active'", () => {
+    const justCreated = new Date("2026-01-15T11:58:00Z").toISOString();
+    const recentHit = new Date("2026-01-15T11:59:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: justCreated,
+      lastHitAt: recentHit,
+    });
+    expect(status).toEqual({ tone: "ok", label: "active" });
+  });
+
+  it("is a neutral 'waiting' once past the new window but still within the active window", () => {
+    const twoDaysAgo = new Date("2026-01-13T12:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: twoDaysAgo,
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "", label: "waiting" });
+  });
+
+  it("is 'waiting' (not a warning) at exactly the new-window boundary", () => {
+    const exactlyFiveMinutesAgo = new Date(
+      "2026-01-15T11:55:00Z",
+    ).toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: exactlyFiveMinutesAgo,
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "", label: "waiting" });
+  });
+
+  it("is 'idle' (warn) only once a whole active window has passed with no delivery", () => {
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: "2025-01-01T00:00:00Z",
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "warn", label: "idle" });
+  });
+
+  it("is 'idle' at exactly the active-window boundary for an undelivered source (exclusive)", () => {
+    const exactlySevenDaysAgo = new Date("2026-01-08T12:00:00Z").toISOString();
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: exactlySevenDaysAgo,
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "warn", label: "idle" });
+  });
+
+  it("is 'idle' when createdAt is unparseable and there is no delivery", () => {
+    const status = sourceActivityStatus({
+      ...baseAttributes,
+      createdAt: "not-a-date",
+      lastHitAt: null,
+    });
+    expect(status).toEqual({ tone: "warn", label: "idle" });
   });
 });
 
