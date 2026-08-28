@@ -34,6 +34,14 @@ describe("buildRawWebhookPayload", () => {
     expect(result.tags).toEqual(["valid", "also-valid"]);
   });
 
+  it("keeps usable strings and drops numbers in a mixed tags array", () => {
+    const result = buildRawWebhookPayload(
+      { title: "T", content: "C", tags: ["a", 1] },
+      "src",
+    );
+    expect(result.tags).toEqual(["a"]);
+  });
+
   it("returns undefined for missing optional fields", () => {
     const result = buildRawWebhookPayload({ title: "T", content: "C" }, "src");
     expect(result.html).toBeUndefined();
@@ -364,5 +372,23 @@ describe("applyFieldMapping", () => {
       "src",
     );
     expect(result.tags).toEqual([]);
+  });
+
+  it("parses a JSON-encoded object string into a single tag via its name field", () => {
+    const result = applyFieldMapping(
+      { labels: '{"name":"bug"}' },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["bug"]);
+  });
+
+  it("falls back to comma splitting when a braced string is not valid JSON", () => {
+    const result = applyFieldMapping(
+      { labels: "{infra, urgent" },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["{infra", "urgent"]);
   });
 });

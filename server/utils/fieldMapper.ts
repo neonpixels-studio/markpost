@@ -79,7 +79,7 @@ function pickStringField(
 }
 
 const TAG_STRING_DELIMITER = ",";
-const JSON_ARRAY_PREFIX = "[";
+const JSON_VALUE_PREFIXES = ["[", "{"] as const;
 const TAG_OBJECT_KEYS = ["name", "title", "label", "value"] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -146,28 +146,36 @@ function coerceTagItem(item: unknown): string | undefined {
   return undefined;
 }
 
-function tryParseJsonArray(value: string): unknown[] | undefined {
+function tryParseJson(value: string): unknown | undefined {
   const trimmed = value.trim();
 
-  if (!trimmed.startsWith(JSON_ARRAY_PREFIX)) {
+  if (!JSON_VALUE_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) {
     return undefined;
   }
 
   try {
-    const parsed = JSON.parse(trimmed);
-
-    return Array.isArray(parsed) ? parsed : undefined;
+    return JSON.parse(trimmed);
   } catch {
     return undefined;
   }
 }
 
+function coerceParsedJsonTags(parsed: unknown): string[] {
+  if (Array.isArray(parsed)) {
+    return coerceTagsValue(parsed) ?? [];
+  }
+
+  const tag = coerceTagItem(parsed);
+
+  return tag !== undefined ? [tag] : [];
+}
+
 function coerceTagsValue(value: unknown): string[] | undefined {
   if (typeof value === "string") {
-    const parsedArray = tryParseJsonArray(value);
+    const parsed = tryParseJson(value);
 
-    if (parsedArray !== undefined) {
-      return coerceTagsValue(parsedArray);
+    if (parsed !== undefined) {
+      return coerceParsedJsonTags(parsed);
     }
 
     return splitCommaSeparatedTags(value);
