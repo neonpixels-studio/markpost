@@ -8,6 +8,8 @@ import {
   wantsMarkdown,
 } from "../../../server/utils/agentContent";
 
+const APP_URL = "https://custom-domain.example.com";
+
 describe("agentContent util", () => {
   describe("normalizePath", () => {
     it("keeps the root path as-is", () => {
@@ -97,13 +99,31 @@ describe("agentContent util", () => {
     });
 
     it("returns Markdown bodies for content routes", () => {
-      expect(markdownForRoute("/")).toContain("# Markpost");
-      expect(markdownForRoute("/docs")).toContain("documentation");
-      expect(markdownForRoute("/pricing")).toContain("pricing");
+      expect(markdownForRoute("/", APP_URL)).toContain("# Markpost");
+      expect(markdownForRoute("/docs", APP_URL)).toContain("documentation");
+      expect(markdownForRoute("/pricing", APP_URL)).toContain("pricing");
+    });
+
+    it("advertises the supplied app URL as the API base", () => {
+      expect(markdownForRoute("/", APP_URL)).toContain(`${APP_URL}/api`);
+      expect(markdownForRoute("/docs", APP_URL)).toContain(`${APP_URL}/api`);
+    });
+
+    it("does not advertise the hardcoded Netlify preview host", () => {
+      expect(markdownForRoute("/", APP_URL)).not.toContain(
+        "dh-markpost.netlify.app",
+      );
+      expect(markdownForRoute("/docs", APP_URL)).not.toContain(
+        "dh-markpost.netlify.app",
+      );
+    });
+
+    it("builds the pricing page without embedding the app URL", () => {
+      expect(markdownForRoute("/pricing", APP_URL)).not.toContain(APP_URL);
     });
 
     it("returns null Markdown for non-content routes", () => {
-      expect(markdownForRoute("/inbox")).toBeNull();
+      expect(markdownForRoute("/inbox", APP_URL)).toBeNull();
     });
   });
 

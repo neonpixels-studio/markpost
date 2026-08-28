@@ -5,6 +5,18 @@ import { records, sources } from "../../../../server/db/schema";
 
 const selectMock = vi.fn();
 
+// Hoisted so the drizzle-orm mock factory (itself hoisted) can reference it.
+// A callable with a `.param` property mirrors the real `sql` export's shape
+// enough for both recordCursorCondition and schema.ts's module-scope sql`…`
+// index expressions to build without throwing under the mock.
+const { mockSql } = vi.hoisted(() => {
+  const mockSql = (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    sql: { strings: [...strings], values },
+  });
+  mockSql.param = (value: unknown) => value;
+  return { mockSql };
+});
+
 vi.mock("../../../../server/db", () => ({
   getDb: () => ({ select: selectMock }),
 }));
@@ -29,8 +41,14 @@ vi.mock("drizzle-orm", () => ({
   // "does not filter on records.source" regression guard can detect a
   // reintroduced like(records.source, …) instead of throwing on undefined.
   like: (column: unknown, pattern: unknown) => ({ like: { column, pattern } }),
-  lt: (column: unknown, value: unknown) => ({ lt: { column, value } }),
   or: (...conditions: unknown[]) => ({ or: conditions }),
+  // The cursor predicate is a row-wise `sql` tuple comparison built with
+  // sql`…` and sql.param(). Capture the template strings and interpolated
+  // values so hasCursorPredicate can assert the exact shape, and expose
+  // sql.param so recordCursorCondition (and schema.ts, which loads under this
+  // mock) can call it. sql.param returns the raw value here — the compiled
+  // encoding is proven separately in cursorPredicate.sql.test.ts.
+  sql: mockSql,
   SQL: class {},
 }));
 
@@ -258,25 +276,68 @@ describe("GET /api/records", () => {
     );
   }
 
-  // The cursor predicate is `or(lt(createdAt), and(...))`; detect it by the
-  // lt(records.createdAt) branch so a change that drops the cursor from a
-  // query fails loudly.
-  function hasCursorPredicate(conditions: unknown[]): boolean {
-    return conditions.some(
-      (condition) =>
-        typeof condition === "object" &&
-        condition !== null &&
-        "or" in condition &&
-        Array.isArray((condition as { or: unknown[] }).or) &&
-        (condition as { or: unknown[] }).or.some(
-          (branch) =>
-            typeof branch === "object" &&
-            branch !== null &&
-            "lt" in branch &&
-            (branch as { lt: { column: unknown } }).lt.column ===
-              records.createdAt,
-        ),
+  type CursorRow = { createdAt: Date; uuid: string };
+
+  // Matches the strict `<` tuple boundary, rejecting `<=` (which would re-emit
+  // the cursor row itself and duplicate a record on every page).
+  const STRICT_TUPLE_COMPARISON = /\)\s<\s\(/;
+
+  // The cursor predicate is a row-wise `sql` tuple comparison. Under mockSql it
+  // surfaces as { sql: { strings, values } } where values are [records.createdAt,
+  // records.uuid, cursor.createdAt, cursor.uuid]. Assert that exact shape — the
+  // ordered columns, the resolved cursor's own values (identity, so a predicate
+  // built from some other Date fails), and a strict `<` — so a change that drops
+  // OR corrupts the cursor fails loudly, not just a dropped one.
+  function isCursorPredicate(condition: unknown, cursor: CursorRow): boolean {
+    if (typeof condition !== "object" || condition === null) {
+      return false;
+    }
+
+    if (!("sql" in condition)) {
+      return false;
+    }
+
+    const { strings, values } = (
+      condition as { sql: { strings: string[]; values: unknown[] } }
+    ).sql;
+
+    return (
+      values[0] === records.createdAt &&
+      values[1] === records.uuid &&
+      values[2] === cursor.createdAt &&
+      values[3] === cursor.uuid &&
+      STRICT_TUPLE_COMPARISON.test(strings.join(""))
     );
+  }
+
+  function hasCursorPredicate(
+    conditions: unknown[],
+    cursor: CursorRow,
+  ): boolean {
+    return conditions.some((condition) => isCursorPredicate(condition, cursor));
+  }
+
+  // Loose column-only match for the *negative* count assertion: any tuple
+  // fragment naming the cursor columns counts, regardless of its bound values.
+  // The strict isCursorPredicate would let a cursor leaked onto the count query
+  // from a reconstructed value (e.g. new Date(cursor.createdAt)) read as absent,
+  // silently understating `total` while the test stays green.
+  function mentionsCursorColumns(condition: unknown): boolean {
+    if (typeof condition !== "object" || condition === null) {
+      return false;
+    }
+
+    if (!("sql" in condition)) {
+      return false;
+    }
+
+    const { values } = (condition as { sql: { values: unknown[] } }).sql;
+
+    return values[0] === records.createdAt && values[1] === records.uuid;
+  }
+
+  function hasCursorColumns(conditions: unknown[]): boolean {
+    return conditions.some(mentionsCursorColumns);
   }
 
   it("uses the first value when filter[source] is repeated in the query string", async () => {
@@ -444,10 +505,10 @@ describe("GET /api/records", () => {
   }
 
   // filter[q] matches records via an `or(ilike(title), ilike(content))`
-  // condition nested inside the top-level `and`. The cursor predicate is
-  // also shaped `{ or: [...] }` under this mock, so narrow to `or` branches
-  // that are themselves non-empty and entirely ILIKE conditions, to avoid
-  // matching the cursor (or an empty/partial `or` from a regression).
+  // condition nested inside the top-level `and`. The cursor predicate is a
+  // `{ sql: … }` fragment (not an `or`) so it can't collide here, but keep the
+  // narrowing to non-empty, entirely-ILIKE `or` branches so an empty/partial
+  // `or` from a regression is not mistaken for the query filter.
   function findQueryCondition(
     conditions: unknown[],
   ): QueryCondition | undefined {
@@ -598,8 +659,8 @@ describe("GET /api/records", () => {
     const pageConditions = (pageWhere.mock.calls[0]?.[0] as { and: unknown[] })
       .and;
 
-    expect(hasCursorPredicate(pageConditions)).toBe(true);
-    expect(hasCursorPredicate(countConditions)).toBe(false);
+    expect(hasCursorPredicate(pageConditions, cursorRow)).toBe(true);
+    expect(hasCursorColumns(countConditions)).toBe(false);
   });
 
   // Page 2 of a filtered list is the realistic case: the page query must carry
@@ -626,9 +687,9 @@ describe("GET /api/records", () => {
       .and;
 
     expect(findSourceIdInArray(pageConditions)).toBeDefined();
-    expect(hasCursorPredicate(pageConditions)).toBe(true);
+    expect(hasCursorPredicate(pageConditions, cursorRow)).toBe(true);
 
     expect(findSourceIdInArray(countConditions)).toBeDefined();
-    expect(hasCursorPredicate(countConditions)).toBe(false);
+    expect(hasCursorColumns(countConditions)).toBe(false);
   });
 });

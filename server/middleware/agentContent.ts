@@ -13,6 +13,20 @@ import {
   PROTECTED_RESOURCE_PATH,
   buildProtectedResourceMetadata,
 } from "../utils/protectedResource";
+import { buildAppUrl } from "../utils/appUrl";
+
+// Resolve the configured app URL, or null when it cannot be resolved, so an
+// agent route degrades instead of throwing a 500 on a misconfigured deploy. The
+// failure is logged loudly rather than swallowed. This is the only place the
+// middleware reads config.
+function resolveConfiguredAppUrl(): string | null {
+  try {
+    return buildAppUrl();
+  } catch (error) {
+    console.error("[agentContent] app URL unresolved", error);
+    return null;
+  }
+}
 
 // Serves agent-facing representations of non-API routes:
 //   - RFC 9728 protected-resource metadata (the API's supported OAuth scopes) at
@@ -37,17 +51,37 @@ export default defineEventHandler((event) => {
   }
 
   if (normalizePath(path) === PROTECTED_RESOURCE_PATH) {
-    return new Response(JSON.stringify(buildProtectedResourceMetadata()), {
-      status: 200,
-      headers: { "content-type": PROTECTED_RESOURCE_CONTENT_TYPE },
-    });
+    const appUrl = resolveConfiguredAppUrl();
+    if (!appUrl) {
+      // A metadata endpoint must not soft-fall-through to the HTML app shell:
+      // signal the misconfiguration so integrations surface it loudly.
+      return new Response(
+        JSON.stringify({
+          error: "server_error",
+          error_description: "app URL is not configured",
+        }),
+        {
+          status: 503,
+          headers: { "content-type": PROTECTED_RESOURCE_CONTENT_TYPE },
+        },
+      );
+    }
+
+    return new Response(
+      JSON.stringify(buildProtectedResourceMetadata(appUrl)),
+      {
+        status: 200,
+        headers: { "content-type": PROTECTED_RESOURCE_CONTENT_TYPE },
+      },
+    );
   }
 
   const accept = getHeader(event, "accept");
   const isContentRoute = resolveMarkdownRoute(path) !== null;
 
   if (wantsMarkdown(accept, path)) {
-    const markdown = markdownForRoute(path);
+    const appUrl = resolveConfiguredAppUrl();
+    const markdown = appUrl ? markdownForRoute(path, appUrl) : null;
     if (markdown) {
       return new Response(markdown, {
         status: 200,

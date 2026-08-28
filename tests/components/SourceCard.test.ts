@@ -77,6 +77,9 @@ describe("SourceCard", () => {
           type: "stripe",
           name: "Stripe",
           endpointSlug: "wh_stripe01",
+          // Recent delivery so the snapshot pins the active/ok badge path, not
+          // just the idle/warn default the other fixtures render.
+          lastHitAt: "2026-01-15T10:00:00Z",
         }),
       },
     });
@@ -185,21 +188,68 @@ describe("SourceCard", () => {
     expect(wrapper.emitted("rotate")?.[0]).toEqual(["test-uuid-1"]);
   });
 
-  it("shows 'active' badge for old sources", () => {
+  it("shows an active (ok) badge when the source delivered recently", () => {
+    const recentHit = new Date("2026-01-15T11:00:00Z").toISOString();
     const wrapper = mount(SourceCard, {
       ...globalConfig,
-      props: { source: makeSource({ createdAt: "2025-01-01T00:00:00Z" }) },
+      props: { source: makeSource({ lastHitAt: recentHit }) },
     });
-    expect(wrapper.text()).toContain("active");
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("active");
+    expect(badge.classes()).toContain("ok");
   });
 
-  it("shows 'ready' badge for sources created in the last 5 minutes", () => {
+  it("shows a quiet (warn) badge when the source delivered but not recently", () => {
+    const staleHit = new Date("2025-12-01T00:00:00Z").toISOString();
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource({ lastHitAt: staleHit }) },
+    });
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("quiet");
+    expect(badge.classes()).toContain("warn");
+  });
+
+  it("shows an idle (warn) badge for an old source that has never delivered", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: {
+        source: makeSource({
+          createdAt: "2025-01-01T00:00:00Z",
+          lastHitAt: null,
+        }),
+      },
+    });
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("idle");
+    expect(badge.classes()).toContain("warn");
+  });
+
+  it("shows a ready (accent) badge for a just-created source awaiting its first delivery", () => {
     const recentTime = new Date("2026-01-15T11:56:00Z").toISOString();
     const wrapper = mount(SourceCard, {
       ...globalConfig,
-      props: { source: makeSource({ createdAt: recentTime }) },
+      props: {
+        source: makeSource({ createdAt: recentTime, lastHitAt: null }),
+      },
     });
-    expect(wrapper.text()).toContain("ready");
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("ready");
+    expect(badge.classes()).toContain("accent");
+  });
+
+  it("shows a neutral waiting badge for a recent source still awaiting its first delivery", () => {
+    const twoDaysAgo = new Date("2026-01-13T12:00:00Z").toISOString();
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: {
+        source: makeSource({ createdAt: twoDaysAgo, lastHitAt: null }),
+      },
+    });
+    const badge = wrapper.find(".badge");
+    expect(badge.text()).toBe("waiting");
+    // The neutral state carries no tone modifier — just the base badge class.
+    expect(badge.classes()).toEqual(["badge"]);
   });
 
   it("emits remove with attributes.uuid (not source.id) when trash is clicked", async () => {

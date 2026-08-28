@@ -10,7 +10,6 @@
 // the Markdown stays terse and stable regardless of how the UI changes.
 
 export const SITE_NAME = "Markpost";
-export const SITE_URL = "https://dh-markpost.netlify.app";
 
 // Content routes that expose a Markdown representation via Accept negotiation.
 export const MARKDOWN_ROUTES = new Set(["/", "/docs", "/pricing"]);
@@ -116,7 +115,8 @@ export function isKnownPath(path: string): boolean {
   return KNOWN_PATHS.has(normalized);
 }
 
-const HOME_MARKDOWN = `# ${SITE_NAME}
+function buildHomeMarkdown(siteUrl: string): string {
+  return `# ${SITE_NAME}
 
 Markpost catches inbound webhooks and email, converts them to clean Markdown
 with YAML frontmatter (title, tags, source and timestamps), and its CLI syncs
@@ -131,14 +131,16 @@ them straight into your local Obsidian vault.
 
 ## API
 
-Base URL: \`${SITE_URL}/api\`. All requests authenticate with a bearer token
+Base URL: \`${siteUrl}/api\`. All requests authenticate with a bearer token
 (\`Authorization: Bearer mp_live_...\`). See [/docs](/docs) and
 [/openapi.json](/openapi.json).
 `;
+}
 
-const DOCS_MARKDOWN = `# ${SITE_NAME} documentation
+function buildDocsMarkdown(siteUrl: string): string {
+  return `# ${SITE_NAME} documentation
 
-Base URL: \`${SITE_URL}/api\` — every request authenticates with a bearer token
+Base URL: \`${siteUrl}/api\` — every request authenticates with a bearer token
 (\`Authorization: Bearer mp_live_...\`).
 
 ## Sections
@@ -158,7 +160,9 @@ Base URL: \`${SITE_URL}/api\` — every request authenticates with a bearer toke
 - [Protected-resource metadata](/.well-known/oauth-protected-resource)
 - [llms.txt](/llms.txt)
 `;
+}
 
+// Pricing carries no absolute URLs, so it needs no configured app URL.
 const PRICING_MARKDOWN = `# ${SITE_NAME} pricing
 
 ## Hobby — $0
@@ -178,15 +182,27 @@ See [/pricing](/pricing) for the full comparison, or [/docs](/docs) to get
 started.
 `;
 
-const ROUTE_MARKDOWN: Record<string, string> = {
-  "/": HOME_MARKDOWN,
-  "/docs": DOCS_MARKDOWN,
-  "/pricing": PRICING_MARKDOWN,
+// Each builder receives the configured app URL (resolved by the caller) so the
+// advertised API base tracks the actual deploy domain rather than a hardcoded
+// host. Pricing carries no absolute URLs, so its builder ignores the argument.
+const ROUTE_MARKDOWN: Record<string, (siteUrl: string) => string> = {
+  "/": buildHomeMarkdown,
+  "/docs": buildDocsMarkdown,
+  "/pricing": () => PRICING_MARKDOWN,
 };
 
-export function markdownForRoute(path: string): string | null {
+export function markdownForRoute(path: string, siteUrl: string): string | null {
   const route = resolveMarkdownRoute(path);
-  return route ? ROUTE_MARKDOWN[route] : null;
+  if (!route) {
+    return null;
+  }
+
+  const buildMarkdown = ROUTE_MARKDOWN[route];
+  if (!buildMarkdown) {
+    return null;
+  }
+
+  return buildMarkdown(siteUrl);
 }
 
 export function notFoundMarkdown(path: string): string {

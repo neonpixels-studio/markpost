@@ -5,11 +5,11 @@
     "version": "1.0.0",
     "summary": "Capture inbound webhooks and email as clean Markdown.",
     "description": "Markpost catches inbound webhooks and email, converts them to Markdown with YAML frontmatter, and syncs them into a local Obsidian vault via the markpost CLI.\n\nAll `/api/*` endpoints require a bearer token (`Authorization: Bearer mp_live_...`) except the public ingest endpoints (`POST /hooks/{slug}` and `POST /billing/webhook`), which authenticate with a per-request provider signature instead.\n\nMost responses follow the JSON:API convention: a `data` member holding a resource object (`{ type, id, attributes }`) or an array of them, with `meta` and `links` for pagination. Errors return a top-level `errors` array. A few operational endpoints (stats, exports, billing) return plain JSON documented inline.",
-    "contact": { "name": "Markpost", "url": "https://dh-markpost.netlify.app" }
+    "contact": { "name": "Markpost", "url": "{{APP_URL}}" }
   },
   "servers": [
     {
-      "url": "https://dh-markpost.netlify.app/api",
+      "url": "{{APP_URL}}/api",
       "description": "Production"
     }
   ],
