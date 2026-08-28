@@ -144,6 +144,24 @@ describe("findRecordForUser", () => {
     expect(columns.has(sources.userId)).toBe(true);
     expect(paramValues).toContain(userId);
   });
+
+  it("selects the record columns alongside the joined sourceType", async () => {
+    stubSelectResult([sampleRecord]);
+
+    const db = (await import("../../../../server/db")).getDb();
+    await findRecordForUser(db, validUuid, userId);
+
+    // Pin that the detail select spreads the record columns; dropping the
+    // `...getTableColumns(records)` spread would 200 with undefined title/status
+    // and a `/api/records/undefined` self link, yet keep the suite green.
+    expect(selectMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uuid: records.uuid,
+        status: records.status,
+        sourceType: sources.type,
+      }),
+    );
+  });
 });
 
 describe("GET /api/records/:uuid", () => {
