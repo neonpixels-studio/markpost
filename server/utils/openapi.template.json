@@ -1193,6 +1193,10 @@
               "content": { "type": "string" },
               "sourceId": { "type": ["string", "null"], "format": "uuid" },
               "source": { "type": ["string", "null"] },
+              "sourceType": {
+                "description": "Source type resolved by joining the record's source; canonical values are those of SourceType, but the underlying column is free text so a legacy value outside that set may be returned. Authoritative on the list and detail GET endpoints. On create/patch responses (which do not join sources) this is always null and should be treated as a write receipt, not the resolved type — re-read the record via GET to obtain it.",
+                "type": ["string", "null"]
+              },
               "status": { "$ref": "#/components/schemas/RecordStatus" },
               "filePath": { "type": ["string", "null"] },
               "tags": {

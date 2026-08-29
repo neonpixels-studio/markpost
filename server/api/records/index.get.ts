@@ -3,6 +3,7 @@ import {
   count,
   desc,
   eq,
+  getTableColumns,
   ilike,
   inArray,
   or,
@@ -208,12 +209,20 @@ function fetchRecordsPage(
   size: number,
   filters: RecordFilters,
 ) {
-  return db
-    .select()
-    .from(records)
-    .where(buildFilterConditions(db, userId, cursor, filters))
-    .orderBy(desc(records.createdAt), desc(records.uuid))
-    .limit(size + 1);
+  return (
+    db
+      .select({ ...getTableColumns(records), sourceType: sources.type })
+      .from(records)
+      // Scope the join to the same user so it can never surface another tenant's
+      // source type (mirrors the self-contained scoping in sourceTypeCondition).
+      .leftJoin(
+        sources,
+        and(eq(records.sourceId, sources.uuid), eq(sources.userId, userId)),
+      )
+      .where(buildFilterConditions(db, userId, cursor, filters))
+      .orderBy(desc(records.createdAt), desc(records.uuid))
+      .limit(size + 1)
+  );
 }
 
 export default defineEventHandler(

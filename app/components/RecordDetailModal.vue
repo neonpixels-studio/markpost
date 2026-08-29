@@ -78,12 +78,17 @@
         >
           <span class="row gap-2">
             <AppIcon
-              :name="sourceTypeIcon(record.attributes.source)"
+              :name="sourceTypeIcon(record.attributes.sourceType)"
               :size="15"
               :style="{ color: 'var(--accent)', flex: 'none' }"
             />
             <span class="mono" style="font-size: 12px; color: var(--ink-2)">
-              {{ formatSourceLabel(record.attributes.source) }}
+              {{
+                formatSourceLabel(
+                  record.attributes.source,
+                  record.attributes.sourceType,
+                )
+              }}
             </span>
           </span>
           <AppBadge :tone="STATUS_TONE_MAP[record.attributes.status] ?? ''" dot>

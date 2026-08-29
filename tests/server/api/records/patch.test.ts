@@ -105,6 +105,7 @@ describe("PATCH /api/records/:uuid", () => {
           content: updatedRecord.content,
           sourceId: null,
           source: null,
+          sourceType: null,
           status: "synced",
           filePath: "05-stripe/note.md",
           tags: null,

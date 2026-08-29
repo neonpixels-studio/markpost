@@ -95,34 +95,65 @@ describe("buildFetchUrl", () => {
 });
 
 describe("sourceTypeIcon", () => {
-  it("returns the mail icon for email sources", () => {
-    expect(sourceTypeIcon("email/inbound/gmail")).toBe("mail");
+  it("returns the mail icon for the email type", () => {
+    expect(sourceTypeIcon("email")).toBe("mail");
   });
 
-  it("returns the zap icon for non-email sources", () => {
-    expect(sourceTypeIcon("webhook/github")).toBe("zap");
+  it("returns the card icon for the stripe type", () => {
+    expect(sourceTypeIcon("stripe")).toBe("card");
   });
 
-  it("returns the zap icon for a null source", () => {
+  it("returns the github icon for the github type", () => {
+    expect(sourceTypeIcon("github")).toBe("github");
+  });
+
+  it("returns the plug icon for the shortcuts type", () => {
+    expect(sourceTypeIcon("shortcuts")).toBe("plug");
+  });
+
+  it("returns the zap icon for the webhook and zapier types", () => {
+    expect(sourceTypeIcon("webhook")).toBe("zap");
+    expect(sourceTypeIcon("zapier")).toBe("zap");
+  });
+
+  it("returns the zap icon for a null type", () => {
     expect(sourceTypeIcon(null)).toBe("zap");
+  });
+
+  it("returns the zap icon for an unrecognized type", () => {
+    expect(sourceTypeIcon("mystery")).toBe("zap");
   });
 });
 
 describe("formatSourceLabel", () => {
-  it("returns 'unknown' for a null source", () => {
-    expect(formatSourceLabel(null)).toBe("unknown");
+  it("prefers the source display name so same-type sources stay distinct", () => {
+    expect(formatSourceLabel("Prod deploys", "github")).toBe("Prod deploys");
+    expect(formatSourceLabel("Staging deploys", "github")).toBe(
+      "Staging deploys",
+    );
   });
 
-  it("returns the source unchanged when it has no slash", () => {
-    expect(formatSourceLabel("webhook")).toBe("webhook");
+  it("falls back to the resolved type name when no source name is stored", () => {
+    expect(formatSourceLabel(null, "webhook")).toBe("webhook");
+    expect(formatSourceLabel(null, "email")).toBe("email");
   });
 
-  it("drops the type prefix for a single-slash source", () => {
-    expect(formatSourceLabel("webhook/github")).toBe("github");
+  it("shows a legacy type name outside the current set rather than 'unknown'", () => {
+    expect(formatSourceLabel(null, "rss")).toBe("rss");
   });
 
-  it("joins remaining segments with a middot for a multi-slash source", () => {
-    expect(formatSourceLabel("email/inbound/gmail")).toBe("inbound · gmail");
+  it("returns 'unknown' only when neither a source name nor a type is present", () => {
+    expect(formatSourceLabel(null, null)).toBe("unknown");
+  });
+
+  // Deliberate: a legacy `type/`-prefixed source name renders verbatim rather
+  // than being split on `/`. Re-adding slash-stripping would reintroduce the
+  // fragile prefix-parsing this change removed; the icon now conveys the type,
+  // and the stored name is shown honestly. Pinned so the behavior stays chosen.
+  it("renders a legacy prefixed source name verbatim (no slash-stripping)", () => {
+    expect(formatSourceLabel("webhook/github", "webhook")).toBe(
+      "webhook/github",
+    );
   });
 });
 
@@ -255,8 +286,9 @@ function makeRecordResource(uuid: string): RecordResource {
       userId: "user-1",
       title: `Record ${uuid}`,
       content: "content",
-      sourceId: null,
-      source: "webhook/github",
+      sourceId: "source-1",
+      source: "My GitHub hook",
+      sourceType: "github",
       status: "synced",
       filePath: null,
       tags: null,
