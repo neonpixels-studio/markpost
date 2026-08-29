@@ -78,6 +78,118 @@ function pickStringField(
   return value;
 }
 
+const TAG_STRING_DELIMITER = ",";
+const JSON_VALUE_PREFIXES = ["[", "{"] as const;
+const TAG_OBJECT_KEYS = ["name", "title", "label", "value"] as const;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toNonEmptyTag(value: string): string | undefined {
+  const trimmed = value.trim();
+
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  return trimmed;
+}
+
+function splitCommaSeparatedTags(value: string): string[] {
+  return value
+    .split(TAG_STRING_DELIMITER)
+    .map(toNonEmptyTag)
+    .filter((tag): tag is string => tag !== undefined);
+}
+
+function readOwnStringProperty(
+  item: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(item, key)) {
+    return undefined;
+  }
+
+  const candidate = item[key];
+
+  if (typeof candidate !== "string") {
+    return undefined;
+  }
+
+  return toNonEmptyTag(candidate);
+}
+
+function extractTagFromObject(
+  item: Record<string, unknown>,
+): string | undefined {
+  for (const key of TAG_OBJECT_KEYS) {
+    const tag = readOwnStringProperty(item, key);
+
+    if (tag !== undefined) {
+      return tag;
+    }
+  }
+
+  return undefined;
+}
+
+function coerceTagItem(item: unknown): string | undefined {
+  if (typeof item === "string") {
+    return toNonEmptyTag(item);
+  }
+
+  if (isPlainObject(item)) {
+    return extractTagFromObject(item);
+  }
+
+  return undefined;
+}
+
+function tryParseJson(value: string): unknown | undefined {
+  const trimmed = value.trim();
+
+  if (!JSON_VALUE_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
+function coerceParsedJsonTags(parsed: unknown): string[] {
+  if (Array.isArray(parsed)) {
+    return coerceTagsValue(parsed) ?? [];
+  }
+
+  const tag = coerceTagItem(parsed);
+
+  return tag !== undefined ? [tag] : [];
+}
+
+function coerceTagsValue(value: unknown): string[] | undefined {
+  if (typeof value === "string") {
+    const parsed = tryParseJson(value);
+
+    if (parsed !== undefined) {
+      return coerceParsedJsonTags(parsed);
+    }
+
+    return splitCommaSeparatedTags(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map(coerceTagItem)
+      .filter((tag): tag is string => tag !== undefined);
+  }
+
+  return undefined;
+}
+
 function pickTagsField(
   payload: Record<string, unknown>,
   path: string | undefined,
@@ -86,13 +198,7 @@ function pickTagsField(
     return undefined;
   }
 
-  const value = getNestedValue(payload, path);
-
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  return value.filter((item): item is string => typeof item === "string");
+  return coerceTagsValue(getNestedValue(payload, path));
 }
 
 export function applyFieldMapping(
@@ -122,9 +228,7 @@ export function buildRawWebhookPayload(
   const content =
     typeof payload.content === "string" ? payload.content : undefined;
   const html = typeof payload.html === "string" ? payload.html : undefined;
-  const tags = Array.isArray(payload.tags)
-    ? payload.tags.filter((item): item is string => typeof item === "string")
-    : undefined;
+  const tags = coerceTagsValue(payload.tags);
   const created =
     typeof payload.created === "string" ? payload.created : undefined;
 
