@@ -85,6 +85,30 @@ describe("titleToSlug", () => {
     expect(titleToSlug("-start")).toBe("start");
     expect(titleToSlug("end-")).toBe("end");
   });
+
+  it("returns fallback slug for non-Latin-script titles", () => {
+    expect(titleToSlug("Привет мир")).toBe("untitled");
+    expect(titleToSlug("日本語のタイトル")).toBe("untitled");
+    expect(titleToSlug("مرحبا بالعالم")).toBe("untitled");
+  });
+
+  it("folds accented Latin letters to their ASCII base", () => {
+    expect(titleToSlug("Café Meeting")).toBe("cafe-meeting");
+    expect(titleToSlug("Zürich Naïve")).toBe("zurich-naive");
+  });
+
+  it("keeps ASCII produced by compatibility decomposition", () => {
+    expect(titleToSlug("№5 Meeting")).toBe("no5-meeting");
+  });
+
+  it("keeps ASCII words when non-Latin characters are interspersed", () => {
+    expect(titleToSlug("Deploy 部署 v2")).toBe("deploy-v2");
+  });
+
+  it("treats non-ASCII whitespace as a word separator", () => {
+    expect(titleToSlug("Hello\u00A0World")).toBe("hello-world");
+    expect(titleToSlug("Deploy\u3000v2")).toBe("deploy-v2");
+  });
 });
 
 describe("buildFilename", () => {
