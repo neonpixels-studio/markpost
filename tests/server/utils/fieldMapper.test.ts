@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   applyFieldMapping,
   buildRawWebhookPayload,
+  MAX_TAGS,
+  MAX_TAG_LENGTH,
 } from "../../../server/utils/fieldMapper";
 
 describe("buildRawWebhookPayload", () => {
@@ -390,5 +392,79 @@ describe("applyFieldMapping", () => {
       "src",
     );
     expect(result.tags).toEqual(["{infra", "urgent"]);
+  });
+
+  it("caps an over-many array of tags at MAX_TAGS", () => {
+    const manyTags = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => `tag-${index}`,
+    );
+    const result = applyFieldMapping(
+      { labels: manyTags },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toHaveLength(MAX_TAGS);
+    expect(result.tags).toEqual(manyTags.slice(0, MAX_TAGS));
+  });
+
+  it("caps an over-many comma-separated tags string at MAX_TAGS", () => {
+    const manyTags = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => `tag-${index}`,
+    );
+    const result = applyFieldMapping(
+      { labels: manyTags.join(",") },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toHaveLength(MAX_TAGS);
+    expect(result.tags).toEqual(manyTags.slice(0, MAX_TAGS));
+  });
+
+  it("caps an over-many JSON-encoded array of tags at MAX_TAGS", () => {
+    const manyTags = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => `tag-${index}`,
+    );
+    const result = applyFieldMapping(
+      { labels: JSON.stringify(manyTags) },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toHaveLength(MAX_TAGS);
+  });
+
+  it("truncates an over-long string tag to MAX_TAG_LENGTH", () => {
+    const overLongTag = "x".repeat(MAX_TAG_LENGTH + 50);
+    const result = applyFieldMapping(
+      { labels: [overLongTag] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([overLongTag.slice(0, MAX_TAG_LENGTH)]);
+  });
+
+  it("truncates an over-long tag from a comma-separated string", () => {
+    const overLongTag = "y".repeat(MAX_TAG_LENGTH + 50);
+    const result = applyFieldMapping(
+      { labels: `short,${overLongTag}` },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([
+      "short",
+      overLongTag.slice(0, MAX_TAG_LENGTH),
+    ]);
+  });
+
+  it("truncates an over-long tag extracted from an object's name field", () => {
+    const overLongTag = "z".repeat(MAX_TAG_LENGTH + 50);
+    const result = applyFieldMapping(
+      { labels: [{ name: overLongTag }] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([overLongTag.slice(0, MAX_TAG_LENGTH)]);
   });
 });

@@ -82,6 +82,12 @@ const TAG_STRING_DELIMITER = ",";
 const JSON_VALUE_PREFIXES = ["[", "{"] as const;
 const TAG_OBJECT_KEYS = ["name", "title", "label", "value"] as const;
 
+// A string field mapped to tags can expand an arbitrarily large comma body (or
+// JSON array) into an unbounded number of tags, which flow into records.tags
+// (jsonb) and a single YAML frontmatter line. These caps bound both.
+export const MAX_TAGS = 50;
+export const MAX_TAG_LENGTH = 100;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -93,7 +99,7 @@ function toNonEmptyTag(value: string): string | undefined {
     return undefined;
   }
 
-  return trimmed;
+  return trimmed.slice(0, MAX_TAG_LENGTH);
 }
 
 function splitCommaSeparatedTags(value: string): string[] {
@@ -170,6 +176,10 @@ function coerceParsedJsonTags(parsed: unknown): string[] {
   return tag !== undefined ? [tag] : [];
 }
 
+function capTagCount(tags: string[]): string[] {
+  return tags.slice(0, MAX_TAGS);
+}
+
 function coerceTagsValue(value: unknown): string[] | undefined {
   if (typeof value === "string") {
     const parsed = tryParseJson(value);
@@ -178,13 +188,15 @@ function coerceTagsValue(value: unknown): string[] | undefined {
       return coerceParsedJsonTags(parsed);
     }
 
-    return splitCommaSeparatedTags(value);
+    return capTagCount(splitCommaSeparatedTags(value));
   }
 
   if (Array.isArray(value)) {
-    return value
-      .map(coerceTagItem)
-      .filter((tag): tag is string => tag !== undefined);
+    return capTagCount(
+      value
+        .map(coerceTagItem)
+        .filter((tag): tag is string => tag !== undefined),
+    );
   }
 
   return undefined;
