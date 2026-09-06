@@ -506,4 +506,47 @@ describe("applyFieldMapping", () => {
     );
     expect(result.tags).toEqual(["a".repeat(MAX_TAG_LENGTH - 1)]);
   });
+
+  it("keeps a tag exactly MAX_TAG_LENGTH long unchanged", () => {
+    const exactLengthTag = "q".repeat(MAX_TAG_LENGTH);
+    const result = applyFieldMapping(
+      { labels: [exactLengthTag] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([exactLengthTag]);
+  });
+
+  it("drops exactly one character from a tag one over MAX_TAG_LENGTH", () => {
+    const oneOverTag = "q".repeat(MAX_TAG_LENGTH + 1);
+    const result = applyFieldMapping(
+      { labels: [oneOverTag] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([oneOverTag.slice(0, MAX_TAG_LENGTH)]);
+  });
+
+  it("keeps all tags when the count is exactly MAX_TAGS", () => {
+    const exactCountTags = Array.from(
+      { length: MAX_TAGS },
+      (_, index) => `tag-${index}`,
+    );
+    const result = applyFieldMapping(
+      { labels: exactCountTags },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(exactCountTags);
+  });
+
+  it("does not let empty comma segments consume the MAX_TAGS budget", () => {
+    const exactCountTags = Array.from(
+      { length: MAX_TAGS },
+      (_, index) => `tag-${index}`,
+    );
+    const labels = `,,${exactCountTags.join(",")}`;
+    const result = applyFieldMapping({ labels }, { tags: "labels" }, "src");
+    expect(result.tags).toEqual(exactCountTags);
+  });
 });

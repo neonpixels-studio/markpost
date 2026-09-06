@@ -93,11 +93,27 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function truncateToMaxLength(value: string): string {
-  // Iterate by code point (via the string iterator), not index, so a
-  // surrogate pair (e.g. an emoji) straddling the MAX_TAG_LENGTH boundary is
-  // never split into a lone, invalid surrogate. Re-trim after cutting since
-  // the cut can land on an interior space the original trim() never saw.
-  return Array.from(value).slice(0, MAX_TAG_LENGTH).join("").trimEnd();
+  // UTF-16 length is never less than the code point count, so a
+  // short-enough value can never need truncating.
+  if (value.length <= MAX_TAG_LENGTH) {
+    return value;
+  }
+
+  // A code point is at most 2 UTF-16 units, so the first MAX_TAG_LENGTH code
+  // points always live within the first MAX_TAG_LENGTH * 2 units. Slicing to
+  // that bound first (rather than spreading the whole, possibly huge, value
+  // into an array of code points) keeps this cheap for an oversized single
+  // tag. Iterating that bounded slice by code point (via the string
+  // iterator), not index, means a surrogate pair (e.g. an emoji) straddling
+  // the MAX_TAG_LENGTH boundary is never split into a lone, invalid
+  // surrogate. Grapheme clusters (e.g. ZWJ emoji sequences, combining marks)
+  // are not preserved — a cut can still land mid-cluster; only surrogate-pair
+  // validity is guaranteed. Re-trim after cutting since the cut can land on
+  // an interior space the original trim() never saw.
+  return Array.from(value.slice(0, MAX_TAG_LENGTH * 2))
+    .slice(0, MAX_TAG_LENGTH)
+    .join("")
+    .trimEnd();
 }
 
 function toNonEmptyTag(value: string): string | undefined {
@@ -177,10 +193,14 @@ function coerceParsedJsonTags(parsed: unknown): string[] {
   return tag !== undefined ? [tag] : [];
 }
 
-// Stops at MAX_TAGS instead of coercing every item and slicing after, so an
-// oversized comma body or array can't force unbounded coercion work per
-// request (the per-item cost is still real up to the cap, just not beyond
-// it).
+// Stops coercing items once MAX_TAGS is reached instead of coercing every
+// item and slicing after. For the array path this bounds per-item coercion
+// work to the cap; for the comma-separated string path, `value.split(...)`
+// still eagerly builds one segment per delimiter (the string itself is
+// already bounded by MAX_WEBHOOK_BODY_BYTES at the webhook boundary, so that
+// allocation tops out at ~1 MiB worth of segments), but this loop still stops
+// the per-segment trim/truncate work at the cap rather than running it over
+// every segment.
 function collectTags(items: Iterable<unknown>): string[] {
   const tags: string[] = [];
 
