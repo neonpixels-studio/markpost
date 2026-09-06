@@ -98,6 +98,18 @@ describe("buildRawWebhookPayload", () => {
     );
     expect(result.source).toBe("MySource");
   });
+
+  it("caps an over-many array of tags at MAX_TAGS on the raw path", () => {
+    const manyTags = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => `tag-${index}`,
+    );
+    const result = buildRawWebhookPayload(
+      { title: "T", content: "C", tags: manyTags },
+      "src",
+    );
+    expect(result.tags).toEqual(manyTags.slice(0, MAX_TAGS));
+  });
 });
 
 describe("applyFieldMapping", () => {
@@ -548,5 +560,24 @@ describe("applyFieldMapping", () => {
     const labels = `,,${exactCountTags.join(",")}`;
     const result = applyFieldMapping({ labels }, { tags: "labels" }, "src");
     expect(result.tags).toEqual(exactCountTags);
+  });
+
+  it("dedupes two distinct tags that truncate to the same MAX_TAG_LENGTH prefix", () => {
+    const sharedPrefix = "p".repeat(MAX_TAG_LENGTH);
+    const result = applyFieldMapping(
+      { labels: [`${sharedPrefix}-a`, `${sharedPrefix}-b`] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([sharedPrefix]);
+  });
+
+  it("dedupes exact-duplicate tags so they don't each spend the MAX_TAGS budget", () => {
+    const result = applyFieldMapping(
+      { labels: ["dup", "dup", "unique"] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["dup", "unique"]);
   });
 });

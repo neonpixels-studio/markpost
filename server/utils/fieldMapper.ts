@@ -197,15 +197,21 @@ function coerceParsedJsonTags(parsed: unknown): string[] {
 // item and slicing after. For the array path this bounds per-item coercion
 // work to the cap; for the comma-separated string path, `value.split(...)`
 // still eagerly builds one segment per delimiter (the string itself is
-// already bounded by MAX_WEBHOOK_BODY_BYTES at the webhook boundary, so that
+// already bounded by MAX_WEBHOOK_BODY_BYTES at the webhook boundary — the
+// only caller of coerceTagsValue is server/api/hooks/[slug].post.ts, which
+// runs assertBodyWithinLimit before the body is ever parsed — so that
 // allocation tops out at ~1 MiB worth of segments), but this loop still stops
 // the per-segment trim/truncate work at the cap rather than running it over
 // every segment.
+//
+// Dedupes as it collects: two distinct tags that share their first
+// MAX_TAG_LENGTH characters truncate to the same string, and without dedup
+// that collision would spend the MAX_TAGS budget on repeats of one value.
 function collectTags(items: Iterable<unknown>): string[] {
-  const tags: string[] = [];
+  const tags = new Set<string>();
 
   for (const item of items) {
-    if (tags.length >= MAX_TAGS) {
+    if (tags.size >= MAX_TAGS) {
       break;
     }
 
@@ -215,10 +221,10 @@ function collectTags(items: Iterable<unknown>): string[] {
       continue;
     }
 
-    tags.push(tag);
+    tags.add(tag);
   }
 
-  return tags;
+  return [...tags];
 }
 
 function coerceTagsValue(value: unknown): string[] | undefined {
