@@ -1,7 +1,12 @@
-import { and, eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { events, EVENT_KINDS, type EventKind } from "../db/schema";
 import { maybePruneEventsForUser } from "./eventRetention";
+
+// Mirrors the partial predicate on events_record_uuid_kind_ok_err_unique
+// (server/db/schema.ts) so Postgres can infer the target index for
+// onConflictDoNothing below. Must stay in sync with that index's `.where(...)`.
+const DEDUPED_EVENT_KINDS: readonly EventKind[] = ["ok", "err"];
 
 export type WriteEventInput = {
   userId: string;
@@ -43,62 +48,66 @@ export async function writeEvent(input: WriteEventInput): Promise<void> {
   await maybePruneEventsForUser(input.userId);
 }
 
-// Fails CLOSED: on any read error, log and return true ("assume already
-// logged"), so the caller skips the write rather than attempting it. This never
-// rejects. Failing open would be worse than it looks: the dedup read and the
-// follow-up write share a connection, so a transient failure hits both — the
-// write then rejects into the caller's error path, which for the webhook ingest
-// flow flips an otherwise-healthy record to `error`. Skipping instead risks only
-// a missing activity event on the rare heal; the recordCount counter is guarded
-// independently (by the record's counted_at claim), so it is never mis-counted.
-async function eventAlreadyLoggedForRecord(
-  recordUuid: string,
-  kind: EventKind,
-): Promise<boolean> {
-  const db = getDb();
-  try {
-    const [existing] = await db
-      .select({ id: events.id })
-      .from(events)
-      .where(and(eq(events.recordUuid, recordUuid), eq(events.kind, kind)))
-      .limit(1);
-
-    return Boolean(existing);
-  } catch (lookupError) {
-    console.error(
-      "[eventWriter] event existence check failed; skipping the write:",
-      lookupError,
-    );
-    return true;
-  }
+function isDedupedKind(kind: EventKind): boolean {
+  return (DEDUPED_EVENT_KINDS as readonly string[]).includes(kind);
 }
 
-// Best-effort dedup for callers that may re-run a side effect (e.g. a webhook
+// Mirrors the partial predicate on events_record_uuid_kind_ok_err_unique
+// exactly (see server/db/schema.ts) — Postgres infers the ON CONFLICT target
+// index by matching this expression against the index's own WHERE clause, so
+// the two must stay textually in sync.
+function dedupIndexPredicate() {
+  return sql`${events.recordUuid} is not null and ${events.kind} in ('ok', 'err')`;
+}
+
+// Exact dedup for callers that may re-run a side effect (e.g. a webhook
 // provider retry that heals a crash between the record insert and its side
-// effects). Dedupes by (record, kind): if an event of this kind already exists
-// for the record, the write is skipped, so a sequential retry is a no-op while a
-// genuinely first write still lands. Requires a recordUuid — that is the dedup
-// key, so a null/absent one would defeat the guard. Because the existence check
-// fails closed (skips on read error), the only failure this propagates is a real
-// write failure.
+// effects). Dedupes by (record, kind) at the DB layer: the insert targets the
+// partial unique index on events(record_uuid, kind) (ok/err only) with
+// onConflictDoNothing, so two concurrent writers racing the same
+// (recordUuid, kind) can never both land a row — one wins, the other is a
+// no-op. This replaces the earlier check-then-act (a read followed by an
+// insert), which left a race window where both writers could observe "absent"
+// and both insert, producing a duplicate.
 //
-// This is check-then-act, not atomic: two concurrent writers can both read
-// "absent" and both insert, so under genuine concurrency it can still emit a
-// duplicate — a cosmetic extra activity-log entry, never a mis-count (the
-// counter is guarded separately by the record's counted_at claim). A partial
-// unique index on (record_uuid, kind) plus onConflictDoNothing would make it
-// exact and is tracked as a follow-up.
+// Requires a recordUuid — that is the dedup key, so a null/absent one would
+// defeat the guard. Restricted to "ok"/"err": those are the only kinds this
+// dedup applies to (dim/warn may legitimately repeat), matching the partial
+// index's predicate.
 export async function writeEventOncePerRecord(
   input: WriteEventInput & { recordUuid: string },
 ): Promise<void> {
-  const alreadyLogged = await eventAlreadyLoggedForRecord(
-    input.recordUuid,
-    input.kind,
-  );
+  const validatedKind = validateEventKind(input.kind);
 
-  if (alreadyLogged) {
+  if (!isDedupedKind(validatedKind)) {
+    throw new Error(
+      `writeEventOncePerRecord only supports kinds: ${DEDUPED_EVENT_KINDS.join(", ")}. Got "${validatedKind}".`,
+    );
+  }
+
+  const db = getDb();
+  const [inserted] = await db
+    .insert(events)
+    .values({
+      userId: input.userId,
+      kind: validatedKind,
+      message: input.message,
+      recordUuid: input.recordUuid,
+      sourceId: input.sourceId ?? null,
+    })
+    .onConflictDoNothing({
+      target: [events.recordUuid, events.kind],
+      where: dedupIndexPredicate(),
+    })
+    .returning({ id: events.id });
+
+  if (!inserted) {
     return;
   }
 
-  await writeEvent(input);
+  // Opportunistically enforce retention so the highest-write table stays
+  // bounded without a scheduled job (see eventRetention.ts). Best-effort — it
+  // never throws, so it cannot fail the event that was just written. Skipped
+  // on a conflict no-op above since no event was written.
+  await maybePruneEventsForUser(input.userId);
 }

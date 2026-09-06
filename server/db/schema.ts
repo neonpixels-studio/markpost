@@ -256,6 +256,18 @@ export const events = pgTable(
     // to sources.uuid so nulling events.source_id on a source delete does not
     // seq-scan events.
     index("events_source_id_idx").on(table.sourceId),
+    // Makes writeEventOncePerRecord's dedup exact instead of check-then-act:
+    // paired with onConflictDoNothing in eventWriter.ts, two concurrent writers
+    // racing the same (record_uuid, kind) now produce exactly one row at the DB
+    // layer, closing the window the app-level existence check alone could not.
+    // Partial to "ok"/"err" only — those are the only kinds writeEventOncePerRecord
+    // dedupes (dim/warn are allowed to repeat), and record_uuid is required so a
+    // null recordUuid (events not tied to a record) never collides.
+    uniqueIndex("events_record_uuid_kind_ok_err_unique")
+      .on(table.recordUuid, table.kind)
+      .where(
+        sql`${table.recordUuid} is not null and ${table.kind} in ('ok', 'err')`,
+      ),
   ],
 );
 

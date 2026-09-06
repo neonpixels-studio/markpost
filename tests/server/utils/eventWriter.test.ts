@@ -15,6 +15,13 @@ vi.mock("../../../server/db", () => ({
 vi.mock("drizzle-orm", () => ({
   and: (...conditions: unknown[]) => ({ op: "and", conditions }),
   eq: (column: unknown, value: unknown) => ({ column, value }),
+  // eventWriter.ts tags the ON CONFLICT partial-index predicate with `sql`;
+  // stub it as a passthrough so the tagged template just captures its parts
+  // instead of needing a real drizzle-orm SQL builder in this unit test.
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    strings,
+    values,
+  }),
 }));
 
 // Retention is covered in eventRetention.test.ts; stub it here so writeEvent's
@@ -127,12 +134,17 @@ describe("writeEvent", () => {
 });
 
 describe("writeEventOncePerRecord", () => {
-  function stubEventLookup(rows: unknown[]) {
-    const limit = vi.fn(() => Promise.resolve(rows));
-    const where = vi.fn(() => ({ limit }));
-    const from = vi.fn(() => ({ where }));
-    selectMock.mockReturnValue({ from });
-    return { from, where, limit };
+  // Chains insert().values().onConflictDoNothing().returning() the way the
+  // real drizzle query builder does, so each mock stage can be asserted
+  // individually. `returningRows` stands in for what the DB would actually
+  // return: a row on a genuine insert, an empty array when the partial unique
+  // index on (record_uuid, kind) absorbed a duplicate via onConflictDoNothing.
+  function stubInsert(returningRows: unknown[]) {
+    const returning = vi.fn(() => Promise.resolve(returningRows));
+    const onConflictDoNothing = vi.fn(() => ({ returning }));
+    const values = vi.fn(() => ({ onConflictDoNothing }));
+    insertMock.mockReturnValue({ values });
+    return { values, onConflictDoNothing, returning };
   }
 
   beforeEach(() => {
@@ -145,10 +157,10 @@ describe("writeEventOncePerRecord", () => {
     vi.restoreAllMocks();
   });
 
-  it("writes the event when no event of that kind exists for the record", async () => {
-    stubEventLookup([]);
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
+  it("writes the event when it is the first of its kind for the record", async () => {
+    const { values, onConflictDoNothing, returning } = stubInsert([
+      { id: "new-event" },
+    ]);
 
     await writeEventOncePerRecord({
       userId: "user_abc",
@@ -159,46 +171,41 @@ describe("writeEventOncePerRecord", () => {
     });
 
     expect(insertMock).toHaveBeenCalledOnce();
-    expect(valuesMock).toHaveBeenCalledWith({
+    expect(values).toHaveBeenCalledWith({
       userId: "user_abc",
       kind: "ok",
       message: "Webhook received: Deploy",
       recordUuid: "rec-uuid",
       sourceId: "src-uuid",
     });
+    expect(onConflictDoNothing).toHaveBeenCalledOnce();
+    expect(returning).toHaveBeenCalledOnce();
+    expect(maybePruneEventsForUserMock).toHaveBeenCalledWith("user_abc");
   });
 
-  it("skips the write when an event of that kind already exists for the record", async () => {
-    stubEventLookup([{ id: "existing-event" }]);
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
+  it("targets the partial unique index on (record_uuid, kind)", async () => {
+    const { onConflictDoNothing } = stubInsert([{ id: "new-event" }]);
 
     await writeEventOncePerRecord({
       userId: "user_abc",
-      kind: "ok",
-      message: "Webhook received: Deploy",
+      kind: "err",
+      message: "Failed to confirm webhook ingestion",
       recordUuid: "rec-uuid",
-      sourceId: "src-uuid",
     });
 
-    expect(insertMock).not.toHaveBeenCalled();
-    expect(valuesMock).not.toHaveBeenCalled();
+    const config = onConflictDoNothing.mock.calls[0]?.[0] as {
+      target: unknown[];
+      where: unknown;
+    };
+    expect(config.target).toHaveLength(2);
+    expect(config.where).toBeDefined();
   });
 
-  it("fails closed — skips the write when the existence check itself throws, and does not reject", async () => {
-    // The read and the follow-up write share a connection, so a transient read
-    // failure hits both. Skipping the write (rather than attempting it and
-    // rejecting into the caller's error path, which flips a healthy record to
-    // error) risks only a missing event, never corruption.
-    const limit = vi.fn(() => Promise.reject(new Error("read blip")));
-    const where = vi.fn(() => ({ limit }));
-    const from = vi.fn(() => ({ where }));
-    selectMock.mockReturnValue({ from });
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
-    const consoleErrorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+  it("is a no-op when a duplicate (record_uuid, kind) insert is absorbed by the DB-level unique index", async () => {
+    // returning() resolving empty mirrors onConflictDoNothing actually firing
+    // at the DB layer for a concurrent duplicate — this is what makes the
+    // dedup exact instead of check-then-act.
+    const { returning } = stubInsert([]);
 
     await expect(
       writeEventOncePerRecord({
@@ -210,35 +217,22 @@ describe("writeEventOncePerRecord", () => {
       }),
     ).resolves.toBeUndefined();
 
-    // No write is attempted, so nothing can reject into the record-error path.
-    expect(insertMock).not.toHaveBeenCalled();
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[eventWriter]"),
-      expect.any(Error),
-    );
-
-    consoleErrorSpy.mockRestore();
+    expect(returning).toHaveBeenCalledOnce();
+    expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
   });
 
-  it("scopes the existence check to the record uuid and the event kind", async () => {
-    const { where } = stubEventLookup([]);
-    insertMock.mockReturnValue({ values: vi.fn(() => Promise.resolve()) });
+  it("rejects a kind outside ok/err, since the partial index does not cover it", async () => {
+    stubInsert([{ id: "new-event" }]);
 
-    await writeEventOncePerRecord({
-      userId: "user_abc",
-      kind: "ok",
-      message: "Webhook received: Deploy",
-      recordUuid: "rec-uuid",
-    });
+    await expect(
+      writeEventOncePerRecord({
+        userId: "user_abc",
+        kind: "warn",
+        message: "Sync conflict",
+        recordUuid: "rec-uuid",
+      }),
+    ).rejects.toThrow("writeEventOncePerRecord only supports kinds: ok, err");
 
-    const whereArg = where.mock.calls[0]?.[0] as {
-      conditions: Array<{ value: unknown }>;
-    };
-    expect(whereArg.conditions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ value: "rec-uuid" }),
-        expect.objectContaining({ value: "ok" }),
-      ]),
-    );
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });
