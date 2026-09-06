@@ -92,6 +92,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function truncateToMaxLength(value: string): string {
+  // Iterate by code point (via the string iterator), not index, so a
+  // surrogate pair (e.g. an emoji) straddling the MAX_TAG_LENGTH boundary is
+  // never split into a lone, invalid surrogate. Re-trim after cutting since
+  // the cut can land on an interior space the original trim() never saw.
+  return Array.from(value).slice(0, MAX_TAG_LENGTH).join("").trimEnd();
+}
+
 function toNonEmptyTag(value: string): string | undefined {
   const trimmed = value.trim();
 
@@ -99,14 +107,7 @@ function toNonEmptyTag(value: string): string | undefined {
     return undefined;
   }
 
-  return trimmed.slice(0, MAX_TAG_LENGTH);
-}
-
-function splitCommaSeparatedTags(value: string): string[] {
-  return value
-    .split(TAG_STRING_DELIMITER)
-    .map(toNonEmptyTag)
-    .filter((tag): tag is string => tag !== undefined);
+  return truncateToMaxLength(trimmed);
 }
 
 function readOwnStringProperty(
@@ -176,8 +177,28 @@ function coerceParsedJsonTags(parsed: unknown): string[] {
   return tag !== undefined ? [tag] : [];
 }
 
-function capTagCount(tags: string[]): string[] {
-  return tags.slice(0, MAX_TAGS);
+// Stops at MAX_TAGS instead of coercing every item and slicing after, so an
+// oversized comma body or array can't force unbounded coercion work per
+// request (the per-item cost is still real up to the cap, just not beyond
+// it).
+function collectTags(items: Iterable<unknown>): string[] {
+  const tags: string[] = [];
+
+  for (const item of items) {
+    if (tags.length >= MAX_TAGS) {
+      break;
+    }
+
+    const tag = coerceTagItem(item);
+
+    if (tag === undefined) {
+      continue;
+    }
+
+    tags.push(tag);
+  }
+
+  return tags;
 }
 
 function coerceTagsValue(value: unknown): string[] | undefined {
@@ -188,15 +209,11 @@ function coerceTagsValue(value: unknown): string[] | undefined {
       return coerceParsedJsonTags(parsed);
     }
 
-    return capTagCount(splitCommaSeparatedTags(value));
+    return collectTags(value.split(TAG_STRING_DELIMITER));
   }
 
   if (Array.isArray(value)) {
-    return capTagCount(
-      value
-        .map(coerceTagItem)
-        .filter((tag): tag is string => tag !== undefined),
-    );
+    return collectTags(value);
   }
 
   return undefined;

@@ -432,7 +432,22 @@ describe("applyFieldMapping", () => {
       { tags: "labels" },
       "src",
     );
-    expect(result.tags).toHaveLength(MAX_TAGS);
+    expect(result.tags).toEqual(manyTags.slice(0, MAX_TAGS));
+  });
+
+  it("caps an over-many array of label objects at MAX_TAGS", () => {
+    const manyLabelObjects = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => ({ name: `tag-${index}` }),
+    );
+    const result = applyFieldMapping(
+      { labels: manyLabelObjects },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(
+      manyLabelObjects.slice(0, MAX_TAGS).map((label) => label.name),
+    );
   });
 
   it("truncates an over-long string tag to MAX_TAG_LENGTH", () => {
@@ -466,5 +481,29 @@ describe("applyFieldMapping", () => {
       "src",
     );
     expect(result.tags).toEqual([overLongTag.slice(0, MAX_TAG_LENGTH)]);
+  });
+
+  it("truncates by code point, never splitting a surrogate pair", () => {
+    const overLongTag = `x${"\u{1F600}".repeat(MAX_TAG_LENGTH)}`;
+    const result = applyFieldMapping(
+      { labels: [overLongTag] },
+      { tags: "labels" },
+      "src",
+    );
+    const expected = Array.from(overLongTag).slice(0, MAX_TAG_LENGTH).join("");
+    expect(result.tags).toEqual([expected]);
+    // A lone (unpaired) surrogate is malformed UTF-16 and makes
+    // encodeURIComponent throw; a well-formed string (no split pair) does not.
+    expect(() => encodeURIComponent(result.tags?.[0] ?? "")).not.toThrow();
+  });
+
+  it("trims trailing whitespace left over when truncation cuts at an interior space", () => {
+    const overLongTag = `${"a".repeat(MAX_TAG_LENGTH - 1)} ${"b".repeat(50)}`;
+    const result = applyFieldMapping(
+      { labels: [overLongTag] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["a".repeat(MAX_TAG_LENGTH - 1)]);
   });
 });
