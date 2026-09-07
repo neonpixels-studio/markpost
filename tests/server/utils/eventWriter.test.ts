@@ -4,24 +4,12 @@ import {
   writeEvent,
   writeEventOncePerRecord,
 } from "../../../server/utils/eventWriter";
+import { events } from "../../../server/db/schema";
 
 const insertMock = vi.fn();
-const selectMock = vi.fn();
 
 vi.mock("../../../server/db", () => ({
-  getDb: () => ({ insert: insertMock, select: selectMock }),
-}));
-
-vi.mock("drizzle-orm", () => ({
-  and: (...conditions: unknown[]) => ({ op: "and", conditions }),
-  eq: (column: unknown, value: unknown) => ({ column, value }),
-  // eventWriter.ts tags the ON CONFLICT partial-index predicate with `sql`;
-  // stub it as a passthrough so the tagged template just captures its parts
-  // instead of needing a real drizzle-orm SQL builder in this unit test.
-  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
-    strings,
-    values,
-  }),
+  getDb: () => ({ insert: insertMock }),
 }));
 
 // Retention is covered in eventRetention.test.ts; stub it here so writeEvent's
@@ -149,7 +137,6 @@ describe("writeEventOncePerRecord", () => {
 
   beforeEach(() => {
     insertMock.mockReset();
-    selectMock.mockReset();
     maybePruneEventsForUserMock.mockClear();
   });
 
@@ -183,7 +170,7 @@ describe("writeEventOncePerRecord", () => {
     expect(maybePruneEventsForUserMock).toHaveBeenCalledWith("user_abc");
   });
 
-  it("targets the partial unique index on (record_uuid, kind)", async () => {
+  it("targets the partial unique index on (record_uuid, kind), scoped to ok/err", async () => {
     const { onConflictDoNothing } = stubInsert([{ id: "new-event" }]);
 
     await writeEventOncePerRecord({
@@ -195,10 +182,26 @@ describe("writeEventOncePerRecord", () => {
 
     const config = onConflictDoNothing.mock.calls[0]?.[0] as {
       target: unknown[];
-      where: unknown;
+      where: { queryChunks: unknown[] };
     };
-    expect(config.target).toHaveLength(2);
-    expect(config.where).toBeDefined();
+    expect(config.target).toEqual([events.recordUuid, events.kind]);
+    // The predicate is a real drizzle `sql` template (built by
+    // eventRecordKindDedupPredicate, shared with the schema's index
+    // definition) rather than a mock — assert it renders the exact expression
+    // the partial index was created with, since Postgres resolves the ON
+    // CONFLICT target by matching this text against the index's own WHERE
+    // clause. Each chunk is either a StringChunk (`.value: string[]`) or a
+    // column reference (`.name`); render both to plain text.
+    const rendered = config.where.queryChunks
+      .map((chunk) => {
+        const stringChunk = chunk as { value?: string[] };
+        if (stringChunk.value) {
+          return stringChunk.value.join("");
+        }
+        return (chunk as { name?: string }).name ?? String(chunk);
+      })
+      .join("");
+    expect(rendered).toBe("record_uuid is not null and kind in ('ok', 'err')");
   });
 
   it("is a no-op when a duplicate (record_uuid, kind) insert is absorbed by the DB-level unique index", async () => {
@@ -219,6 +222,40 @@ describe("writeEventOncePerRecord", () => {
 
     expect(returning).toHaveBeenCalledOnce();
     expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed — an insert error is caught and does not reject or prune", async () => {
+    // The insert is now the only DB round trip in this path (no separate
+    // existence read), so any transient failure surfaces here. This must not
+    // reject: for the webhook ingest healing path
+    // (server/api/hooks/[slug].post.ts), a rejection here flips an
+    // otherwise-healthy record to `error` over a failed *log write*.
+    const onConflictDoNothing = vi.fn(() => ({
+      returning: vi.fn(() => Promise.reject(new Error("connection blip"))),
+    }));
+    const values = vi.fn(() => ({ onConflictDoNothing }));
+    insertMock.mockReturnValue({ values });
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    await expect(
+      writeEventOncePerRecord({
+        userId: "user_abc",
+        kind: "ok",
+        message: "Webhook received: Deploy",
+        recordUuid: "rec-uuid",
+        sourceId: "src-uuid",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[eventWriter]"),
+      expect.any(Error),
+    );
+
+    consoleErrorSpy.mockRestore();
   });
 
   it("rejects a kind outside ok/err, since the partial index does not cover it", async () => {

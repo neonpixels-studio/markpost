@@ -10,6 +10,7 @@ import {
   unique,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -235,6 +236,26 @@ export const records = pgTable(
 export const EVENT_KINDS = ["ok", "dim", "warn", "err"] as const;
 export type EventKind = (typeof EVENT_KINDS)[number];
 
+// The only kinds writeEventOncePerRecord (server/utils/eventWriter.ts) dedupes
+// by (record_uuid, kind) — dim/warn are allowed to repeat for the same record.
+export const EVENT_DEDUPED_KINDS = [
+  "ok",
+  "err",
+] as const satisfies readonly EventKind[];
+
+// Single source for the partial unique index's WHERE clause below AND the ON
+// CONFLICT target's inference predicate in eventWriter.ts — Postgres resolves
+// onConflictDoNothing's target index by matching the two expressions, so they
+// must stay textually identical, which sharing this function guarantees.
+// Takes `table` rather than closing over `events` so it can be called from
+// inside this table's own column-builder callback (before `events` exists).
+export function eventRecordKindDedupPredicate(table: {
+  recordUuid: AnyPgColumn;
+  kind: AnyPgColumn;
+}) {
+  return sql`${table.recordUuid} is not null and ${table.kind} in ('ok', 'err')`;
+}
+
 export const events = pgTable(
   "events",
   {
@@ -260,14 +281,11 @@ export const events = pgTable(
     // paired with onConflictDoNothing in eventWriter.ts, two concurrent writers
     // racing the same (record_uuid, kind) now produce exactly one row at the DB
     // layer, closing the window the app-level existence check alone could not.
-    // Partial to "ok"/"err" only — those are the only kinds writeEventOncePerRecord
-    // dedupes (dim/warn are allowed to repeat), and record_uuid is required so a
-    // null recordUuid (events not tied to a record) never collides.
+    // See migration 0025 for the pre-index dedup of existing colliders (rows
+    // from before this fix) that the CREATE UNIQUE INDEX requires.
     uniqueIndex("events_record_uuid_kind_ok_err_unique")
       .on(table.recordUuid, table.kind)
-      .where(
-        sql`${table.recordUuid} is not null and ${table.kind} in ('ok', 'err')`,
-      ),
+      .where(eventRecordKindDedupPredicate(table)),
   ],
 );
 

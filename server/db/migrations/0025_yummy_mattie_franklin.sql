@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "events_record_uuid_kind_ok_err_unique" ON "events" USING btree ("record_uuid","kind") WHERE "events"."record_uuid" is not null and "events"."kind" in ('ok', 'err');

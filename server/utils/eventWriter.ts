@@ -1,12 +1,12 @@
-import { sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { events, EVENT_KINDS, type EventKind } from "../db/schema";
+import {
+  events,
+  EVENT_KINDS,
+  EVENT_DEDUPED_KINDS,
+  eventRecordKindDedupPredicate,
+  type EventKind,
+} from "../db/schema";
 import { maybePruneEventsForUser } from "./eventRetention";
-
-// Mirrors the partial predicate on events_record_uuid_kind_ok_err_unique
-// (server/db/schema.ts) so Postgres can infer the target index for
-// onConflictDoNothing below. Must stay in sync with that index's `.where(...)`.
-const DEDUPED_EVENT_KINDS: readonly EventKind[] = ["ok", "err"];
 
 export type WriteEventInput = {
   userId: string;
@@ -30,17 +30,28 @@ export function validateEventKind(value: string): EventKind {
   return value;
 }
 
+function isDedupedKind(kind: EventKind): boolean {
+  return (EVENT_DEDUPED_KINDS as readonly string[]).includes(kind);
+}
+
+// Shared insert payload shape for both write paths below, so a future field
+// change (e.g. message truncation) can't land in one and silently miss the
+// other.
+function buildEventRow(input: WriteEventInput, kind: EventKind) {
+  return {
+    userId: input.userId,
+    kind,
+    message: input.message,
+    recordUuid: input.recordUuid ?? null,
+    sourceId: input.sourceId ?? null,
+  };
+}
+
 export async function writeEvent(input: WriteEventInput): Promise<void> {
   const validatedKind = validateEventKind(input.kind);
   const db = getDb();
 
-  await db.insert(events).values({
-    userId: input.userId,
-    kind: validatedKind,
-    message: input.message,
-    recordUuid: input.recordUuid ?? null,
-    sourceId: input.sourceId ?? null,
-  });
+  await db.insert(events).values(buildEventRow(input, validatedKind));
 
   // Opportunistically enforce retention so the highest-write table stays
   // bounded without a scheduled job (see eventRetention.ts). Best-effort — it
@@ -48,23 +59,12 @@ export async function writeEvent(input: WriteEventInput): Promise<void> {
   await maybePruneEventsForUser(input.userId);
 }
 
-function isDedupedKind(kind: EventKind): boolean {
-  return (DEDUPED_EVENT_KINDS as readonly string[]).includes(kind);
-}
-
-// Mirrors the partial predicate on events_record_uuid_kind_ok_err_unique
-// exactly (see server/db/schema.ts) — Postgres infers the ON CONFLICT target
-// index by matching this expression against the index's own WHERE clause, so
-// the two must stay textually in sync.
-function dedupIndexPredicate() {
-  return sql`${events.recordUuid} is not null and ${events.kind} in ('ok', 'err')`;
-}
-
 // Exact dedup for callers that may re-run a side effect (e.g. a webhook
 // provider retry that heals a crash between the record insert and its side
 // effects). Dedupes by (record, kind) at the DB layer: the insert targets the
-// partial unique index on events(record_uuid, kind) (ok/err only) with
-// onConflictDoNothing, so two concurrent writers racing the same
+// partial unique index on events(record_uuid, kind) (ok/err only, see
+// migration 0025 and eventRecordKindDedupPredicate in server/db/schema.ts)
+// with onConflictDoNothing, so two concurrent writers racing the same
 // (recordUuid, kind) can never both land a row — one wins, the other is a
 // no-op. This replaces the earlier check-then-act (a read followed by an
 // insert), which left a race window where both writers could observe "absent"
@@ -74,6 +74,18 @@ function dedupIndexPredicate() {
 // defeat the guard. Restricted to "ok"/"err": those are the only kinds this
 // dedup applies to (dim/warn may legitimately repeat), matching the partial
 // index's predicate.
+//
+// Fails CLOSED: if the insert itself throws (a transient DB blip, or the app
+// deploying before migration 0025 lands the arbiter index — Postgres 42P10
+// "no unique or exclusion constraint matching the ON CONFLICT specification"),
+// log and return rather than reject. This mirrors the previous contract on
+// the old check-then-act's read step: the caller here is always the webhook
+// ingest flow's healing path (server/api/hooks/[slug].post.ts), where a
+// rejection propagates into recordIngestEventFailure and flips an
+// otherwise-healthy record to `error` over a failed *log write*, not a real
+// ingest failure. Skipping instead risks only a missing activity event on the
+// rare heal; the recordCount counter is guarded independently (by the
+// record's counted_at claim), so it is never mis-counted.
 export async function writeEventOncePerRecord(
   input: WriteEventInput & { recordUuid: string },
 ): Promise<void> {
@@ -81,33 +93,30 @@ export async function writeEventOncePerRecord(
 
   if (!isDedupedKind(validatedKind)) {
     throw new Error(
-      `writeEventOncePerRecord only supports kinds: ${DEDUPED_EVENT_KINDS.join(", ")}. Got "${validatedKind}".`,
+      `writeEventOncePerRecord only supports kinds: ${EVENT_DEDUPED_KINDS.join(", ")}. Got "${validatedKind}".`,
     );
   }
 
   const db = getDb();
-  const [inserted] = await db
+  const inserted = await db
     .insert(events)
-    .values({
-      userId: input.userId,
-      kind: validatedKind,
-      message: input.message,
-      recordUuid: input.recordUuid,
-      sourceId: input.sourceId ?? null,
-    })
+    .values(buildEventRow(input, validatedKind))
     .onConflictDoNothing({
       target: [events.recordUuid, events.kind],
-      where: dedupIndexPredicate(),
+      where: eventRecordKindDedupPredicate(events),
     })
-    .returning({ id: events.id });
+    .returning({ id: events.id })
+    .catch((insertError) => {
+      console.error(
+        "[eventWriter] deduped event insert failed; skipping the write:",
+        insertError,
+      );
+      return [];
+    });
 
-  if (!inserted) {
+  if (inserted.length === 0) {
     return;
   }
 
-  // Opportunistically enforce retention so the highest-write table stays
-  // bounded without a scheduled job (see eventRetention.ts). Best-effort — it
-  // never throws, so it cannot fail the event that was just written. Skipped
-  // on a conflict no-op above since no event was written.
   await maybePruneEventsForUser(input.userId);
 }
