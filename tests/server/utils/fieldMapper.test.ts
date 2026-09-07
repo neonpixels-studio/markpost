@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   applyFieldMapping,
   buildRawWebhookPayload,
+  MAX_TAGS,
+  MAX_TAG_LENGTH,
 } from "../../../server/utils/fieldMapper";
 
 describe("buildRawWebhookPayload", () => {
@@ -95,6 +97,18 @@ describe("buildRawWebhookPayload", () => {
       "MySource",
     );
     expect(result.source).toBe("MySource");
+  });
+
+  it("caps an over-many array of tags at MAX_TAGS on the raw path", () => {
+    const manyTags = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => `tag-${index}`,
+    );
+    const result = buildRawWebhookPayload(
+      { title: "T", content: "C", tags: manyTags },
+      "src",
+    );
+    expect(result.tags).toEqual(manyTags.slice(0, MAX_TAGS));
   });
 });
 
@@ -390,5 +404,180 @@ describe("applyFieldMapping", () => {
       "src",
     );
     expect(result.tags).toEqual(["{infra", "urgent"]);
+  });
+
+  it("caps an over-many array of tags at MAX_TAGS", () => {
+    const manyTags = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => `tag-${index}`,
+    );
+    const result = applyFieldMapping(
+      { labels: manyTags },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toHaveLength(MAX_TAGS);
+    expect(result.tags).toEqual(manyTags.slice(0, MAX_TAGS));
+  });
+
+  it("caps an over-many comma-separated tags string at MAX_TAGS", () => {
+    const manyTags = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => `tag-${index}`,
+    );
+    const result = applyFieldMapping(
+      { labels: manyTags.join(",") },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toHaveLength(MAX_TAGS);
+    expect(result.tags).toEqual(manyTags.slice(0, MAX_TAGS));
+  });
+
+  it("caps an over-many JSON-encoded array of tags at MAX_TAGS", () => {
+    const manyTags = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => `tag-${index}`,
+    );
+    const result = applyFieldMapping(
+      { labels: JSON.stringify(manyTags) },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(manyTags.slice(0, MAX_TAGS));
+  });
+
+  it("caps an over-many array of label objects at MAX_TAGS", () => {
+    const manyLabelObjects = Array.from(
+      { length: MAX_TAGS + 10 },
+      (_, index) => ({ name: `tag-${index}` }),
+    );
+    const result = applyFieldMapping(
+      { labels: manyLabelObjects },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(
+      manyLabelObjects.slice(0, MAX_TAGS).map((label) => label.name),
+    );
+  });
+
+  it("truncates an over-long string tag to MAX_TAG_LENGTH", () => {
+    const overLongTag = "x".repeat(MAX_TAG_LENGTH + 50);
+    const result = applyFieldMapping(
+      { labels: [overLongTag] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([overLongTag.slice(0, MAX_TAG_LENGTH)]);
+  });
+
+  it("truncates an over-long tag from a comma-separated string", () => {
+    const overLongTag = "y".repeat(MAX_TAG_LENGTH + 50);
+    const result = applyFieldMapping(
+      { labels: `short,${overLongTag}` },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([
+      "short",
+      overLongTag.slice(0, MAX_TAG_LENGTH),
+    ]);
+  });
+
+  it("truncates an over-long tag extracted from an object's name field", () => {
+    const overLongTag = "z".repeat(MAX_TAG_LENGTH + 50);
+    const result = applyFieldMapping(
+      { labels: [{ name: overLongTag }] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([overLongTag.slice(0, MAX_TAG_LENGTH)]);
+  });
+
+  it("truncates by code point, never splitting a surrogate pair", () => {
+    const overLongTag = `x${"\u{1F600}".repeat(MAX_TAG_LENGTH)}`;
+    const result = applyFieldMapping(
+      { labels: [overLongTag] },
+      { tags: "labels" },
+      "src",
+    );
+    const expected = Array.from(overLongTag).slice(0, MAX_TAG_LENGTH).join("");
+    expect(result.tags).toEqual([expected]);
+    // A lone (unpaired) surrogate is malformed UTF-16 and makes
+    // encodeURIComponent throw; a well-formed string (no split pair) does not.
+    expect(() => encodeURIComponent(result.tags?.[0] ?? "")).not.toThrow();
+  });
+
+  it("trims trailing whitespace left over when truncation cuts at an interior space", () => {
+    const overLongTag = `${"a".repeat(MAX_TAG_LENGTH - 1)} ${"b".repeat(50)}`;
+    const result = applyFieldMapping(
+      { labels: [overLongTag] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["a".repeat(MAX_TAG_LENGTH - 1)]);
+  });
+
+  it("keeps a tag exactly MAX_TAG_LENGTH long unchanged", () => {
+    const exactLengthTag = "q".repeat(MAX_TAG_LENGTH);
+    const result = applyFieldMapping(
+      { labels: [exactLengthTag] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([exactLengthTag]);
+  });
+
+  it("drops exactly one character from a tag one over MAX_TAG_LENGTH", () => {
+    const oneOverTag = "q".repeat(MAX_TAG_LENGTH + 1);
+    const result = applyFieldMapping(
+      { labels: [oneOverTag] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([oneOverTag.slice(0, MAX_TAG_LENGTH)]);
+  });
+
+  it("keeps all tags when the count is exactly MAX_TAGS", () => {
+    const exactCountTags = Array.from(
+      { length: MAX_TAGS },
+      (_, index) => `tag-${index}`,
+    );
+    const result = applyFieldMapping(
+      { labels: exactCountTags },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(exactCountTags);
+  });
+
+  it("does not let empty comma segments consume the MAX_TAGS budget", () => {
+    const exactCountTags = Array.from(
+      { length: MAX_TAGS },
+      (_, index) => `tag-${index}`,
+    );
+    const labels = `,,${exactCountTags.join(",")}`;
+    const result = applyFieldMapping({ labels }, { tags: "labels" }, "src");
+    expect(result.tags).toEqual(exactCountTags);
+  });
+
+  it("dedupes two distinct tags that truncate to the same MAX_TAG_LENGTH prefix", () => {
+    const sharedPrefix = "p".repeat(MAX_TAG_LENGTH);
+    const result = applyFieldMapping(
+      { labels: [`${sharedPrefix}-a`, `${sharedPrefix}-b`] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual([sharedPrefix]);
+  });
+
+  it("dedupes exact-duplicate tags so they don't each spend the MAX_TAGS budget", () => {
+    const result = applyFieldMapping(
+      { labels: ["dup", "dup", "unique"] },
+      { tags: "labels" },
+      "src",
+    );
+    expect(result.tags).toEqual(["dup", "unique"]);
   });
 });

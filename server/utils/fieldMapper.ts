@@ -82,8 +82,38 @@ const TAG_STRING_DELIMITER = ",";
 const JSON_VALUE_PREFIXES = ["[", "{"] as const;
 const TAG_OBJECT_KEYS = ["name", "title", "label", "value"] as const;
 
+// A string field mapped to tags can expand an arbitrarily large comma body (or
+// JSON array) into an unbounded number of tags, which flow into records.tags
+// (jsonb) and a single YAML frontmatter line. These caps bound both.
+export const MAX_TAGS = 50;
+export const MAX_TAG_LENGTH = 100;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function truncateToMaxLength(value: string): string {
+  // UTF-16 length is never less than the code point count, so a
+  // short-enough value can never need truncating.
+  if (value.length <= MAX_TAG_LENGTH) {
+    return value;
+  }
+
+  // A code point is at most 2 UTF-16 units, so the first MAX_TAG_LENGTH code
+  // points always live within the first MAX_TAG_LENGTH * 2 units. Slicing to
+  // that bound first (rather than spreading the whole, possibly huge, value
+  // into an array of code points) keeps this cheap for an oversized single
+  // tag. Iterating that bounded slice by code point (via the string
+  // iterator), not index, means a surrogate pair (e.g. an emoji) straddling
+  // the MAX_TAG_LENGTH boundary is never split into a lone, invalid
+  // surrogate. Grapheme clusters (e.g. ZWJ emoji sequences, combining marks)
+  // are not preserved — a cut can still land mid-cluster; only surrogate-pair
+  // validity is guaranteed. Re-trim after cutting since the cut can land on
+  // an interior space the original trim() never saw.
+  return Array.from(value.slice(0, MAX_TAG_LENGTH * 2))
+    .slice(0, MAX_TAG_LENGTH)
+    .join("")
+    .trimEnd();
 }
 
 function toNonEmptyTag(value: string): string | undefined {
@@ -93,14 +123,7 @@ function toNonEmptyTag(value: string): string | undefined {
     return undefined;
   }
 
-  return trimmed;
-}
-
-function splitCommaSeparatedTags(value: string): string[] {
-  return value
-    .split(TAG_STRING_DELIMITER)
-    .map(toNonEmptyTag)
-    .filter((tag): tag is string => tag !== undefined);
+  return truncateToMaxLength(trimmed);
 }
 
 function readOwnStringProperty(
@@ -170,6 +193,40 @@ function coerceParsedJsonTags(parsed: unknown): string[] {
   return tag !== undefined ? [tag] : [];
 }
 
+// Stops coercing items once MAX_TAGS is reached instead of coercing every
+// item and slicing after. For the array path this bounds per-item coercion
+// work to the cap; for the comma-separated string path, `value.split(...)`
+// still eagerly builds one segment per delimiter (the string itself is
+// already bounded by MAX_WEBHOOK_BODY_BYTES at the webhook boundary — the
+// only caller of coerceTagsValue is server/api/hooks/[slug].post.ts, which
+// runs assertBodyWithinLimit before the body is ever parsed — so that
+// allocation tops out at ~1 MiB worth of segments), but this loop still stops
+// the per-segment trim/truncate work at the cap rather than running it over
+// every segment.
+//
+// Dedupes as it collects: two distinct tags that share their first
+// MAX_TAG_LENGTH characters truncate to the same string, and without dedup
+// that collision would spend the MAX_TAGS budget on repeats of one value.
+function collectTags(items: Iterable<unknown>): string[] {
+  const tags = new Set<string>();
+
+  for (const item of items) {
+    if (tags.size >= MAX_TAGS) {
+      break;
+    }
+
+    const tag = coerceTagItem(item);
+
+    if (tag === undefined) {
+      continue;
+    }
+
+    tags.add(tag);
+  }
+
+  return [...tags];
+}
+
 function coerceTagsValue(value: unknown): string[] | undefined {
   if (typeof value === "string") {
     const parsed = tryParseJson(value);
@@ -178,13 +235,11 @@ function coerceTagsValue(value: unknown): string[] | undefined {
       return coerceParsedJsonTags(parsed);
     }
 
-    return splitCommaSeparatedTags(value);
+    return collectTags(value.split(TAG_STRING_DELIMITER));
   }
 
   if (Array.isArray(value)) {
-    return value
-      .map(coerceTagItem)
-      .filter((tag): tag is string => tag !== undefined);
+    return collectTags(value);
   }
 
   return undefined;
