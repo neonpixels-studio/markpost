@@ -1,7 +1,7 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`RecordDetailModal > matches the snapshot for a loaded record 1`] = `
-"<div data-v-ee0655ff="" role="dialog" aria-modal="true" aria-label="Record detail" style="position: fixed; display: grid; place-items: center; z-index: 60; padding: 24px;">
+"<div data-v-ee0655ff="" role="dialog" aria-modal="true" aria-label="Record detail" style="position: fixed; inset: 0; display: grid; place-items: center; z-index: 60; padding: 24px;">
   <div data-v-ee0655ff="" class="card" tabindex="-1" style="width: 640px; max-width: 100%; max-height: 85vh; overflow-y: auto; box-shadow: var(--sh-pop); padding: 24px; outline-color: none; outline-style: none; outline-width: initial;">
     <div data-v-ee0655ff="" class="row between" style="margin-bottom: 18px;"><span data-v-ee0655ff="" class="kicker">record detail</span><button data-v-ee0655ff="" class="app-btn">close</button></div>
     <h3 data-v-ee0655ff="" style="font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 14px;">Test Record</h3>
