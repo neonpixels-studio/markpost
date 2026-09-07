@@ -7,8 +7,7 @@ import { apiValidate } from "../../utils/validate";
 import { isValidUuid } from "../../utils/uuid";
 import type { ApiRequest } from "../../types/api.types";
 import { writeEvent } from "../../utils/eventWriter";
-
-const MAX_DELETE_BATCH_SIZE = 100;
+import { MAX_DELETE_BATCH_SIZE } from "#shared/utils/records";
 
 type DeleteRecordsBody = ApiRequest & {
   data: {

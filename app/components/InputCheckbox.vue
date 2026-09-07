@@ -3,6 +3,7 @@
     class="row gap-3"
     :class="attrs.class"
     :style="[{ cursor: 'pointer' }, attrs.style as StyleValue]"
+    v-bind="labelAttrs"
   >
     <span
       :style="{
@@ -39,6 +40,7 @@
       "
       @focus="focused = true"
       @blur="focused = false"
+      @click.stop
     />
     <span
       :style="{
@@ -54,20 +56,37 @@
 <script setup lang="ts">
 import type { StyleValue } from "vue";
 
-// Non-presentational attrs (e.g. aria-label) describe the actual checkbox
-// control, not the wrapping <label> — forward those onto the real <input>
-// instead of letting Vue's default fallthrough land them on the root. class
-// and style stay on the <label> (the visible root), since a caller styling
-// this component means the visible element, not the invisible native input.
+// The <input> is visually hidden (opacity: 0, pointer-events: none) — it
+// exists only for its native checkbox semantics and change event. Anything a
+// caller expects to be seen, hovered, or clicked (class, style, title, and
+// any listener) must stay on the <label>, the actual interactive surface;
+// only attrs that describe the checkbox control itself (aria-*, name,
+// required, disabled, etc.) forward onto the input.
+//
+// The input's `@click.stop` (template) matters here too: clicking the
+// <label> makes the browser dispatch a second, synthetic click at its
+// wrapped <input> (native label/control forwarding), which would otherwise
+// bubble back up and fire a caller's forwarded @click on the label twice per
+// user click. Stopping it there keeps the label's own click the only one a
+// caller ever sees.
 defineOptions({ inheritAttrs: false });
 const attrs = useAttrs();
+const labelAttrs = computed(() => {
+  const entries = Object.entries(attrs).filter(
+    ([key]) => key === "title" || key.startsWith("on"),
+  );
+  return Object.fromEntries(entries);
+});
 const inputAttrs = computed(() => {
   const {
     class: _presentationClass,
     style: _presentationStyle,
+    title: _labelTitle,
     ...rest
   } = attrs;
-  return rest;
+  return Object.fromEntries(
+    Object.entries(rest).filter(([key]) => !key.startsWith("on")),
+  );
 });
 
 const focused = ref(false);

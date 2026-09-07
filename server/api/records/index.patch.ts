@@ -10,8 +10,7 @@ import {
 } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
 import { writeEvent } from "../../utils/eventWriter";
-
-const MAX_UPDATE_BATCH_SIZE = 100;
+import { MAX_UPDATE_BATCH_SIZE } from "#shared/utils/records";
 
 type RecordUpdateAttributes = {
   uuid?: unknown;

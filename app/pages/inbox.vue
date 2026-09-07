@@ -188,7 +188,7 @@
               <span style="width: 28px">
                 <InputCheckbox
                   :model-value="isAllVisibleSelected"
-                  :aria-label="`Select up to ${BULK_ACTION_MAX_BATCH_SIZE} records`"
+                  :aria-label="selectAllLabel"
                   @update:model-value="toggleSelectAllVisible"
                 />
               </span>
@@ -289,6 +289,22 @@ const {
 const isBulkActionInFlight = computed(
   () => isDeleting.value || isUpdatingStatus.value,
 );
+
+// State-aware label: static text like "Select up to N records" reads wrong
+// once fewer than N records are loaded, and stops making sense entirely once
+// everything is already selected and the control's actual behavior is to
+// deselect.
+const selectAllLabel = computed(() => {
+  if (isAllVisibleSelected.value) {
+    return "Deselect all records";
+  }
+
+  const selectableCount = Math.min(
+    records.value.length,
+    BULK_ACTION_MAX_BATCH_SIZE,
+  );
+  return `Select ${selectableCount} records`;
+});
 
 const pendingDeleteUuids = ref<string[] | null>(null);
 

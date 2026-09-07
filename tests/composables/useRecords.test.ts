@@ -451,6 +451,23 @@ describe("useRecords selection", () => {
     );
   });
 
+  it("clears the cap error once the selection drops back under the limit", () => {
+    const { actionError, toggleSelection } = useRecords("all");
+
+    for (let index = 0; index < BULK_ACTION_MAX_BATCH_SIZE; index += 1) {
+      toggleSelection(`uuid-${index}`);
+    }
+    toggleSelection("uuid-over-cap");
+    expect(actionError.value).not.toBeNull();
+
+    // Deselecting one uuid routes through setSelection, which every legal
+    // selection change goes through — the cap message must not linger once
+    // the selection is legal again.
+    toggleSelection("uuid-0");
+
+    expect(actionError.value).toBeNull();
+  });
+
   it("reports isAllVisibleSelected once every loaded record is selected", async () => {
     mockFetch.mockResolvedValue({
       data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
@@ -719,7 +736,7 @@ describe("useRecords updateRecordsStatus", () => {
     });
   });
 
-  it("does not send errorMessage when marking records as pending or error", async () => {
+  it("does not send errorMessage when marking records as error, since the failure reason should stick", async () => {
     mockFetch.mockResolvedValueOnce({ data: [] });
 
     const { updateRecordsStatus } = useRecords("all");
@@ -730,6 +747,26 @@ describe("useRecords updateRecordsStatus", () => {
       body: {
         data: {
           attributes: { records: [{ uuid: "uuid-1", status: "error" }] },
+        },
+      },
+    });
+  });
+
+  it("clears errorMessage when marking records as pending, so a stale failure reason doesn't linger on a not-yet-attempted record", async () => {
+    mockFetch.mockResolvedValueOnce({ data: [] });
+
+    const { updateRecordsStatus } = useRecords("all");
+    await updateRecordsStatus(["uuid-1"], "pending");
+
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/records", {
+      method: "PATCH",
+      body: {
+        data: {
+          attributes: {
+            records: [
+              { uuid: "uuid-1", status: "pending", errorMessage: null },
+            ],
+          },
         },
       },
     });
@@ -757,7 +794,11 @@ describe("useRecords updateRecordsStatus", () => {
       method: "PATCH",
       body: {
         data: {
-          attributes: { records: [{ uuid: "uuid-1", status: "pending" }] },
+          attributes: {
+            records: [
+              { uuid: "uuid-1", status: "pending", errorMessage: null },
+            ],
+          },
         },
       },
     });
@@ -790,6 +831,38 @@ describe("useRecords updateRecordsStatus", () => {
     await updateRecordsStatus(["uuid-1"], "synced");
 
     expect(records.value).toHaveLength(0);
+  });
+
+  it("keeps a record under a source filter once its status changes, since the filter isn't status-based", async () => {
+    const githubRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        sourceType: "github",
+        status: "pending",
+      },
+    };
+    const syncedGithubRecord: RecordResource = {
+      ...githubRecord,
+      attributes: { ...githubRecord.attributes, status: "synced" },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [githubRecord],
+        meta: { hasMore: false },
+      })
+      .mockResolvedValueOnce({ data: [syncedGithubRecord] });
+
+    const { loadRecords, records, filter, updateRecordsStatus } =
+      useRecords("github");
+    filter.value = "github";
+    await loadRecords();
+    expect(records.value).toHaveLength(1);
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(records.value).toHaveLength(1);
+    expect(records.value[0]?.attributes.status).toBe("synced");
   });
 
   it("clears a selected uuid once its status update succeeds", async () => {

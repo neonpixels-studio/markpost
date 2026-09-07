@@ -6,17 +6,19 @@ import {
 import { computeElapsedBuckets } from "../utils/timeBuckets";
 import { downloadExport, type ExportOutcome } from "../utils/exportDownload";
 import { RECORDS_EXPORT_FILENAME } from "#shared/utils/export";
+import {
+  RECORD_STATUSES,
+  MAX_DELETE_BATCH_SIZE,
+  MAX_UPDATE_BATCH_SIZE,
+  type RecordStatus,
+} from "#shared/utils/records";
 
-export type RecordStatus = "synced" | "pending" | "error";
+export type { RecordStatus };
 
-// Mirrors server/db/schema.ts's RECORD_STATUSES — kept as a small literal list
-// here rather than importing the server module (the client bundle should not
-// pull in server/db).
-export const RECORD_STATUS_VALUES: readonly RecordStatus[] = [
-  "synced",
-  "pending",
-  "error",
-];
+// Re-exported under its existing name (consumers: RecordBulkActions.vue) —
+// #shared/utils/records is the source of truth so client validation can
+// never drift from server/db/schema.ts.
+export const RECORD_STATUS_VALUES: readonly RecordStatus[] = RECORD_STATUSES;
 
 export type RecordAttributes = {
   uuid: string;
@@ -169,13 +171,18 @@ async function fetchRecordList(
   };
 }
 
-// Mirrors MAX_DELETE_BATCH_SIZE / MAX_UPDATE_BATCH_SIZE in
-// server/api/records/index.delete.ts and index.patch.ts — both endpoints
-// reject a larger batch, so the UI caps selection at the same size rather
-// than letting a request round-trip just to fail.
-export const BULK_ACTION_MAX_BATCH_SIZE = 100;
+// Both the delete and bulk-update endpoints reject a batch larger than their
+// own cap (see #shared/utils/records); the UI enforces the smaller of the two
+// so a selection is never accepted here only to be rejected once the request
+// round-trips to the server. Today both caps are 100, so this is 100, but the
+// derivation stays correct if the endpoints' caps ever diverge.
+export const BULK_ACTION_MAX_BATCH_SIZE = Math.min(
+  MAX_DELETE_BATCH_SIZE,
+  MAX_UPDATE_BATCH_SIZE,
+);
 
 const BULK_ACTION_CAP_MESSAGE = `You can act on at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
+const BULK_SELECTION_CAP_MESSAGE = `You can select at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
 
 type DeleteRecordsResponse = {
   meta: { deleted: number };
@@ -338,11 +345,13 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     return selectedUuids.value.has(uuid);
   }
 
-  // The single place selectedUuids is ever assigned wholesale (toggleSelection
-  // mutates a working copy first, but still lands here) — every successful
-  // selection change clears a prior actionError through this one path, so the
-  // cap message in particular can never linger once the selection is legal
-  // again.
+  // The only assignment path that also clears actionError — every successful
+  // selection change (toggleSelection mutates a working copy first, but still
+  // lands here) runs through this, so the cap message in particular can never
+  // linger once the selection is legal again. deselectUuids and
+  // pruneSelection below assign selectedUuids directly instead of routing
+  // through here precisely because they must not clear actionError (they run
+  // right after a bulk action sets it).
   function setSelection(uuids: Iterable<string>): void {
     selectedUuids.value = new Set(uuids);
     actionError.value = null;
@@ -361,7 +370,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     }
 
     if (next.size >= BULK_ACTION_MAX_BATCH_SIZE) {
-      actionError.value = `You can select at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
+      actionError.value = BULK_SELECTION_CAP_MESSAGE;
       return;
     }
 
@@ -482,16 +491,34 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     }
   }
 
+  // The cap is enforced here too, not just in the selection helpers — a
+  // future caller that builds its own uuid list (bypassing toggleSelection)
+  // must not be able to send a batch the server would reject outright.
+  // Returns true (and sets actionError) when the batch is oversized, so
+  // callers can bail with a single guard clause.
+  function rejectOversizedBatch(uuids: string[]): boolean {
+    if (uuids.length <= BULK_ACTION_MAX_BATCH_SIZE) {
+      return false;
+    }
+
+    actionError.value = BULK_ACTION_CAP_MESSAGE;
+    return true;
+  }
+
   async function deleteRecords(uuids: string[]): Promise<number> {
     if (uuids.length === 0) {
       return 0;
     }
 
-    // The cap is enforced here too, not just in the selection helpers — a
-    // future caller that builds its own uuid list (bypassing toggleSelection)
-    // must not be able to send a batch the server would reject outright.
-    if (uuids.length > BULK_ACTION_MAX_BATCH_SIZE) {
-      actionError.value = BULK_ACTION_CAP_MESSAGE;
+    // Guards against a second concurrent bulk action racing this one — both
+    // flip synchronously before their first await, so a caller that doesn't
+    // separately track in-flight state (inbox.vue currently does) still
+    // can't fire two overlapping requests against the same selection.
+    if (isDeleting.value || isUpdatingStatus.value) {
+      return 0;
+    }
+
+    if (rejectOversizedBatch(uuids)) {
       return 0;
     }
 
@@ -548,10 +575,12 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       return [];
     }
 
-    // Same boundary guard as deleteRecords — enforced here, not just in the
-    // selection helpers.
-    if (uuids.length > BULK_ACTION_MAX_BATCH_SIZE) {
-      actionError.value = BULK_ACTION_CAP_MESSAGE;
+    // Same concurrency guard as deleteRecords.
+    if (isDeleting.value || isUpdatingStatus.value) {
+      return [];
+    }
+
+    if (rejectOversizedBatch(uuids)) {
       return [];
     }
 
@@ -560,12 +589,13 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
 
     try {
       // The server only writes fields present in the payload — moving a
-      // record to "synced" without also clearing errorMessage would leave a
-      // stale failure reason on a record the UI now shows as healthy.
+      // record to "synced" or "pending" without also clearing errorMessage
+      // would leave a stale failure reason on a record the UI now shows as
+      // healthy or not-yet-attempted. Only "error" itself should keep it.
       const updates: BulkStatusUpdate[] = uuids.map((uuid) => ({
         uuid,
         status,
-        ...(status === "synced" ? { errorMessage: null } : {}),
+        ...(status === "error" ? {} : { errorMessage: null }),
       }));
       const updatedRecords = await updateRecordsStatusRequest(updates);
       applyStatusUpdates(updatedRecords);

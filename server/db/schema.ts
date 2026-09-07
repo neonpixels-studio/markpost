@@ -11,6 +11,9 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { RECORD_STATUSES, type RecordStatus } from "#shared/utils/records";
+
+export { RECORD_STATUSES, type RecordStatus };
 
 export const users = pgTable("users", {
   userId: text("user_id").primaryKey(),
@@ -128,9 +131,6 @@ export const sources = pgTable(
     unique("sources_endpoint_slug_unique").on(table.endpointSlug),
   ],
 );
-
-export const RECORD_STATUSES = ["synced", "pending", "error"] as const;
-export type RecordStatus = (typeof RECORD_STATUSES)[number];
 
 export const records = pgTable(
   "records",

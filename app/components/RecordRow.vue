@@ -1,14 +1,5 @@
 <template>
-  <div
-    class="row"
-    style="padding: 13px 18px; transition: background 0.1s"
-    @mouseenter="
-      ($event.currentTarget as HTMLElement).style.background = 'var(--bg-2)'
-    "
-    @mouseleave="
-      ($event.currentTarget as HTMLElement).style.background = 'transparent'
-    "
-  >
+  <div class="row" style="padding: 13px 18px">
     <span style="width: 28px">
       <InputCheckbox
         :model-value="selected"
@@ -52,10 +43,13 @@
         overflow: hidden;
         text-overflow: ellipsis;
         padding-right: 16px;
+        padding-top: 4px;
+        padding-bottom: 4px;
         text-align: left;
-        background: none;
         border: 0;
-        padding-left: 0;
+        border-radius: 4px;
+        padding-left: 6px;
+        margin-left: -6px;
         font-family: inherit;
         color: inherit;
         cursor: pointer;
@@ -130,3 +124,18 @@ const emit = defineEmits<{
   delete: [uuid: string];
 }>();
 </script>
+
+<style scoped>
+/* The hover affordance lives on the title button only — it's the sole part
+   of the row that opens the record, so highlighting the whole row (as the
+   old whole-row `role="button"` layout did) would advertise columns like
+   source/file/status/time as clickable when they no longer are. */
+.record-open-btn {
+  background: none;
+  transition: background 0.1s;
+}
+
+.record-open-btn:hover {
+  background: var(--bg-2);
+}
+</style>
