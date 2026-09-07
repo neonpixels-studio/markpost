@@ -188,6 +188,7 @@
               <span style="width: 28px" @click.stop @keydown.stop>
                 <InputCheckbox
                   :model-value="isAllVisibleSelected"
+                  aria-label="Select all visible records"
                   @update:model-value="toggleSelectAllVisible"
                 />
               </span>
@@ -204,6 +205,7 @@
                 :key="record.id"
                 :record="record"
                 :selected="isSelected(record.attributes.uuid)"
+                :disabled="isBulkActionInFlight"
                 @open="openRecord"
                 @toggle-select="toggleSelection"
                 @delete="requestSingleDelete"
@@ -310,20 +312,27 @@ function cancelDelete(): void {
 }
 
 async function confirmDelete(): Promise<void> {
-  if (!pendingDeleteUuids.value) {
+  if (!pendingDeleteUuids.value || isBulkActionInFlight.value) {
     return;
   }
 
   const uuids = pendingDeleteUuids.value;
   pendingDeleteUuids.value = null;
   await deleteRecords(uuids);
+  // The stat cards (synced/pending/errors/this month) reflect status counts
+  // that a delete can change — refresh them so they don't go stale until the
+  // next full reload.
+  await refreshStats();
 }
 
 async function markSelectedStatus(status: RecordStatus): Promise<void> {
-  if (selectedUuids.value.size === 0) {
+  if (selectedUuids.value.size === 0 || isBulkActionInFlight.value) {
     return;
   }
   await updateRecordsStatus([...selectedUuids.value], status);
+  // Same reasoning as confirmDelete: a status change can move records between
+  // the synced/pending/errors buckets the stat cards show.
+  await refreshStats();
 }
 
 const emptyStateTitle = computed(() => {

@@ -185,8 +185,8 @@ const globalConfig = {
       },
       RecordRow: {
         template:
-          '<div class="record-row" @click="$emit(\'open\', record.attributes.uuid)"><button class="row-select" @click.stop="$emit(\'toggle-select\', record.attributes.uuid)">{{ selected ? "selected" : "select" }}</button><button class="row-delete" @click.stop="$emit(\'delete\', record.attributes.uuid)">delete</button></div>',
-        props: ["record", "selected"],
+          '<div class="record-row" @click="$emit(\'open\', record.attributes.uuid)"><button class="row-select" :disabled="disabled" @click.stop="$emit(\'toggle-select\', record.attributes.uuid)">{{ selected ? "selected" : "select" }}</button><button class="row-delete" :disabled="disabled" @click.stop="$emit(\'delete\', record.attributes.uuid)">delete</button></div>',
+        props: ["record", "selected", "disabled"],
         emits: ["open", "toggle-select", "delete"],
       },
       RecordBulkActions: {
@@ -727,6 +727,56 @@ describe("inbox page", () => {
       expect(wrapper.text()).toContain(
         "Failed to delete records. Please try again.",
       );
+    });
+
+    it("refreshes stats after a confirmed delete, since it can change the stat cards", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      mockFetchRecordStats.mockClear();
+
+      await wrapper.find(".row-delete").trigger("click");
+      await wrapper.find(".confirm-confirm").trigger("click");
+      await flushPromises();
+
+      expect(mockFetchRecordStats).toHaveBeenCalledOnce();
+    });
+
+    it("disables every row's delete button while a bulk action is in flight", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      isDeletingRef.value = true;
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      expect(wrapper.find(".row-delete").attributes("disabled")).toBeDefined();
+    });
+
+    it("ignores a second confirm while the first delete is still in flight", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".row-delete").trigger("click");
+      isDeletingRef.value = true;
+      await wrapper.find(".confirm-confirm").trigger("click");
+      await flushPromises();
+
+      expect(mockDeleteRecords).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("bulk status update refresh", () => {
+    it("refreshes stats after a status update, since it can change the stat cards", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      await wrapper.find(".row-select").trigger("click");
+      mockFetchRecordStats.mockClear();
+
+      await wrapper.find(".mark-synced").trigger("click");
+      await flushPromises();
+
+      expect(mockFetchRecordStats).toHaveBeenCalledOnce();
     });
   });
 });

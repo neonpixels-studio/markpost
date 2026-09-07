@@ -336,18 +336,23 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
   }
 
   // Mirrors the server's own MAX_*_BATCH_SIZE cap: once a selection is already
-  // at the limit, a further add is silently ignored rather than building a
-  // selection the bulk endpoints would reject outright.
+  // at the limit, a further add is rejected with a visible message rather than
+  // silently discarding the click (fail loud, not quiet).
   function toggleSelection(uuid: string): void {
     const next = new Set(selectedUuids.value);
+
     if (next.has(uuid)) {
       next.delete(uuid);
-    } else {
-      if (next.size >= BULK_ACTION_MAX_BATCH_SIZE) {
-        return;
-      }
-      next.add(uuid);
+      selectedUuids.value = next;
+      return;
     }
+
+    if (next.size >= BULK_ACTION_MAX_BATCH_SIZE) {
+      actionError.value = `You can select at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
+      return;
+    }
+
+    next.add(uuid);
     selectedUuids.value = next;
   }
 
@@ -355,11 +360,35 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     selectedUuids.value = new Set();
   }
 
-  const isAllVisibleSelected = computed(
-    () =>
-      records.value.length > 0 &&
-      records.value.every((record) => isSelected(record.attributes.uuid)),
-  );
+  // Removes only the given uuids from the selection, leaving the rest
+  // selected — used after a partially-successful bulk action so the uuids
+  // that failed stay selected for a retry instead of being dropped silently.
+  function deselectUuids(uuidsToRemove: string[]): void {
+    if (uuidsToRemove.length === 0) {
+      return;
+    }
+
+    const removeSet = new Set(uuidsToRemove);
+    selectedUuids.value = new Set(
+      [...selectedUuids.value].filter((uuid) => !removeSet.has(uuid)),
+    );
+  }
+
+  // "All visible" means every visible record up to the batch cap — with more
+  // records loaded than the cap allows, toggleSelectAllVisible below can never
+  // select every one of them, so basing this on the raw record count would
+  // leave the header checkbox permanently unchecked and unable to clear.
+  const isAllVisibleSelected = computed(() => {
+    if (records.value.length === 0) {
+      return false;
+    }
+
+    const cappedVisibleUuids = records.value
+      .map((record) => record.attributes.uuid)
+      .slice(0, BULK_ACTION_MAX_BATCH_SIZE);
+
+    return cappedVisibleUuids.every((uuid) => isSelected(uuid));
+  });
 
   // Selecting every visible record is capped the same way as a single toggle —
   // a page larger than the batch limit selects only its first
@@ -450,6 +479,18 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
 
     try {
       const deletedCount = await deleteRecordsRequest(uuids);
+
+      // The server only deletes uuids it both owns and still finds — a
+      // mismatch means some requested records survived (already removed
+      // elsewhere, a stale row). Reload from the server rather than trusting
+      // the local list, and say so instead of silently hiding a record that
+      // still exists.
+      if (deletedCount < uuids.length) {
+        actionError.value = `Deleted ${deletedCount} of ${uuids.length} records. Reloading the list.`;
+        await loadRecords();
+        return deletedCount;
+      }
+
       const deletedUuids = new Set(uuids);
       records.value = records.value.filter(
         (record) => !deletedUuids.has(record.attributes.uuid),
@@ -493,10 +534,20 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       const updates = uuids.map((uuid) => ({ uuid, status }));
       const updatedRecords = await updateRecordsStatusRequest(updates);
       applyStatusUpdates(updatedRecords);
-      // A completed bulk action clears the selection outright rather than
-      // pruning: unlike delete, an updated record can still be visible (e.g.
-      // filter "all"), so pruning alone would leave it selected forever.
-      clearSelection();
+
+      // Only deselect the uuids the server actually updated — unlike delete,
+      // an updated record can still be visible (e.g. filter "all"), so a
+      // uuid the server skipped must stay selected for a retry rather than
+      // being dropped as if it had succeeded.
+      const updatedUuids = new Set(
+        updatedRecords.map((record) => record.attributes.uuid),
+      );
+      deselectUuids(uuids.filter((uuid) => updatedUuids.has(uuid)));
+
+      if (updatedRecords.length < uuids.length) {
+        actionError.value = `Updated ${updatedRecords.length} of ${uuids.length} records. Please try again for the rest.`;
+      }
+
       return updatedRecords;
     } catch (updateRequestError) {
       console.error(

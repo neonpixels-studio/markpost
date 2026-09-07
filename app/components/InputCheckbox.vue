@@ -28,6 +28,7 @@
     <input
       type="checkbox"
       :checked="modelValue"
+      v-bind="attrs"
       style="position: absolute; opacity: 0; pointer-events: none"
       @change="
         emit('update:modelValue', ($event.target as HTMLInputElement).checked)
@@ -47,6 +48,12 @@
 </template>
 
 <script setup lang="ts">
+// Attrs like aria-label describe the actual checkbox control, not the
+// wrapping <label> — forward them onto the real <input> instead of letting
+// Vue's default fallthrough land them on the root element.
+defineOptions({ inheritAttrs: false });
+const attrs = useAttrs();
+
 const focused = ref(false);
 
 withDefaults(

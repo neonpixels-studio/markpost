@@ -131,4 +131,29 @@ describe("RecordRow", () => {
     expect(wrapper.emitted("delete")).toEqual([["row-uuid"]]);
     expect(wrapper.emitted("open")).toBeUndefined();
   });
+
+  it("disables the delete button when disabled is true", () => {
+    const wrapper = mount(RecordRow, {
+      ...globalConfig,
+      props: {
+        record: makeRecord(),
+        selected: false,
+        disabled: true,
+      },
+    });
+    expect(wrapper.find(".btn").attributes("disabled")).toBeDefined();
+  });
+
+  it("does not emit delete when clicked while disabled", async () => {
+    const wrapper = mount(RecordRow, {
+      ...globalConfig,
+      props: {
+        record: makeRecord({ uuid: "row-uuid" }),
+        selected: false,
+        disabled: true,
+      },
+    });
+    await wrapper.find(".btn").trigger("click");
+    expect(wrapper.emitted("delete")).toBeUndefined();
+  });
 });

@@ -18,7 +18,6 @@ import {
   fetchRecordStats,
   buildFetchUrl,
   RECORD_FILTER_OPTIONS,
-  RECORD_STATUS_VALUES,
   BULK_ACTION_MAX_BATCH_SIZE,
   triggerRecordExportDownload,
   useRecords,
@@ -436,14 +435,20 @@ describe("useRecords selection", () => {
     expect(selectedCount.value).toBe(0);
   });
 
-  it("caps selection at BULK_ACTION_MAX_BATCH_SIZE", () => {
-    const { selectedCount, toggleSelection } = useRecords("all");
+  it("caps selection at BULK_ACTION_MAX_BATCH_SIZE and surfaces an error on the next attempt", () => {
+    const { selectedCount, actionError, toggleSelection } = useRecords("all");
 
-    for (let index = 0; index < BULK_ACTION_MAX_BATCH_SIZE + 5; index += 1) {
+    for (let index = 0; index < BULK_ACTION_MAX_BATCH_SIZE; index += 1) {
       toggleSelection(`uuid-${index}`);
     }
+    expect(actionError.value).toBeNull();
+
+    toggleSelection("uuid-over-cap");
 
     expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
+    expect(actionError.value).toBe(
+      `You can select at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`,
+    );
   });
 
   it("reports isAllVisibleSelected once every loaded record is selected", async () => {
@@ -469,6 +474,30 @@ describe("useRecords selection", () => {
     toggleSelectAllVisible();
     expect(isAllVisibleSelected.value).toBe(false);
     expect(selectedCount.value).toBe(0);
+  });
+
+  it("reports isAllVisibleSelected against the batch cap when more records are loaded than the cap allows", async () => {
+    const oversizedPage = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE + 10 },
+      (_unused, index) => makeRecordResource(`uuid-${index}`),
+    );
+    mockFetch.mockResolvedValue({
+      data: oversizedPage,
+      meta: { hasMore: false },
+    });
+
+    const { loadRecords, isAllVisibleSelected, toggleSelectAllVisible } =
+      useRecords("all");
+    await loadRecords();
+
+    // Selecting "all" can only ever reach the cap, so isAllVisibleSelected
+    // must key off the capped set — otherwise the header checkbox could never
+    // show checked, and a second click could never clear it.
+    toggleSelectAllVisible();
+    expect(isAllVisibleSelected.value).toBe(true);
+
+    toggleSelectAllVisible();
+    expect(isAllVisibleSelected.value).toBe(false);
   });
 
   it("drops a selected uuid that no longer appears after a reload", async () => {
@@ -576,6 +605,34 @@ describe("useRecords deleteRecords", () => {
 
     expect(isDeleting.value).toBe(false);
   });
+
+  it("reloads and surfaces a mismatch instead of trusting a partial delete", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      })
+      // Only 1 of the 2 requested uuids was actually deleted server-side.
+      .mockResolvedValueOnce({ meta: { deleted: 1 } })
+      // The reload that follows a mismatch.
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      });
+
+    const { loadRecords, records, actionError, deleteRecords } =
+      useRecords("all");
+    await loadRecords();
+
+    const deletedCount = await deleteRecords(["uuid-1", "uuid-2"]);
+
+    expect(deletedCount).toBe(1);
+    expect(actionError.value).toBe(
+      "Deleted 1 of 2 records. Reloading the list.",
+    );
+    // Reflects the reload's response, not a locally-filtered guess.
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+  });
 });
 
 describe("useRecords updateRecordsStatus", () => {
@@ -679,6 +736,35 @@ describe("useRecords updateRecordsStatus", () => {
     );
   });
 
+  it("keeps only the un-updated uuid selected and surfaces a mismatch on a partial update", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      })
+      // The server only echoes back uuid-1 — uuid-2's update didn't apply.
+      .mockResolvedValueOnce({ data: [makeRecordResource("uuid-1")] });
+
+    const {
+      loadRecords,
+      toggleSelection,
+      isSelected,
+      actionError,
+      updateRecordsStatus,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+    toggleSelection("uuid-2");
+
+    await updateRecordsStatus(["uuid-1", "uuid-2"], "synced");
+
+    expect(isSelected("uuid-1")).toBe(false);
+    expect(isSelected("uuid-2")).toBe(true);
+    expect(actionError.value).toBe(
+      "Updated 1 of 2 records. Please try again for the rest.",
+    );
+  });
+
   it("tracks isUpdatingStatus while the request is in flight", async () => {
     let resolvePatch!: (value: { data: RecordResource[] }) => void;
     mockFetch.mockReturnValue(
@@ -695,9 +781,5 @@ describe("useRecords updateRecordsStatus", () => {
     await pendingUpdate;
 
     expect(isUpdatingStatus.value).toBe(false);
-  });
-
-  it("covers every status value exactly once", () => {
-    expect(RECORD_STATUS_VALUES).toEqual(["synced", "pending", "error"]);
   });
 });

@@ -18,6 +18,7 @@
     <span style="width: 28px" @click.stop @keydown.stop>
       <InputCheckbox
         :model-value="selected"
+        :aria-label="`Select record ${record.attributes.title}`"
         @update:model-value="emit('toggle-select', record.attributes.uuid)"
       />
     </span>
@@ -89,6 +90,7 @@
         icon="trash"
         title="Delete record"
         :aria-label="`Delete record ${record.attributes.title}`"
+        :disabled="disabled"
         @click="emit('delete', record.attributes.uuid)"
       ></AppBtn>
     </span>
@@ -104,10 +106,18 @@ import {
   type RecordResource,
 } from "~/composables/useRecords";
 
-defineProps<{
-  record: RecordResource;
-  selected: boolean;
-}>();
+withDefaults(
+  defineProps<{
+    record: RecordResource;
+    selected: boolean;
+    // Disables just the per-row delete action — set while a bulk action is
+    // in flight so a row delete can't fire a second, concurrent request.
+    disabled?: boolean;
+  }>(),
+  {
+    disabled: false,
+  },
+);
 
 const emit = defineEmits<{
   open: [uuid: string];
