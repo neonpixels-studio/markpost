@@ -11,7 +11,12 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { RECORD_STATUSES, type RecordStatus } from "#shared/utils/records";
+// Relative import, not `#shared` — this file is also loaded by drizzle-kit
+// (db:generate/db:push/db:studio) via its bundled tsx/CJS loader outside of
+// Nuxt, where the `#shared` alias (Nuxt-only, and unresolved without a
+// package.json "imports" entry) fails with MODULE_NOT_FOUND. The API
+// handlers that only ever run inside Nitro can use `#shared` directly.
+import { RECORD_STATUSES, type RecordStatus } from "../../shared/utils/records";
 
 export { RECORD_STATUSES, type RecordStatus };
 

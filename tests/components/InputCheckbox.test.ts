@@ -109,4 +109,21 @@ describe("InputCheckbox", () => {
     await label.trigger("click");
     expect(onClick).toHaveBeenCalledOnce();
   });
+
+  it("re-syncs the native input's checked state when the caller rejects the change (controlled binding)", async () => {
+    // modelValue stays false throughout — simulates a parent that ignores the
+    // update:modelValue emit (e.g. useRecords rejecting a toggle at the
+    // selection cap), which the real DOM input doesn't know about on its own.
+    const wrapper = mount(InputCheckbox, {
+      ...globalConfig,
+      props: { modelValue: false, label: "Capped" },
+    });
+    const input = wrapper.find("input").element as HTMLInputElement;
+
+    input.checked = true;
+    await wrapper.find("input").trigger("change");
+
+    expect(wrapper.emitted("update:modelValue")?.[0]).toEqual([true]);
+    expect(input.checked).toBe(false);
+  });
 });

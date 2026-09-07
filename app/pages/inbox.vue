@@ -235,6 +235,7 @@
       :title="deleteConfirmTitle"
       :message="DELETE_CONFIRM_MESSAGE"
       confirm-label="delete"
+      :disabled="isBulkActionInFlight"
       @confirm="confirmDelete"
       @cancel="cancelDelete"
     />

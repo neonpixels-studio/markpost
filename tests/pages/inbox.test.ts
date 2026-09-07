@@ -179,8 +179,8 @@ const globalConfig = {
       },
       ConfirmDialog: {
         template:
-          '<div class="confirm-dialog"><span class="confirm-title">{{ title }}</span><button class="confirm-confirm" @click="$emit(\'confirm\')">{{ confirmLabel }}</button><button class="confirm-cancel" @click="$emit(\'cancel\')">cancel</button></div>',
-        props: ["title", "message", "confirmLabel"],
+          '<div class="confirm-dialog"><span class="confirm-title">{{ title }}</span><button class="confirm-confirm" :disabled="disabled" @click="$emit(\'confirm\')">{{ confirmLabel }}</button><button class="confirm-cancel" @click="$emit(\'cancel\')">cancel</button></div>',
+        props: ["title", "message", "confirmLabel", "disabled"],
         emits: ["confirm", "cancel"],
       },
       RecordRow: {
@@ -776,6 +776,22 @@ describe("inbox page", () => {
       await flushPromises();
 
       expect(mockDeleteRecords).not.toHaveBeenCalled();
+    });
+
+    it("disables the confirm button while a bulk action is in flight, instead of swallowing the click silently", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".row-delete").trigger("click");
+      expect(
+        wrapper.find(".confirm-confirm").attributes("disabled"),
+      ).toBeUndefined();
+
+      isUpdatingStatusRef.value = true;
+      await flushPromises();
+
+      expect(wrapper.find(".confirm-confirm").attributes("disabled")).toBe("");
     });
   });
 

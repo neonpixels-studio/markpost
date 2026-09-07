@@ -505,16 +505,39 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     return true;
   }
 
+  // Guards against a second concurrent bulk action racing this one — both
+  // isDeleting/isUpdatingStatus flip synchronously before their first await,
+  // so a caller that doesn't separately track in-flight state (inbox.vue
+  // currently does) still can't fire two overlapping requests against the
+  // same selection. Sets actionError rather than failing silently — a caller
+  // relying on this guard should see the same "didn't happen, here's why"
+  // feedback as every other rejection in this file.
+  function rejectConcurrentBulkAction(): boolean {
+    if (!isDeleting.value && !isUpdatingStatus.value) {
+      return false;
+    }
+
+    actionError.value = "Another bulk action is still running. Please wait.";
+    return true;
+  }
+
+  // A bulk action can filter every remaining row out of the current page
+  // (e.g. marking all loaded "errors" records synced) while more still exist
+  // server-side. Left alone, the page renders its empty state — which also
+  // hides the load-more control — even though hasMore is still true, and only
+  // a manual reload would recover. Reload proactively instead.
+  async function backfillIfEmptied(): Promise<void> {
+    if (records.value.length === 0 && hasMore.value) {
+      await loadRecords();
+    }
+  }
+
   async function deleteRecords(uuids: string[]): Promise<number> {
     if (uuids.length === 0) {
       return 0;
     }
 
-    // Guards against a second concurrent bulk action racing this one — both
-    // flip synchronously before their first await, so a caller that doesn't
-    // separately track in-flight state (inbox.vue currently does) still
-    // can't fire two overlapping requests against the same selection.
-    if (isDeleting.value || isUpdatingStatus.value) {
+    if (rejectConcurrentBulkAction()) {
       return 0;
     }
 
@@ -544,6 +567,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
         (record) => !deletedUuids.has(record.attributes.uuid),
       );
       pruneSelection();
+      await backfillIfEmptied();
       return deletedCount;
     } catch (deleteRequestError) {
       console.error("[useRecords] deleteRecords error:", deleteRequestError);
@@ -575,8 +599,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       return [];
     }
 
-    // Same concurrency guard as deleteRecords.
-    if (isDeleting.value || isUpdatingStatus.value) {
+    if (rejectConcurrentBulkAction()) {
       return [];
     }
 
@@ -599,6 +622,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       }));
       const updatedRecords = await updateRecordsStatusRequest(updates);
       applyStatusUpdates(updatedRecords);
+      await backfillIfEmptied();
 
       // Only deselect the uuids the server actually updated — unlike delete,
       // an updated record can still be visible (e.g. filter "all"), so a

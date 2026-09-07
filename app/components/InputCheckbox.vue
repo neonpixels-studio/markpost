@@ -35,9 +35,7 @@
       v-bind="inputAttrs"
       :checked="modelValue"
       style="position: absolute; opacity: 0; pointer-events: none"
-      @change="
-        emit('update:modelValue', ($event.target as HTMLInputElement).checked)
-      "
+      @change="onChange"
       @focus="focused = true"
       @blur="focused = false"
       @click.stop
@@ -91,7 +89,7 @@ const inputAttrs = computed(() => {
 
 const focused = ref(false);
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     modelValue?: boolean;
     label?: string;
@@ -105,4 +103,18 @@ withDefaults(
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
 }>();
+
+// :checked is a controlled binding, but the browser flips the DOM checkbox
+// before Vue re-renders. If the caller rejects the change (e.g. useRecords'
+// bulk-selection cap leaves modelValue unchanged), the visible custom box
+// stays correct — it's driven by modelValue — but the real, semantic <input>
+// is left out of sync with it, so its aria-label now describes the wrong
+// state and the next native change event carries an inverted `checked`.
+// Re-assert the controlled value once Vue has had a chance to update props.
+async function onChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  emit("update:modelValue", input.checked);
+  await nextTick();
+  input.checked = props.modelValue;
+}
 </script>

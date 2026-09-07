@@ -646,6 +646,31 @@ describe("useRecords deleteRecords", () => {
     expect(isDeleting.value).toBe(false);
   });
 
+  it("rejects a second bulk action while the first is still in flight", async () => {
+    let resolveDelete!: (value: { meta: { deleted: number } }) => void;
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+
+    const { actionError, deleteRecords, updateRecordsStatus } =
+      useRecords("all");
+    const pendingDelete = deleteRecords(["uuid-1"]);
+
+    const secondDeleteCount = await deleteRecords(["uuid-2"]);
+    expect(secondDeleteCount).toBe(0);
+    expect(actionError.value).toBe(
+      "Another bulk action is still running. Please wait.",
+    );
+
+    const updateResult = await updateRecordsStatus(["uuid-2"], "synced");
+    expect(updateResult).toEqual([]);
+
+    resolveDelete({ meta: { deleted: 1 } });
+    await pendingDelete;
+  });
+
   it("reloads and surfaces a mismatch instead of trusting a partial delete", async () => {
     mockFetch
       .mockResolvedValueOnce({
@@ -672,6 +697,30 @@ describe("useRecords deleteRecords", () => {
     );
     // Reflects the reload's response, not a locally-filtered guess.
     expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+  });
+
+  it("reloads from the server when deleting empties the page but more records remain", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1")],
+        meta: { hasMore: true },
+      })
+      .mockResolvedValueOnce({ meta: { deleted: 1 } })
+      // The backfill reload triggered because the page is now empty.
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      });
+
+    const { loadRecords, records, hasMore, deleteRecords } = useRecords("all");
+    await loadRecords();
+    expect(hasMore.value).toBe(true);
+
+    await deleteRecords(["uuid-1"]);
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+    expect(hasMore.value).toBe(false);
   });
 });
 
@@ -831,6 +880,47 @@ describe("useRecords updateRecordsStatus", () => {
     await updateRecordsStatus(["uuid-1"], "synced");
 
     expect(records.value).toHaveLength(0);
+  });
+
+  it("reloads from the server when a status update empties the filtered page but more records remain", async () => {
+    const errorRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "error",
+      },
+    };
+    const syncedRecord: RecordResource = {
+      ...errorRecord,
+      attributes: { ...errorRecord.attributes, status: "synced" },
+    };
+    const nextErrorRecord: RecordResource = {
+      ...makeRecordResource("uuid-2"),
+      attributes: {
+        ...makeRecordResource("uuid-2").attributes,
+        status: "error",
+      },
+    };
+    mockFetch
+      .mockResolvedValueOnce({ data: [errorRecord], meta: { hasMore: true } })
+      .mockResolvedValueOnce({ data: [syncedRecord] })
+      // The backfill reload triggered because the "errors" page is now empty.
+      .mockResolvedValueOnce({
+        data: [nextErrorRecord],
+        meta: { hasMore: false },
+      });
+
+    const { loadRecords, records, hasMore, filter, updateRecordsStatus } =
+      useRecords("errors");
+    filter.value = "errors";
+    await loadRecords();
+    expect(hasMore.value).toBe(true);
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+    expect(hasMore.value).toBe(false);
   });
 
   it("keeps a record under a source filter once its status changes, since the filter isn't status-based", async () => {
