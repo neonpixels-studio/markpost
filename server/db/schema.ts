@@ -243,21 +243,22 @@ export const EVENT_DEDUPED_KINDS = [
   "err",
 ] as const satisfies readonly EventKind[];
 
-// Rendered directly into the predicate below via sql.raw (not bound as query
-// parameters) so the emitted SQL text is the same literal-embedded form
-// drizzle-kit generates for the index's own WHERE clause (see migration
-// 0025). Safe: every value comes from the fixed EVENT_DEDUPED_KINDS constant
-// above, never from user input.
+// Rendered directly into the predicate below via sql.raw — NOT as bound query
+// parameters ($1, $2, ...). Postgres resolves an ON CONFLICT arbiter by
+// proving the supplied predicate is implied by a candidate index's own
+// predicate over the parsed expression tree (constant-folded); it cannot
+// reason through a bound Param node, so a parameterized IN-list here would
+// make arbiter inference silently fail (Postgres error 42P10) even though the
+// rendered text looks equivalent. Safe to inline: every value comes from the
+// fixed EVENT_DEDUPED_KINDS constant above, never from user input.
 const dedupedKindSqlList = EVENT_DEDUPED_KINDS.map((kind) => `'${kind}'`).join(
   ", ",
 );
 
 // Single source for the partial unique index's WHERE clause below AND the ON
-// CONFLICT target's inference predicate in eventWriter.ts — Postgres resolves
-// onConflictDoNothing's target index by matching the two expressions, so they
-// must stay textually identical, which sharing this function guarantees. The
-// kind list is derived from EVENT_DEDUPED_KINDS (not hardcoded here) so the two
-// can never drift independently.
+// CONFLICT target's inference predicate in eventWriter.ts, so the two can
+// never drift independently — see dedupedKindSqlList above for why the kind
+// list specifically must stay literal-embedded rather than parameterized.
 // Takes `table` rather than closing over `events` so it can be called from
 // inside this table's own column-builder callback (before `events` exists).
 export function eventRecordKindDedupPredicate(table: {
