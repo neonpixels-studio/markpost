@@ -15,6 +15,11 @@ vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
   and: (...conditions: unknown[]) => ({ conditions }),
   isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
+  inArray: (column: unknown, values: unknown[]) => ({
+    op: "inArray",
+    column,
+    values,
+  }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     op: "sql",
     strings,
@@ -371,6 +376,40 @@ describe("POST /api/records", () => {
         links: { self: `/api/records/${sampleRecordWithExtras.uuid}` },
       },
     });
+  });
+
+  it("resolves and includes the real sourceType for a record created with a sourceId", async () => {
+    const sampleRecordWithSource = {
+      ...sampleRecord,
+      sourceId: validSourceId,
+      source: "My GitHub hook",
+    };
+
+    // First select is validateSourceOwnership's ownership check; second is
+    // the post-insert resolveSourceTypes lookup.
+    let selectCall = 0;
+    const ownershipRows = [{ uuid: validSourceId }];
+    const sourceTypeRows = [{ uuid: validSourceId, type: "github" }];
+    selectMock.mockImplementation(() => {
+      const rows = selectCall === 0 ? ownershipRows : sourceTypeRows;
+      selectCall += 1;
+      const where = vi.fn(() => Promise.resolve(rows));
+      const from = vi.fn(() => ({ where }));
+      return { from };
+    });
+
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        title: "My Title",
+        content: "My Content",
+        sourceId: validSourceId,
+      }),
+    );
+    stubInsertResult([sampleRecordWithSource]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data?.attributes.sourceType).toBe("github");
   });
 
   it("disambiguates a generated filePath that collides with an existing record", async () => {

@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { H3Event } from "h3";
 
 const updateMock = vi.fn();
+const selectMock = vi.fn();
 
 vi.mock("../../../../server/db", () => ({
-  getDb: () => ({ update: updateMock }),
+  getDb: () => ({ update: updateMock, select: selectMock }),
 }));
 
 const mockCreateError = vi.fn((options: object) => {
@@ -56,6 +57,13 @@ function stubUpdateResult(rows: unknown[]) {
   return { set, where, returning };
 }
 
+function stubSourceTypeResult(rows: unknown[]) {
+  const where = vi.fn(() => Promise.resolve(rows));
+  const from = vi.fn(() => ({ where }));
+  selectMock.mockReturnValue({ from });
+  return { from, where };
+}
+
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
   vi.stubGlobal("readBody", mockReadBody);
@@ -64,6 +72,7 @@ beforeEach(() => {
   mockReadBody.mockClear();
   mockGetRouterParam.mockReset();
   updateMock.mockReset();
+  selectMock.mockReset();
 });
 
 afterEach(() => {
@@ -116,6 +125,24 @@ describe("PATCH /api/records/:uuid", () => {
         links: { self: `/api/records/${validUuid}` },
       },
     });
+  });
+
+  it("resolves and includes sourceType when the record has a sourceId", async () => {
+    const sourceId = "550e8400-e29b-41d4-a716-446655440099";
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+    const updatedRecord = {
+      ...sampleRecord,
+      sourceId,
+      source: "My GitHub hook",
+      status: "synced",
+    };
+    stubUpdateResult([updatedRecord]);
+    stubSourceTypeResult([{ uuid: sourceId, type: "github" }]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data?.attributes.sourceType).toBe("github");
   });
 
   it("returns 409 when the new filePath collides with another record (23505)", async () => {

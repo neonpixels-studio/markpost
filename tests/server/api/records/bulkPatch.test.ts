@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { H3Event } from "h3";
 
 const updateMock = vi.fn();
+const selectMock = vi.fn();
 const writeEventMock = vi.fn(() => Promise.resolve());
 
 vi.mock("../../../../server/db", () => ({
-  getDb: () => ({ update: updateMock }),
+  getDb: () => ({ update: updateMock, select: selectMock }),
 }));
 
 vi.mock("../../../../server/utils/eventWriter", () => ({
@@ -76,12 +77,20 @@ function stubUpdates(rowsPerCall: unknown[][]) {
   });
 }
 
+function stubSourceTypeResult(rows: unknown[]) {
+  const where = vi.fn(() => Promise.resolve(rows));
+  const from = vi.fn(() => ({ where }));
+  selectMock.mockReturnValue({ from });
+  return { from, where };
+}
+
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
   vi.stubGlobal("readBody", mockReadBody);
   mockCreateError.mockClear();
   mockReadBody.mockReset();
   updateMock.mockReset();
+  selectMock.mockReset();
   writeEventMock.mockClear();
   setCalls.length = 0;
 });
@@ -124,6 +133,32 @@ describe("PATCH /api/records (bulk)", () => {
       expect(response.data).toHaveLength(2);
       expect(response.data?.[0]?.id).toBe(uuidOne);
       expect(response.data?.[1]?.attributes.errorMessage).toBe("boom");
+    });
+
+    it("resolves sourceType per record in a single batched lookup", async () => {
+      const sourceIdOne = "550e8400-e29b-41d4-a716-446655440091";
+      const sourceIdTwo = "550e8400-e29b-41d4-a716-446655440092";
+      mockReadBody.mockResolvedValue(
+        buildBody([
+          { uuid: uuidOne, status: "synced" },
+          { uuid: uuidTwo, status: "synced" },
+        ]),
+      );
+      stubUpdates([
+        [{ ...baseRecord(uuidOne), sourceId: sourceIdOne }],
+        [{ ...baseRecord(uuidTwo), sourceId: sourceIdTwo }],
+      ]);
+      const { from } = stubSourceTypeResult([
+        { uuid: sourceIdOne, type: "webhook" },
+        { uuid: sourceIdTwo, type: "email" },
+      ]);
+
+      const response = await handler(buildEvent(userId));
+
+      expect(selectMock).toHaveBeenCalledTimes(1);
+      expect(from).toHaveBeenCalledTimes(1);
+      expect(response.data?.[0]?.attributes.sourceType).toBe("webhook");
+      expect(response.data?.[1]?.attributes.sourceType).toBe("email");
     });
 
     it("parses syncedAt into a Date and passes distinct payloads per record", async () => {

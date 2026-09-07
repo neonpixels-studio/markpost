@@ -30,6 +30,7 @@ import {
 } from "../../utils/validate";
 import { writeEvent } from "../../utils/eventWriter";
 import { assertWithinRecordLimit } from "../../utils/planLimits";
+import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
 
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
 
@@ -509,7 +510,11 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
 
     setResponseStatus(event, 201);
 
-    return { data: recordSerializer(record) };
+    const sourceTypeMap = await resolveSourceTypes(db, userId, [
+      record.sourceId,
+    ]);
+
+    return { data: recordSerializer(withSourceType(record, sourceTypeMap)) };
   } catch (error) {
     return apiErrorHandler(error);
   }
