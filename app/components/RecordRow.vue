@@ -9,7 +9,7 @@
       ($event.currentTarget as HTMLElement).style.background = 'transparent'
     "
   >
-    <span style="width: 28px" @click.stop @keydown.stop>
+    <span style="width: 28px">
       <InputCheckbox
         :model-value="selected"
         :aria-label="`Select record ${record.attributes.title}`"
@@ -88,7 +88,7 @@
     >
       {{ formatRelativeTime(record.attributes.createdAt) }}
     </span>
-    <span style="width: 44px; text-align: right" @click.stop @keydown.stop>
+    <span style="width: 44px; text-align: right">
       <AppBtn
         variant="ghost"
         size="sm"

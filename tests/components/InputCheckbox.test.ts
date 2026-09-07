@@ -83,4 +83,15 @@ describe("InputCheckbox", () => {
       "margin-left",
     );
   });
+
+  it("also accepts an object-form style binding, not just a string", () => {
+    const wrapper = mount(InputCheckbox, {
+      ...globalConfig,
+      props: { modelValue: false },
+      attrs: { style: { marginLeft: "8px" } },
+    });
+    expect(wrapper.find("label").attributes("style")).toContain(
+      "margin-left: 8px",
+    );
+  });
 });

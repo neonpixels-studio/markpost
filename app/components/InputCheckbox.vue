@@ -2,7 +2,7 @@
   <label
     class="row gap-3"
     :class="attrs.class"
-    :style="[{ cursor: 'pointer' }, attrs.style as string]"
+    :style="[{ cursor: 'pointer' }, attrs.style as StyleValue]"
   >
     <span
       :style="{
@@ -52,6 +52,8 @@
 </template>
 
 <script setup lang="ts">
+import type { StyleValue } from "vue";
+
 // Non-presentational attrs (e.g. aria-label) describe the actual checkbox
 // control, not the wrapping <label> — forward those onto the real <input>
 // instead of letting Vue's default fallthrough land them on the root. class

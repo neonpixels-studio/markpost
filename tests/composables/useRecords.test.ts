@@ -545,6 +545,20 @@ describe("useRecords deleteRecords", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("refuses a batch larger than the cap without sending a request", async () => {
+    const { actionError, deleteRecords } = useRecords("all");
+    const uuids = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE + 1 },
+      (_unused, index) => `uuid-${index}`,
+    );
+
+    const deletedCount = await deleteRecords(uuids);
+
+    expect(deletedCount).toBe(0);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(actionError.value).toContain(String(BULK_ACTION_MAX_BATCH_SIZE));
+  });
+
   it("sends a DELETE request with the given uuids and removes them from the list", async () => {
     mockFetch
       .mockResolvedValueOnce({
@@ -655,6 +669,70 @@ describe("useRecords updateRecordsStatus", () => {
 
     expect(updated).toEqual([]);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a batch larger than the cap without sending a request", async () => {
+    const { actionError, updateRecordsStatus } = useRecords("all");
+    const uuids = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE + 1 },
+      (_unused, index) => `uuid-${index}`,
+    );
+
+    const updated = await updateRecordsStatus(uuids, "synced");
+
+    expect(updated).toEqual([]);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(actionError.value).toContain(String(BULK_ACTION_MAX_BATCH_SIZE));
+  });
+
+  it("clears errorMessage when marking records as synced, since the server only writes fields it's given", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [
+          {
+            ...makeRecordResource("uuid-1"),
+            attributes: {
+              ...makeRecordResource("uuid-1").attributes,
+              status: "error",
+              errorMessage: "Sync failed: 500",
+            },
+          },
+        ],
+        meta: { hasMore: false },
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    const { loadRecords, updateRecordsStatus } = useRecords("all");
+    await loadRecords();
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/records", {
+      method: "PATCH",
+      body: {
+        data: {
+          attributes: {
+            records: [{ uuid: "uuid-1", status: "synced", errorMessage: null }],
+          },
+        },
+      },
+    });
+  });
+
+  it("does not send errorMessage when marking records as pending or error", async () => {
+    mockFetch.mockResolvedValueOnce({ data: [] });
+
+    const { updateRecordsStatus } = useRecords("all");
+    await updateRecordsStatus(["uuid-1"], "error");
+
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/records", {
+      method: "PATCH",
+      body: {
+        data: {
+          attributes: { records: [{ uuid: "uuid-1", status: "error" }] },
+        },
+      },
+    });
   });
 
   it("sends a PATCH request and merges the updated record in place", async () => {

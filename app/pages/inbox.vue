@@ -185,10 +185,10 @@
                 color: var(--ink-3);
               "
             >
-              <span style="width: 28px" @click.stop @keydown.stop>
+              <span style="width: 28px">
                 <InputCheckbox
                   :model-value="isAllVisibleSelected"
-                  aria-label="Select all visible records"
+                  :aria-label="`Select up to ${BULK_ACTION_MAX_BATCH_SIZE} records`"
                   @update:model-value="toggleSelectAllVisible"
                 />
               </span>
@@ -247,6 +247,7 @@ import {
   fetchRecordStats,
   triggerRecordExportDownload,
   RECORD_FILTER_OPTIONS,
+  BULK_ACTION_MAX_BATCH_SIZE,
   type RecordStats,
   type RecordStatus,
 } from "~/composables/useRecords";

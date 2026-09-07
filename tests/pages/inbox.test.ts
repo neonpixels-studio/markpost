@@ -184,8 +184,10 @@ const globalConfig = {
         emits: ["confirm", "cancel"],
       },
       RecordRow: {
+        // Mirrors the real RecordRow.vue contract: only a dedicated control
+        // emits "open" — the row container itself has no click handler.
         template:
-          '<div class="record-row" @click="$emit(\'open\', record.attributes.uuid)"><button class="row-select" :disabled="disabled" @click.stop="$emit(\'toggle-select\', record.attributes.uuid)">{{ selected ? "selected" : "select" }}</button><button class="row-delete" :disabled="disabled" @click.stop="$emit(\'delete\', record.attributes.uuid)">delete</button></div>',
+          '<div class="record-row"><button class="row-open" @click="$emit(\'open\', record.attributes.uuid)">{{ record.attributes.title }}</button><button class="row-select" :disabled="disabled" @click="$emit(\'toggle-select\', record.attributes.uuid)">{{ selected ? "selected" : "select" }}</button><button class="row-delete" :disabled="disabled" @click="$emit(\'delete\', record.attributes.uuid)">delete</button></div>',
         props: ["record", "selected", "disabled"],
         emits: ["open", "toggle-select", "delete"],
       },
@@ -506,7 +508,7 @@ describe("inbox page", () => {
     recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
     const wrapper = mount(InboxPage, globalConfig);
     await flushPromises();
-    await wrapper.find(".record-row").trigger("click");
+    await wrapper.find(".row-open").trigger("click");
     expect(mockNavigateTo).toHaveBeenCalledWith({
       path: "/inbox",
       query: { record: "row-uuid" },
@@ -556,7 +558,7 @@ describe("inbox page", () => {
     recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
     const wrapper = mount(InboxPage, globalConfig);
     await flushPromises();
-    await wrapper.find(".record-row").trigger("click");
+    await wrapper.find(".row-open").trigger("click");
     expect(mockNavigateTo).toHaveBeenCalledWith({
       path: "/inbox",
       query: { filter: "errors", record: "row-uuid" },
@@ -656,13 +658,25 @@ describe("inbox page", () => {
       );
     });
 
-    it("does nothing when a status button is clicked with no selection", async () => {
+    it("hides the bulk toolbar when nothing is selected", async () => {
       recordsRef.value = [makeRecord({ uuid: "row-1" })];
       const wrapper = mount(InboxPage, globalConfig);
       await flushPromises();
 
-      // No selection made — the toolbar is hidden, so no status button exists.
       expect(wrapper.find(".mark-synced").exists()).toBe(false);
+      expect(mockUpdateRecordsStatus).not.toHaveBeenCalled();
+    });
+
+    it("ignores a status click while a bulk action is already in flight", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      await wrapper.find(".row-select").trigger("click");
+
+      isUpdatingStatusRef.value = true;
+      await wrapper.find(".mark-synced").trigger("click");
+      await flushPromises();
+
       expect(mockUpdateRecordsStatus).not.toHaveBeenCalled();
     });
   });

@@ -175,6 +175,8 @@ async function fetchRecordList(
 // than letting a request round-trip just to fail.
 export const BULK_ACTION_MAX_BATCH_SIZE = 100;
 
+const BULK_ACTION_CAP_MESSAGE = `You can act on at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
+
 type DeleteRecordsResponse = {
   meta: { deleted: number };
 };
@@ -190,6 +192,7 @@ async function deleteRecordsRequest(uuids: string[]): Promise<number> {
 type BulkStatusUpdate = {
   uuid: string;
   status: RecordStatus;
+  errorMessage?: null;
 };
 
 async function updateRecordsStatusRequest(
@@ -335,18 +338,25 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     return selectedUuids.value.has(uuid);
   }
 
+  // The single place selectedUuids is ever assigned wholesale (toggleSelection
+  // mutates a working copy first, but still lands here) — every successful
+  // selection change clears a prior actionError through this one path, so the
+  // cap message in particular can never linger once the selection is legal
+  // again.
+  function setSelection(uuids: Iterable<string>): void {
+    selectedUuids.value = new Set(uuids);
+    actionError.value = null;
+  }
+
   // Mirrors the server's own MAX_*_BATCH_SIZE cap: once a selection is already
   // at the limit, a further add is rejected with a visible message rather than
-  // silently discarding the click (fail loud, not quiet). Any successful
-  // change (add or remove) clears a prior actionError — the cap message in
-  // particular must not linger once the selection is back under the limit.
+  // silently discarding the click (fail loud, not quiet).
   function toggleSelection(uuid: string): void {
     const next = new Set(selectedUuids.value);
 
     if (next.has(uuid)) {
       next.delete(uuid);
-      selectedUuids.value = next;
-      actionError.value = null;
+      setSelection(next);
       return;
     }
 
@@ -356,13 +366,11 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     }
 
     next.add(uuid);
-    selectedUuids.value = next;
-    actionError.value = null;
+    setSelection(next);
   }
 
   function clearSelection(): void {
-    selectedUuids.value = new Set();
-    actionError.value = null;
+    setSelection([]);
   }
 
   // Removes only the given uuids from the selection, leaving the rest
@@ -405,7 +413,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       return;
     }
 
-    selectedUuids.value = new Set(
+    setSelection(
       records.value
         .map((record) => record.attributes.uuid)
         .slice(0, BULK_ACTION_MAX_BATCH_SIZE),
@@ -483,7 +491,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     // future caller that builds its own uuid list (bypassing toggleSelection)
     // must not be able to send a batch the server would reject outright.
     if (uuids.length > BULK_ACTION_MAX_BATCH_SIZE) {
-      actionError.value = `You can act on at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
+      actionError.value = BULK_ACTION_CAP_MESSAGE;
       return 0;
     }
 
@@ -543,7 +551,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     // Same boundary guard as deleteRecords — enforced here, not just in the
     // selection helpers.
     if (uuids.length > BULK_ACTION_MAX_BATCH_SIZE) {
-      actionError.value = `You can act on at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
+      actionError.value = BULK_ACTION_CAP_MESSAGE;
       return [];
     }
 
@@ -551,7 +559,14 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     actionError.value = null;
 
     try {
-      const updates = uuids.map((uuid) => ({ uuid, status }));
+      // The server only writes fields present in the payload — moving a
+      // record to "synced" without also clearing errorMessage would leave a
+      // stale failure reason on a record the UI now shows as healthy.
+      const updates: BulkStatusUpdate[] = uuids.map((uuid) => ({
+        uuid,
+        status,
+        ...(status === "synced" ? { errorMessage: null } : {}),
+      }));
       const updatedRecords = await updateRecordsStatusRequest(updates);
       applyStatusUpdates(updatedRecords);
 
