@@ -9,6 +9,15 @@ import { RECORDS_EXPORT_FILENAME } from "#shared/utils/export";
 
 export type RecordStatus = "synced" | "pending" | "error";
 
+// Mirrors server/db/schema.ts's RECORD_STATUSES — kept as a small literal list
+// here rather than importing the server module (the client bundle should not
+// pull in server/db).
+export const RECORD_STATUS_VALUES: readonly RecordStatus[] = [
+  "synced",
+  "pending",
+  "error",
+];
+
 export type RecordAttributes = {
   uuid: string;
   createdAt: string;
@@ -104,6 +113,20 @@ function buildQueryParams(filter: RecordFilterValue): FetchFilters {
   return {};
 }
 
+// The "errors" filter is the only one status can invalidate — source filters
+// and "all" never depend on status, so every record still belongs once its
+// uuid survives the update.
+function matchesActiveFilter(
+  record: RecordResource,
+  activeFilter: RecordFilterValue,
+): boolean {
+  if (activeFilter === "errors") {
+    return record.attributes.status === "error";
+  }
+
+  return true;
+}
+
 export function buildFetchUrl(
   filter: RecordFilterValue,
   afterUuid?: string,
@@ -144,6 +167,39 @@ async function fetchRecordList(
     records: response.data ?? [],
     hasMore: response.meta?.hasMore ?? false,
   };
+}
+
+// Mirrors MAX_DELETE_BATCH_SIZE / MAX_UPDATE_BATCH_SIZE in
+// server/api/records/index.delete.ts and index.patch.ts — both endpoints
+// reject a larger batch, so the UI caps selection at the same size rather
+// than letting a request round-trip just to fail.
+export const BULK_ACTION_MAX_BATCH_SIZE = 100;
+
+type DeleteRecordsResponse = {
+  meta: { deleted: number };
+};
+
+async function deleteRecordsRequest(uuids: string[]): Promise<number> {
+  const response = await $fetch<DeleteRecordsResponse>("/api/records", {
+    method: "DELETE",
+    body: { data: { attributes: { uuids } } },
+  });
+  return response.meta.deleted;
+}
+
+type BulkStatusUpdate = {
+  uuid: string;
+  status: RecordStatus;
+};
+
+async function updateRecordsStatusRequest(
+  updates: BulkStatusUpdate[],
+): Promise<RecordResource[]> {
+  const response = await $fetch<RecordListResponse>("/api/records", {
+    method: "PATCH",
+    body: { data: { attributes: { records: updates } } },
+  });
+  return response.data ?? [];
 }
 
 // The browser's IANA time zone, so the server can bucket "synced today" and
@@ -268,6 +324,75 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
   const loadError = ref<string | null>(null);
   const hasMore = ref(false);
   const filter = ref<RecordFilterValue>(initialFilter);
+  const selectedUuids = ref<Set<string>>(new Set());
+  const isDeleting = ref(false);
+  const isUpdatingStatus = ref(false);
+  const actionError = ref<string | null>(null);
+
+  const selectedCount = computed(() => selectedUuids.value.size);
+
+  function isSelected(uuid: string): boolean {
+    return selectedUuids.value.has(uuid);
+  }
+
+  // Mirrors the server's own MAX_*_BATCH_SIZE cap: once a selection is already
+  // at the limit, a further add is silently ignored rather than building a
+  // selection the bulk endpoints would reject outright.
+  function toggleSelection(uuid: string): void {
+    const next = new Set(selectedUuids.value);
+    if (next.has(uuid)) {
+      next.delete(uuid);
+    } else {
+      if (next.size >= BULK_ACTION_MAX_BATCH_SIZE) {
+        return;
+      }
+      next.add(uuid);
+    }
+    selectedUuids.value = next;
+  }
+
+  function clearSelection(): void {
+    selectedUuids.value = new Set();
+  }
+
+  const isAllVisibleSelected = computed(
+    () =>
+      records.value.length > 0 &&
+      records.value.every((record) => isSelected(record.attributes.uuid)),
+  );
+
+  // Selecting every visible record is capped the same way as a single toggle —
+  // a page larger than the batch limit selects only its first
+  // BULK_ACTION_MAX_BATCH_SIZE records rather than a set the server would
+  // reject.
+  function toggleSelectAllVisible(): void {
+    if (isAllVisibleSelected.value) {
+      clearSelection();
+      return;
+    }
+
+    selectedUuids.value = new Set(
+      records.value
+        .map((record) => record.attributes.uuid)
+        .slice(0, BULK_ACTION_MAX_BATCH_SIZE),
+    );
+  }
+
+  // Selection only ever refers to uuids still visible in `records` — a filter
+  // change, a reload, or a delete elsewhere should drop a uuid out of the
+  // selection rather than leave it selected with no row to toggle it off.
+  function pruneSelection(): void {
+    if (selectedUuids.value.size === 0) {
+      return;
+    }
+
+    const visibleUuids = new Set(
+      records.value.map((record) => record.attributes.uuid),
+    );
+    selectedUuids.value = new Set(
+      [...selectedUuids.value].filter((uuid) => visibleUuids.has(uuid)),
+    );
+  }
 
   async function loadRecords(): Promise<void> {
     isLoading.value = true;
@@ -277,6 +402,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       const page = await fetchRecordList(filter.value);
       records.value = page.records;
       hasMore.value = page.hasMore;
+      pruneSelection();
     } catch (fetchError) {
       console.error("[useRecords] loadRecords error:", fetchError);
       loadError.value = "Failed to load records. Please try again.";
@@ -305,11 +431,82 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       );
       records.value = [...records.value, ...page.records];
       hasMore.value = page.hasMore;
+      pruneSelection();
     } catch (fetchError) {
       console.error("[useRecords] loadMore error:", fetchError);
       loadError.value = "Failed to load more records. Please try again.";
     } finally {
       isLoadingMore.value = false;
+    }
+  }
+
+  async function deleteRecords(uuids: string[]): Promise<number> {
+    if (uuids.length === 0) {
+      return 0;
+    }
+
+    isDeleting.value = true;
+    actionError.value = null;
+
+    try {
+      const deletedCount = await deleteRecordsRequest(uuids);
+      const deletedUuids = new Set(uuids);
+      records.value = records.value.filter(
+        (record) => !deletedUuids.has(record.attributes.uuid),
+      );
+      pruneSelection();
+      return deletedCount;
+    } catch (deleteRequestError) {
+      console.error("[useRecords] deleteRecords error:", deleteRequestError);
+      actionError.value = "Failed to delete records. Please try again.";
+      return 0;
+    } finally {
+      isDeleting.value = false;
+    }
+  }
+
+  // Replaces each updated record in place, then drops any that no longer
+  // belong under the active filter (e.g. marking an "errors"-filtered record
+  // as synced) instead of leaving a stale row with a mismatched status.
+  function applyStatusUpdates(updatedRecords: RecordResource[]): void {
+    const updatedByUuid = new Map(
+      updatedRecords.map((record) => [record.attributes.uuid, record]),
+    );
+
+    records.value = records.value
+      .map((record) => updatedByUuid.get(record.attributes.uuid) ?? record)
+      .filter((record) => matchesActiveFilter(record, filter.value));
+  }
+
+  async function updateRecordsStatus(
+    uuids: string[],
+    status: RecordStatus,
+  ): Promise<RecordResource[]> {
+    if (uuids.length === 0) {
+      return [];
+    }
+
+    isUpdatingStatus.value = true;
+    actionError.value = null;
+
+    try {
+      const updates = uuids.map((uuid) => ({ uuid, status }));
+      const updatedRecords = await updateRecordsStatusRequest(updates);
+      applyStatusUpdates(updatedRecords);
+      // A completed bulk action clears the selection outright rather than
+      // pruning: unlike delete, an updated record can still be visible (e.g.
+      // filter "all"), so pruning alone would leave it selected forever.
+      clearSelection();
+      return updatedRecords;
+    } catch (updateRequestError) {
+      console.error(
+        "[useRecords] updateRecordsStatus error:",
+        updateRequestError,
+      );
+      actionError.value = "Failed to update records. Please try again.";
+      return [];
+    } finally {
+      isUpdatingStatus.value = false;
     }
   }
 
@@ -320,6 +517,18 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     isLoading,
     isLoadingMore,
     loadError,
+    selectedUuids,
+    selectedCount,
+    isSelected,
+    toggleSelection,
+    isAllVisibleSelected,
+    toggleSelectAllVisible,
+    clearSelection,
+    isDeleting,
+    isUpdatingStatus,
+    actionError,
+    deleteRecords,
+    updateRecordsStatus,
     hasMore,
     filter,
     loadRecords,

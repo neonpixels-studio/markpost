@@ -1,20 +1,57 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
-import { ref } from "vue";
+import { ref, computed } from "vue";
 
 vi.stubGlobal("definePageMeta", vi.fn());
 
-const recordsRef = ref<object[]>([]);
+type MockRecord = { attributes: { uuid: string } };
+
+const recordsRef = ref<MockRecord[]>([]);
 const isLoadingRef = ref(false);
 const isLoadingMoreRef = ref(false);
 const loadErrorRef = ref<string | null>(null);
 const hasMoreRef = ref(false);
 const filterRef = ref("all");
+const selectedUuidsRef = ref<Set<string>>(new Set());
+const isDeletingRef = ref(false);
+const isUpdatingStatusRef = ref(false);
+const actionErrorRef = ref<string | null>(null);
 
 const mockLoadRecords = vi.fn();
 const mockLoadMore = vi.fn();
 const mockFetchRecordStats = vi.fn();
 const mockTriggerRecordExport = vi.fn();
+const mockDeleteRecords = vi.fn();
+const mockUpdateRecordsStatus = vi.fn();
+
+function isSelected(uuid: string): boolean {
+  return selectedUuidsRef.value.has(uuid);
+}
+
+function toggleSelection(uuid: string): void {
+  const next = new Set(selectedUuidsRef.value);
+  if (next.has(uuid)) {
+    next.delete(uuid);
+  } else {
+    next.add(uuid);
+  }
+  selectedUuidsRef.value = next;
+}
+
+function clearSelection(): void {
+  selectedUuidsRef.value = new Set();
+}
+
+function visibleUuids(): string[] {
+  return recordsRef.value.map((record) => record.attributes.uuid);
+}
+
+function toggleSelectAllVisible(): void {
+  const uuids = visibleUuids();
+  const allSelected =
+    uuids.length > 0 && uuids.every((uuid) => selectedUuidsRef.value.has(uuid));
+  selectedUuidsRef.value = allSelected ? new Set() : new Set(uuids);
+}
 
 vi.mock("../../app/composables/useRecords", async (importOriginal) => {
   const actual =
@@ -30,6 +67,24 @@ vi.mock("../../app/composables/useRecords", async (importOriginal) => {
       filter: filterRef,
       loadRecords: mockLoadRecords,
       loadMore: mockLoadMore,
+      selectedUuids: selectedUuidsRef,
+      selectedCount: computed(() => selectedUuidsRef.value.size),
+      isSelected,
+      toggleSelection,
+      isAllVisibleSelected: computed(() => {
+        const uuids = visibleUuids();
+        return (
+          uuids.length > 0 &&
+          uuids.every((uuid) => selectedUuidsRef.value.has(uuid))
+        );
+      }),
+      toggleSelectAllVisible,
+      clearSelection,
+      isDeleting: isDeletingRef,
+      isUpdatingStatus: isUpdatingStatusRef,
+      actionError: actionErrorRef,
+      deleteRecords: mockDeleteRecords,
+      updateRecordsStatus: mockUpdateRecordsStatus,
     }),
     get fetchRecordStats() {
       return mockFetchRecordStats;
@@ -116,6 +171,30 @@ const globalConfig = {
         props: ["record", "isLoading", "loadError"],
         emits: ["close"],
       },
+      InputCheckbox: {
+        template:
+          '<input type="checkbox" class="input-checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+        props: ["modelValue"],
+        emits: ["update:modelValue"],
+      },
+      ConfirmDialog: {
+        template:
+          '<div class="confirm-dialog"><span class="confirm-title">{{ title }}</span><button class="confirm-confirm" @click="$emit(\'confirm\')">{{ confirmLabel }}</button><button class="confirm-cancel" @click="$emit(\'cancel\')">cancel</button></div>',
+        props: ["title", "message", "confirmLabel"],
+        emits: ["confirm", "cancel"],
+      },
+      RecordRow: {
+        template:
+          '<div class="record-row" @click="$emit(\'open\', record.attributes.uuid)"><button class="row-select" @click.stop="$emit(\'toggle-select\', record.attributes.uuid)">{{ selected ? "selected" : "select" }}</button><button class="row-delete" @click.stop="$emit(\'delete\', record.attributes.uuid)">delete</button></div>',
+        props: ["record", "selected"],
+        emits: ["open", "toggle-select", "delete"],
+      },
+      RecordBulkActions: {
+        template:
+          '<div class="record-bulk-actions"><span class="bulk-count">{{ selectedCount }} selected</span><button v-for="status in [\'synced\', \'pending\', \'error\']" :key="status" class="mark-btn" :class="`mark-${status}`" :disabled="disabled" @click="$emit(\'mark-status\', status)">mark {{ status }}</button><button class="delete-selected-btn" :disabled="disabled" @click="$emit(\'delete-selected\')">delete selected</button><button class="clear-btn" @click="$emit(\'clear\')">clear</button></div>',
+        props: ["selectedCount", "disabled"],
+        emits: ["mark-status", "delete-selected", "clear"],
+      },
     },
   },
 };
@@ -163,6 +242,14 @@ describe("inbox page", () => {
     mockFetchRecordStats.mockResolvedValue(defaultStats);
     mockTriggerRecordExport.mockReset();
     mockTriggerRecordExport.mockResolvedValue({ status: "success" });
+    selectedUuidsRef.value = new Set();
+    isDeletingRef.value = false;
+    isUpdatingStatusRef.value = false;
+    actionErrorRef.value = null;
+    mockDeleteRecords.mockReset();
+    mockDeleteRecords.mockResolvedValue(1);
+    mockUpdateRecordsStatus.mockReset();
+    mockUpdateRecordsStatus.mockResolvedValue([]);
     detailRecordRef.value = null;
     detailLoadingRef.value = false;
     detailErrorRef.value = null;
@@ -278,11 +365,11 @@ describe("inbox page", () => {
     expect(wrapper.text()).toContain("Try a different filter.");
   });
 
-  it("renders a badge for each record", async () => {
+  it("renders one row per record", async () => {
     recordsRef.value = [makeRecord(), makeRecord({ title: "Another" })];
     const wrapper = mount(InboxPage, globalConfig);
     await flushPromises();
-    expect(wrapper.findAll(".app-badge")).toHaveLength(2);
+    expect(wrapper.findAll(".record-row")).toHaveLength(2);
   });
 
   it("shows the load-more button when more records are available", async () => {
@@ -415,18 +502,11 @@ describe("inbox page", () => {
     expect(wrapper.find(".app-alert[data-tone='ok']").exists()).toBe(false);
   });
 
-  it("displays em-dash for records with no filePath", async () => {
-    recordsRef.value = [makeRecord({ filePath: null })];
-    const wrapper = mount(InboxPage, globalConfig);
-    await flushPromises();
-    expect(wrapper.text()).toContain("—");
-  });
-
   it("navigates to the record query param when a row is clicked", async () => {
     recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
     const wrapper = mount(InboxPage, globalConfig);
     await flushPromises();
-    await wrapper.find(".divide-y > .row").trigger("click");
+    await wrapper.find(".record-row").trigger("click");
     expect(mockNavigateTo).toHaveBeenCalledWith({
       path: "/inbox",
       query: { record: "row-uuid" },
@@ -476,7 +556,7 @@ describe("inbox page", () => {
     recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
     const wrapper = mount(InboxPage, globalConfig);
     await flushPromises();
-    await wrapper.find(".divide-y > .row").trigger("click");
+    await wrapper.find(".record-row").trigger("click");
     expect(mockNavigateTo).toHaveBeenCalledWith({
       path: "/inbox",
       query: { filter: "errors", record: "row-uuid" },
@@ -504,25 +584,149 @@ describe("inbox page", () => {
     expect(mockCloseDetail).toHaveBeenCalled();
   });
 
-  it("triggers the detail via keyboard when a row receives Enter", async () => {
-    recordsRef.value = [makeRecord({ uuid: "kbd-uuid" })];
-    const wrapper = mount(InboxPage, globalConfig);
-    await flushPromises();
-    await wrapper.find(".divide-y > .row").trigger("keydown.enter");
-    expect(mockNavigateTo).toHaveBeenCalledWith({
-      path: "/inbox",
-      query: { record: "kbd-uuid" },
+  describe("row selection", () => {
+    it("toggles a record's selection when its row emits toggle-select, without opening the detail", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".row-select").trigger("click");
+
+      expect(selectedUuidsRef.value.has("row-uuid")).toBe(true);
+      expect(mockNavigateTo).not.toHaveBeenCalled();
+    });
+
+    it("shows the bulk action toolbar once a record is selected", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      expect(wrapper.find(".record-bulk-actions").exists()).toBe(false);
+
+      await wrapper.find(".row-select").trigger("click");
+
+      expect(wrapper.find(".bulk-count").text()).toBe("1 selected");
+    });
+
+    it("selects every visible record when the header checkbox is checked", async () => {
+      recordsRef.value = [
+        makeRecord({ uuid: "row-1" }),
+        makeRecord({ uuid: "row-2" }),
+      ];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      const headerCheckbox = wrapper.find(".input-checkbox");
+      await headerCheckbox.setValue(true);
+
+      expect(selectedUuidsRef.value.has("row-1")).toBe(true);
+      expect(selectedUuidsRef.value.has("row-2")).toBe(true);
+    });
+
+    it("clears the selection when 'clear' is clicked", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      await wrapper.find(".row-select").trigger("click");
+
+      await wrapper.find(".clear-btn").trigger("click");
+
+      expect(selectedUuidsRef.value.size).toBe(0);
     });
   });
 
-  it("triggers the detail via keyboard when a row receives Space", async () => {
-    recordsRef.value = [makeRecord({ uuid: "kbd-uuid" })];
-    const wrapper = mount(InboxPage, globalConfig);
-    await flushPromises();
-    await wrapper.find(".divide-y > .row").trigger("keydown.space");
-    expect(mockNavigateTo).toHaveBeenCalledWith({
-      path: "/inbox",
-      query: { record: "kbd-uuid" },
+  describe("bulk status update", () => {
+    it("updates the status of every selected record when a 'mark <status>' button is clicked", async () => {
+      recordsRef.value = [
+        makeRecord({ uuid: "row-1" }),
+        makeRecord({ uuid: "row-2" }),
+      ];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      const rowSelectButtons = wrapper.findAll(".row-select");
+      await rowSelectButtons[0]?.trigger("click");
+      await rowSelectButtons[1]?.trigger("click");
+
+      await wrapper.find(".mark-pending").trigger("click");
+      await flushPromises();
+
+      expect(mockUpdateRecordsStatus).toHaveBeenCalledWith(
+        expect.arrayContaining(["row-1", "row-2"]),
+        "pending",
+      );
+    });
+
+    it("does nothing when a status button is clicked with no selection", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-1" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      // No selection made — the toolbar is hidden, so no status button exists.
+      expect(wrapper.find(".mark-synced").exists()).toBe(false);
+      expect(mockUpdateRecordsStatus).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("delete", () => {
+    it("opens a confirm dialog for a single record and deletes on confirm", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".row-delete").trigger("click");
+      await flushPromises();
+
+      expect(mockNavigateTo).not.toHaveBeenCalled();
+      expect(wrapper.find(".confirm-dialog").exists()).toBe(true);
+
+      await wrapper.find(".confirm-confirm").trigger("click");
+      await flushPromises();
+
+      expect(mockDeleteRecords).toHaveBeenCalledWith(["row-uuid"]);
+    });
+
+    it("does not delete when the confirm dialog is cancelled", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".row-delete").trigger("click");
+      await wrapper.find(".confirm-cancel").trigger("click");
+      await flushPromises();
+
+      expect(wrapper.find(".confirm-dialog").exists()).toBe(false);
+      expect(mockDeleteRecords).not.toHaveBeenCalled();
+    });
+
+    it("deletes every selected record via the bulk delete button", async () => {
+      recordsRef.value = [
+        makeRecord({ uuid: "row-1" }),
+        makeRecord({ uuid: "row-2" }),
+      ];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      const rowSelectButtons = wrapper.findAll(".row-select");
+      await rowSelectButtons[0]?.trigger("click");
+      await rowSelectButtons[1]?.trigger("click");
+
+      await wrapper.find(".delete-selected-btn").trigger("click");
+      await wrapper.find(".confirm-confirm").trigger("click");
+      await flushPromises();
+
+      expect(mockDeleteRecords).toHaveBeenCalledWith(
+        expect.arrayContaining(["row-1", "row-2"]),
+      );
+    });
+
+    it("shows the action error banner when a bulk action fails", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      actionErrorRef.value = "Failed to delete records. Please try again.";
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      expect(wrapper.text()).toContain(
+        "Failed to delete records. Please try again.",
+      );
     });
   });
 });
