@@ -39,7 +39,11 @@ export async function resolveSourceTypes(
 
     return new Map(rows.map((row) => [row.uuid, row.type]));
   } catch (error) {
-    console.error("[sourceType] failed to resolve source types:", error);
+    console.error("[sourceType] failed to resolve source types", {
+      userId,
+      sourceIds: uniqueSourceIds,
+      error,
+    });
     return new Map();
   }
 }

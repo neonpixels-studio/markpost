@@ -145,6 +145,31 @@ describe("PATCH /api/records/:uuid", () => {
     expect(response.data?.attributes.sourceType).toBe("github");
   });
 
+  it("returns sourceType: null (never fails the update) when the type lookup throws", async () => {
+    const sourceId = "550e8400-e29b-41d4-a716-446655440099";
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+    const updatedRecord = {
+      ...sampleRecord,
+      sourceId,
+      source: "My GitHub hook",
+      status: "synced",
+    };
+    stubUpdateResult([updatedRecord]);
+    const where = vi.fn(() => Promise.reject(new Error("connection reset")));
+    const from = vi.fn(() => ({ where }));
+    selectMock.mockReturnValue({ from });
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data?.attributes.sourceType).toBeNull();
+    expect(response.data?.attributes.status).toBe("synced");
+    consoleErrorSpy.mockRestore();
+  });
+
   it("returns 409 when the new filePath collides with another record (23505)", async () => {
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(buildBody({ filePath: "taken/path.md" }));

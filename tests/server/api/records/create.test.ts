@@ -385,9 +385,9 @@ describe("POST /api/records", () => {
       source: "My GitHub hook",
     };
 
-    // The sourceId ownership check selects `{ uuid, type }` in one query,
-    // so the create endpoint reuses that row's type instead of a second
-    // round trip.
+    // Same mocked result serves both selects: validateSourceOwnership's
+    // ownership check (reads only `uuid`) and the post-insert
+    // resolveSourceTypes lookup (reads `uuid` + `type`).
     stubSelectSourceResult([{ uuid: validSourceId, type: "github" }]);
 
     mockReadBody.mockResolvedValue(
@@ -401,8 +401,48 @@ describe("POST /api/records", () => {
 
     const response = await handler(buildEvent(userId));
 
-    expect(selectMock).toHaveBeenCalledTimes(1);
     expect(response.data?.attributes.sourceType).toBe("github");
+  });
+
+  it("returns sourceType: null (never fails the create) when the post-insert type lookup throws", async () => {
+    const sampleRecordWithSource = {
+      ...sampleRecord,
+      sourceId: validSourceId,
+      source: "My GitHub hook",
+    };
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    // First select (ownership check) succeeds; second (resolveSourceTypes)
+    // rejects, simulating a transient DB error after the record already
+    // committed.
+    let selectCall = 0;
+    selectMock.mockImplementation(() => {
+      const where = vi.fn(() => {
+        selectCall += 1;
+        return selectCall === 1
+          ? Promise.resolve([{ uuid: validSourceId }])
+          : Promise.reject(new Error("connection reset"));
+      });
+      const from = vi.fn(() => ({ where }));
+      return { from };
+    });
+
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        title: "My Title",
+        content: "My Content",
+        sourceId: validSourceId,
+      }),
+    );
+    stubInsertResult([sampleRecordWithSource]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 201);
+    expect(response.data?.attributes.sourceType).toBeNull();
+    consoleErrorSpy.mockRestore();
   });
 
   it("disambiguates a generated filePath that collides with an existing record", async () => {

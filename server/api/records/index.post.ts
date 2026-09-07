@@ -30,7 +30,7 @@ import {
 } from "../../utils/validate";
 import { writeEvent } from "../../utils/eventWriter";
 import { assertWithinRecordLimit } from "../../utils/planLimits";
-import { withSourceType } from "../../utils/sourceType";
+import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
 
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
 
@@ -330,16 +330,11 @@ async function applyMarkdownPipeline(
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Validates that sourceId belongs to the caller and, since it already fetches
-// the row, returns its type — sparing the caller a second round trip to
-// resolveSourceTypes purely to re-read the type of a row just confirmed to
-// exist (a client-supplied sourceId is the only way a create's sourceId is
-// ever non-null; the markdown pipeline never sets it).
-async function validateSourceOwnershipAndGetType(
+async function validateSourceOwnership(
   db: ReturnType<typeof getDb>,
   sourceId: string,
   userId: string,
-): Promise<string> {
+): Promise<void> {
   if (!UUID_PATTERN.test(sourceId)) {
     throw invalidAttribute(
       "SourceId must be a valid UUID",
@@ -348,7 +343,7 @@ async function validateSourceOwnershipAndGetType(
   }
 
   const [matchedSource] = await db
-    .select({ uuid: sources.uuid, type: sources.type })
+    .select({ uuid: sources.uuid })
     .from(sources)
     .where(and(eq(sources.uuid, sourceId), eq(sources.userId, userId)));
 
@@ -358,8 +353,6 @@ async function validateSourceOwnershipAndGetType(
       "/data/attributes/sourceId",
     );
   }
-
-  return matchedSource.type;
 }
 
 function buildInsertValues(
@@ -495,9 +488,9 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
     > &
       Omit<CreateRecordAttributes, "title" | "content">;
 
-    const validatedSourceType = attributes.sourceId
-      ? await validateSourceOwnershipAndGetType(db, attributes.sourceId, userId)
-      : null;
+    if (attributes.sourceId) {
+      await validateSourceOwnership(db, attributes.sourceId, userId);
+    }
 
     await assertWithinRecordLimit(userId);
 
@@ -515,13 +508,12 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
 
     await writeRecordCreatedEvent(userId, record);
 
-    // The ownership check above already fetched this row's type when a
-    // sourceId was supplied, so build the map from that instead of a second
-    // round trip to resolveSourceTypes.
-    const sourceTypeMap =
-      record.sourceId && validatedSourceType
-        ? new Map([[record.sourceId, validatedSourceType]])
-        : new Map<string, string>();
+    // Resolved the same way as patch/bulk-patch (see server/utils/sourceType.ts):
+    // a fresh lookup keyed on the row that was actually persisted, rather than
+    // trusting that it matches the sourceId validated earlier in the request.
+    const sourceTypeMap = await resolveSourceTypes(db, userId, [
+      record.sourceId,
+    ]);
 
     setResponseStatus(event, 201);
 
