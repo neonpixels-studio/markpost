@@ -24,14 +24,24 @@ export async function resolveSourceTypes(
     return new Map();
   }
 
-  const rows = await db
-    .select({ uuid: sources.uuid, type: sources.type })
-    .from(sources)
-    .where(
-      and(eq(sources.userId, userId), inArray(sources.uuid, uniqueSourceIds)),
-    );
+  // sourceType is a display-only enrichment on a create/update that has
+  // already succeeded (record inserted/updated, event written). A failure
+  // here must degrade to "unknown type" rather than turn an already-successful
+  // write into an error response — or worse, an error body under a 201/200
+  // status that was set before this ran.
+  try {
+    const rows = await db
+      .select({ uuid: sources.uuid, type: sources.type })
+      .from(sources)
+      .where(
+        and(eq(sources.userId, userId), inArray(sources.uuid, uniqueSourceIds)),
+      );
 
-  return new Map(rows.map((row) => [row.uuid, row.type]));
+    return new Map(rows.map((row) => [row.uuid, row.type]));
+  } catch (error) {
+    console.error("[sourceType] failed to resolve source types:", error);
+    return new Map();
+  }
 }
 
 // Attaches the resolved sourceType (or null when the record has no source, or

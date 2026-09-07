@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { sources } from "../../../server/db/schema";
 
 const selectMock = vi.fn();
 
@@ -69,6 +70,40 @@ describe("resolveSourceTypes", () => {
     );
 
     expect(map.has(sourceIdOne)).toBe(false);
+  });
+
+  it("scopes the lookup to the owning user, never another tenant's sources", async () => {
+    const { where } = stubSelectResult([]);
+
+    await resolveSourceTypes({ select: selectMock } as never, userId, [
+      sourceIdOne,
+    ]);
+
+    expect(where).toHaveBeenCalledWith({
+      conditions: [
+        { column: sources.userId, value: userId },
+        { column: sources.uuid, values: [sourceIdOne] },
+      ],
+    });
+  });
+
+  it("degrades to an empty map instead of throwing when the query fails", async () => {
+    const where = vi.fn(() => Promise.reject(new Error("connection reset")));
+    const from = vi.fn(() => ({ where }));
+    selectMock.mockReturnValue({ from });
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const map = await resolveSourceTypes(
+      { select: selectMock } as never,
+      userId,
+      [sourceIdOne],
+    );
+
+    expect(map.size).toBe(0);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });
 

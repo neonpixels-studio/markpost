@@ -385,18 +385,10 @@ describe("POST /api/records", () => {
       source: "My GitHub hook",
     };
 
-    // First select is validateSourceOwnership's ownership check; second is
-    // the post-insert resolveSourceTypes lookup.
-    let selectCall = 0;
-    const ownershipRows = [{ uuid: validSourceId }];
-    const sourceTypeRows = [{ uuid: validSourceId, type: "github" }];
-    selectMock.mockImplementation(() => {
-      const rows = selectCall === 0 ? ownershipRows : sourceTypeRows;
-      selectCall += 1;
-      const where = vi.fn(() => Promise.resolve(rows));
-      const from = vi.fn(() => ({ where }));
-      return { from };
-    });
+    // The sourceId ownership check selects `{ uuid, type }` in one query,
+    // so the create endpoint reuses that row's type instead of a second
+    // round trip.
+    stubSelectSourceResult([{ uuid: validSourceId, type: "github" }]);
 
     mockReadBody.mockResolvedValue(
       buildBody({
@@ -409,6 +401,7 @@ describe("POST /api/records", () => {
 
     const response = await handler(buildEvent(userId));
 
+    expect(selectMock).toHaveBeenCalledTimes(1);
     expect(response.data?.attributes.sourceType).toBe("github");
   });
 
