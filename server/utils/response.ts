@@ -23,7 +23,9 @@ type RecordAttributes = {
   // insert/update `.returning()` (no join), so they resolve it with a
   // follow-up `resolveSourceTypes` lookup (see server/utils/sourceType.ts).
   // Distinct from `source`, which stores the free-text display name. Null
-  // when the record has no source.
+  // when the record has no source, when the source row is gone or not owned
+  // by the caller, or when the post-write lookup failed (resolveSourceTypes
+  // fails soft rather than turning an already-successful write into an error).
   sourceType: string | null;
   status: string;
   filePath: string | null;

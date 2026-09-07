@@ -385,10 +385,24 @@ describe("POST /api/records", () => {
       source: "My GitHub hook",
     };
 
-    // Same mocked result serves both selects: validateSourceOwnership's
-    // ownership check (reads only `uuid`) and the post-insert
-    // resolveSourceTypes lookup (reads `uuid` + `type`).
-    stubSelectSourceResult([{ uuid: validSourceId, type: "github" }]);
+    // Two distinct selects: validateSourceOwnership's ownership check (reads
+    // only `uuid`, run before insert) and the post-insert resolveSourceTypes
+    // lookup (reads `uuid` + `type`, run against the persisted row). Giving
+    // them different rows proves `sourceType` can only come from the second
+    // call, not from reusing the first — see the "avoid double query" revert
+    // in this branch's history: the ownership check alone must not be able
+    // to satisfy this assertion.
+    let selectCall = 0;
+    selectMock.mockImplementation(() => {
+      selectCall += 1;
+      const rows =
+        selectCall === 1
+          ? [{ uuid: validSourceId }]
+          : [{ uuid: validSourceId, type: "github" }];
+      const where = vi.fn(() => Promise.resolve(rows));
+      const from = vi.fn(() => ({ where }));
+      return { from };
+    });
 
     mockReadBody.mockResolvedValue(
       buildBody({
@@ -401,6 +415,7 @@ describe("POST /api/records", () => {
 
     const response = await handler(buildEvent(userId));
 
+    expect(selectMock).toHaveBeenCalledTimes(2);
     expect(response.data?.attributes.sourceType).toBe("github");
   });
 

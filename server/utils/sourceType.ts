@@ -24,18 +24,21 @@ export async function resolveSourceTypes(
     return new Map();
   }
 
+  const query = db
+    .select({ uuid: sources.uuid, type: sources.type })
+    .from(sources)
+    .where(
+      and(eq(sources.userId, userId), inArray(sources.uuid, uniqueSourceIds)),
+    );
+
   // sourceType is a display-only enrichment on a create/update that has
-  // already succeeded (record inserted/updated, event written). A failure
-  // here must degrade to "unknown type" rather than turn an already-successful
-  // write into an error response — or worse, an error body under a 201/200
-  // status that was set before this ran.
+  // already succeeded (record inserted/updated, event written). Only the
+  // round trip itself is wrapped: an I/O failure here must degrade to
+  // "unknown type" rather than turn an already-successful write into an
+  // error response (or an error body under a 201/200 status already set),
+  // but a programming error building the query above should still fail loud.
   try {
-    const rows = await db
-      .select({ uuid: sources.uuid, type: sources.type })
-      .from(sources)
-      .where(
-        and(eq(sources.userId, userId), inArray(sources.uuid, uniqueSourceIds)),
-      );
+    const rows = await query;
 
     return new Map(rows.map((row) => [row.uuid, row.type]));
   } catch (error) {

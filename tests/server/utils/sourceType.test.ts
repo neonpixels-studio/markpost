@@ -1,12 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sources } from "../../../server/db/schema";
 
-const selectMock = vi.fn();
-
-vi.mock("../../../server/db", () => ({
-  getDb: () => ({ select: selectMock }),
-}));
-
+// server/utils/sourceType.ts imports `getDb` as `import type` only (for the
+// `Database` type alias) and never calls it — every test below passes a fake
+// db in directly — so there is no real `server/db` module to mock here.
 vi.mock("drizzle-orm", () => ({
   and: (...conditions: unknown[]) => ({ conditions }),
   eq: (column: unknown, value: unknown) => ({ column, value }),
@@ -15,6 +12,11 @@ vi.mock("drizzle-orm", () => ({
 
 const { resolveSourceTypes, withSourceType } =
   await import("../../../server/utils/sourceType");
+
+type FakeDb = Parameters<typeof resolveSourceTypes>[0];
+
+const selectMock = vi.fn();
+const fakeDb = { select: selectMock } as unknown as FakeDb;
 
 const userId = "user_abc123";
 const sourceIdOne = "550e8400-e29b-41d4-a716-446655440001";
@@ -33,11 +35,7 @@ beforeEach(() => {
 
 describe("resolveSourceTypes", () => {
   it("returns an empty map without querying the db when there are no source ids", async () => {
-    const map = await resolveSourceTypes(
-      { select: selectMock } as never,
-      userId,
-      [null, undefined],
-    );
+    const map = await resolveSourceTypes(fakeDb, userId, [null, undefined]);
 
     expect(map.size).toBe(0);
     expect(selectMock).not.toHaveBeenCalled();
@@ -49,11 +47,12 @@ describe("resolveSourceTypes", () => {
       { uuid: sourceIdTwo, type: "github" },
     ]);
 
-    const map = await resolveSourceTypes(
-      { select: selectMock } as never,
-      userId,
-      [sourceIdOne, sourceIdTwo, sourceIdOne, null],
-    );
+    const map = await resolveSourceTypes(fakeDb, userId, [
+      sourceIdOne,
+      sourceIdTwo,
+      sourceIdOne,
+      null,
+    ]);
 
     expect(selectMock).toHaveBeenCalledTimes(1);
     expect(map.get(sourceIdOne)).toBe("webhook");
@@ -63,11 +62,7 @@ describe("resolveSourceTypes", () => {
   it("omits a source id the db didn't return (e.g. another tenant's source)", async () => {
     stubSelectResult([]);
 
-    const map = await resolveSourceTypes(
-      { select: selectMock } as never,
-      userId,
-      [sourceIdOne],
-    );
+    const map = await resolveSourceTypes(fakeDb, userId, [sourceIdOne]);
 
     expect(map.has(sourceIdOne)).toBe(false);
   });
@@ -75,9 +70,7 @@ describe("resolveSourceTypes", () => {
   it("scopes the lookup to the owning user, never another tenant's sources", async () => {
     const { where } = stubSelectResult([]);
 
-    await resolveSourceTypes({ select: selectMock } as never, userId, [
-      sourceIdOne,
-    ]);
+    await resolveSourceTypes(fakeDb, userId, [sourceIdOne]);
 
     expect(where).toHaveBeenCalledWith({
       conditions: [
@@ -95,11 +88,7 @@ describe("resolveSourceTypes", () => {
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
 
-    const map = await resolveSourceTypes(
-      { select: selectMock } as never,
-      userId,
-      [sourceIdOne],
-    );
+    const map = await resolveSourceTypes(fakeDb, userId, [sourceIdOne]);
 
     expect(map.size).toBe(0);
     expect(consoleErrorSpy).toHaveBeenCalled();

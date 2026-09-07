@@ -161,6 +161,53 @@ describe("PATCH /api/records (bulk)", () => {
       expect(response.data?.[1]?.attributes.sourceType).toBe("email");
     });
 
+    it("returns null sourceType only for the record with no source, in a mixed batch", async () => {
+      const sourceIdOne = "550e8400-e29b-41d4-a716-446655440093";
+      mockReadBody.mockResolvedValue(
+        buildBody([
+          { uuid: uuidOne, status: "synced" },
+          { uuid: uuidTwo, status: "synced" },
+        ]),
+      );
+      stubUpdates([
+        [{ ...baseRecord(uuidOne), sourceId: sourceIdOne }],
+        [{ ...baseRecord(uuidTwo), sourceId: null }],
+      ]);
+      stubSourceTypeResult([{ uuid: sourceIdOne, type: "webhook" }]);
+
+      const response = await handler(buildEvent(userId));
+
+      expect(response.data?.[0]?.attributes.sourceType).toBe("webhook");
+      expect(response.data?.[1]?.attributes.sourceType).toBeNull();
+    });
+
+    it("returns sourceType: null for every record (never fails the batch) when the type lookup throws", async () => {
+      const sourceIdOne = "550e8400-e29b-41d4-a716-446655440094";
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      mockReadBody.mockResolvedValue(
+        buildBody([
+          { uuid: uuidOne, status: "synced" },
+          { uuid: uuidTwo, status: "synced" },
+        ]),
+      );
+      stubUpdates([
+        [{ ...baseRecord(uuidOne), sourceId: sourceIdOne }],
+        [{ ...baseRecord(uuidTwo), sourceId: sourceIdOne }],
+      ]);
+      const where = vi.fn(() => Promise.reject(new Error("connection reset")));
+      const from = vi.fn(() => ({ where }));
+      selectMock.mockReturnValue({ from });
+
+      const response = await handler(buildEvent(userId));
+
+      expect(response.meta).toEqual({ updated: 2 });
+      expect(response.data?.[0]?.attributes.sourceType).toBeNull();
+      expect(response.data?.[1]?.attributes.sourceType).toBeNull();
+      consoleErrorSpy.mockRestore();
+    });
+
     it("parses syncedAt into a Date and passes distinct payloads per record", async () => {
       mockReadBody.mockResolvedValue(
         buildBody([
