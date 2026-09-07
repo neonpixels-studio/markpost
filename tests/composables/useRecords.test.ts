@@ -751,7 +751,10 @@ describe("useRecords updateRecordsStatus", () => {
     expect(actionError.value).toContain(String(BULK_ACTION_MAX_BATCH_SIZE));
   });
 
-  it("clears errorMessage when marking records as synced, since the server only writes fields it's given", async () => {
+  it("stamps syncedAt and clears errorMessage when marking records as synced, since the server only writes fields it's given", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00Z"));
+
     mockFetch
       .mockResolvedValueOnce({
         data: [
@@ -778,14 +781,23 @@ describe("useRecords updateRecordsStatus", () => {
       body: {
         data: {
           attributes: {
-            records: [{ uuid: "uuid-1", status: "synced", errorMessage: null }],
+            records: [
+              {
+                uuid: "uuid-1",
+                status: "synced",
+                syncedAt: "2026-06-27T12:00:00.000Z",
+                errorMessage: null,
+              },
+            ],
           },
         },
       },
     });
+
+    vi.useRealTimers();
   });
 
-  it("does not send errorMessage when marking records as error, since the failure reason should stick", async () => {
+  it("does not send errorMessage, but clears syncedAt, when marking records as error, since the failure reason should stick but the record is no longer synced", async () => {
     mockFetch.mockResolvedValueOnce({ data: [] });
 
     const { updateRecordsStatus } = useRecords("all");
@@ -795,13 +807,15 @@ describe("useRecords updateRecordsStatus", () => {
       method: "PATCH",
       body: {
         data: {
-          attributes: { records: [{ uuid: "uuid-1", status: "error" }] },
+          attributes: {
+            records: [{ uuid: "uuid-1", status: "error", syncedAt: null }],
+          },
         },
       },
     });
   });
 
-  it("clears errorMessage when marking records as pending, so a stale failure reason doesn't linger on a not-yet-attempted record", async () => {
+  it("clears errorMessage and syncedAt when marking records as pending, so a stale failure reason and a stale sync stamp don't linger on a not-yet-attempted record", async () => {
     mockFetch.mockResolvedValueOnce({ data: [] });
 
     const { updateRecordsStatus } = useRecords("all");
@@ -813,7 +827,12 @@ describe("useRecords updateRecordsStatus", () => {
         data: {
           attributes: {
             records: [
-              { uuid: "uuid-1", status: "pending", errorMessage: null },
+              {
+                uuid: "uuid-1",
+                status: "pending",
+                syncedAt: null,
+                errorMessage: null,
+              },
             ],
           },
         },
@@ -845,7 +864,12 @@ describe("useRecords updateRecordsStatus", () => {
         data: {
           attributes: {
             records: [
-              { uuid: "uuid-1", status: "pending", errorMessage: null },
+              {
+                uuid: "uuid-1",
+                status: "pending",
+                syncedAt: null,
+                errorMessage: null,
+              },
             ],
           },
         },

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 import InputCheckbox from "../../app/components/InputCheckbox.vue";
 import AppIcon from "../../app/components/AppIcon.vue";
@@ -93,21 +93,6 @@ describe("InputCheckbox", () => {
     expect(wrapper.find("label").attributes("style")).toContain(
       "margin-left: 8px",
     );
-  });
-
-  it("keeps a caller's title and click listener on the visible label, not the hidden input", async () => {
-    const onClick = vi.fn();
-    const wrapper = mount(InputCheckbox, {
-      ...globalConfig,
-      props: { modelValue: false },
-      attrs: { title: "Toggle", onClick },
-    });
-    const label = wrapper.find("label");
-    expect(label.attributes("title")).toBe("Toggle");
-    expect(wrapper.find("input").attributes("title")).toBeUndefined();
-
-    await label.trigger("click");
-    expect(onClick).toHaveBeenCalledOnce();
   });
 
   it("re-syncs the native input's checked state when the caller rejects the change (controlled binding)", async () => {

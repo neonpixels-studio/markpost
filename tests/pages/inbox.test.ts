@@ -625,6 +625,16 @@ describe("inbox page", () => {
       expect(selectedUuidsRef.value.has("row-2")).toBe(true);
     });
 
+    it("uses the singular 'record' in the header checkbox label when only one record is loaded", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      expect(wrapper.find(".input-checkbox").attributes("aria-label")).toBe(
+        "Select 1 record",
+      );
+    });
+
     it("clears the selection when 'clear' is clicked", async () => {
       recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
       const wrapper = mount(InboxPage, globalConfig);

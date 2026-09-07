@@ -304,7 +304,8 @@ const selectAllLabel = computed(() => {
     records.value.length,
     BULK_ACTION_MAX_BATCH_SIZE,
   );
-  return `Select ${selectableCount} records`;
+  const recordWord = selectableCount === 1 ? "record" : "records";
+  return `Select ${selectableCount} ${recordWord}`;
 });
 
 const pendingDeleteUuids = ref<string[] | null>(null);

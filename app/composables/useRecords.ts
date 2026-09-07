@@ -15,9 +15,10 @@ import {
 
 export type { RecordStatus };
 
-// Re-exported under its existing name (consumers: RecordBulkActions.vue) —
-// #shared/utils/records is the source of truth so client validation can
-// never drift from server/db/schema.ts.
+// Re-exported from here (consumed by RecordBulkActions.vue) under this
+// composable's own naming convention — #shared/utils/records is still the
+// source of truth, so client validation can never drift from
+// server/db/schema.ts.
 export const RECORD_STATUS_VALUES: readonly RecordStatus[] = RECORD_STATUSES;
 
 export type RecordAttributes = {
@@ -200,6 +201,7 @@ type BulkStatusUpdate = {
   uuid: string;
   status: RecordStatus;
   errorMessage?: null;
+  syncedAt?: string | null;
 };
 
 async function updateRecordsStatusRequest(
@@ -615,9 +617,19 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       // record to "synced" or "pending" without also clearing errorMessage
       // would leave a stale failure reason on a record the UI now shows as
       // healthy or not-yet-attempted. Only "error" itself should keep it.
+      //
+      // syncedAt gets the same treatment for the opposite reason: the
+      // "synced today" stat card (server/api/records/stats.get.ts) reads
+      // syncedAt, not status, so marking a record synced without stamping it
+      // would leave that card silently unmoved, and marking a previously
+      // synced record pending/error without clearing it would leave the
+      // record counted as synced today even though it no longer is.
+      const syncedAtForStatus =
+        status === "synced" ? new Date().toISOString() : null;
       const updates: BulkStatusUpdate[] = uuids.map((uuid) => ({
         uuid,
         status,
+        syncedAt: syncedAtForStatus,
         ...(status === "error" ? {} : { errorMessage: null }),
       }));
       const updatedRecords = await updateRecordsStatusRequest(updates);
