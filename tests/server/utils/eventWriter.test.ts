@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import {
   validateEventKind,
   writeEvent,
@@ -182,26 +184,19 @@ describe("writeEventOncePerRecord", () => {
 
     const config = onConflictDoNothing.mock.calls[0]?.[0] as {
       target: unknown[];
-      where: { queryChunks: unknown[] };
+      where: SQL;
     };
     expect(config.target).toEqual([events.recordUuid, events.kind]);
     // The predicate is a real drizzle `sql` template (built by
     // eventRecordKindDedupPredicate, shared with the schema's index
-    // definition) rather than a mock — assert it renders the exact expression
-    // the partial index was created with, since Postgres resolves the ON
-    // CONFLICT target by matching this text against the index's own WHERE
-    // clause. Each chunk is either a StringChunk (`.value: string[]`) or a
-    // column reference (`.name`); render both to plain text.
-    const rendered = config.where.queryChunks
-      .map((chunk) => {
-        const stringChunk = chunk as { value?: string[] };
-        if (stringChunk.value) {
-          return stringChunk.value.join("");
-        }
-        return (chunk as { name?: string }).name ?? String(chunk);
-      })
-      .join("");
-    expect(rendered).toBe("record_uuid is not null and kind in ('ok', 'err')");
+    // definition) rather than a mock — render it through the actual Postgres
+    // dialect (not a hand-rolled chunk walk) so this asserts the exact SQL
+    // text sent to Postgres, since ON CONFLICT resolves its target index by
+    // matching this against the index's own WHERE clause (migration 0025).
+    const { sql: renderedSql } = new PgDialect().sqlToQuery(config.where);
+    expect(renderedSql).toBe(
+      `"events"."record_uuid" is not null and "events"."kind" in ('ok', 'err')`,
+    );
   });
 
   it("is a no-op when a duplicate (record_uuid, kind) insert is absorbed by the DB-level unique index", async () => {
@@ -261,10 +256,15 @@ describe("writeEventOncePerRecord", () => {
   it("rejects a kind outside ok/err, since the partial index does not cover it", async () => {
     stubInsert([{ id: "new-event" }]);
 
+    // `kind` is typed to "ok" | "err" at every real call site; this simulates
+    // a caller that bypasses the type (e.g. a dynamic string), which the
+    // runtime guard below the type must still catch.
+    const kindOutsideDedup = "warn" as unknown as "ok" | "err";
+
     await expect(
       writeEventOncePerRecord({
         userId: "user_abc",
-        kind: "warn",
+        kind: kindOutsideDedup,
         message: "Sync conflict",
         recordUuid: "rec-uuid",
       }),

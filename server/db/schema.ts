@@ -243,17 +243,28 @@ export const EVENT_DEDUPED_KINDS = [
   "err",
 ] as const satisfies readonly EventKind[];
 
+// Rendered directly into the predicate below via sql.raw (not bound as query
+// parameters) so the emitted SQL text is the same literal-embedded form
+// drizzle-kit generates for the index's own WHERE clause (see migration
+// 0025). Safe: every value comes from the fixed EVENT_DEDUPED_KINDS constant
+// above, never from user input.
+const dedupedKindSqlList = EVENT_DEDUPED_KINDS.map((kind) => `'${kind}'`).join(
+  ", ",
+);
+
 // Single source for the partial unique index's WHERE clause below AND the ON
 // CONFLICT target's inference predicate in eventWriter.ts — Postgres resolves
 // onConflictDoNothing's target index by matching the two expressions, so they
-// must stay textually identical, which sharing this function guarantees.
+// must stay textually identical, which sharing this function guarantees. The
+// kind list is derived from EVENT_DEDUPED_KINDS (not hardcoded here) so the two
+// can never drift independently.
 // Takes `table` rather than closing over `events` so it can be called from
 // inside this table's own column-builder callback (before `events` exists).
 export function eventRecordKindDedupPredicate(table: {
   recordUuid: AnyPgColumn;
   kind: AnyPgColumn;
 }) {
-  return sql`${table.recordUuid} is not null and ${table.kind} in ('ok', 'err')`;
+  return sql`${table.recordUuid} is not null and ${table.kind} in (${sql.raw(dedupedKindSqlList)})`;
 }
 
 export const events = pgTable(
