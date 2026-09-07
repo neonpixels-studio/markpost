@@ -75,32 +75,18 @@ describe("RecordRow", () => {
     expect(wrapper.text()).toContain("—");
   });
 
-  it("emits open with the record's uuid when the row is clicked", async () => {
+  it("emits open with the record's uuid when the title button is clicked", async () => {
     const wrapper = mount(RecordRow, {
       ...globalConfig,
       props: { record: makeRecord({ uuid: "row-uuid" }), selected: false },
     });
-    await wrapper.trigger("click");
+    await wrapper.find(".record-open-btn").trigger("click");
     expect(wrapper.emitted("open")).toEqual([["row-uuid"]]);
   });
 
-  it("emits open when the row receives Enter", async () => {
-    const wrapper = mount(RecordRow, {
-      ...globalConfig,
-      props: { record: makeRecord({ uuid: "row-uuid" }), selected: false },
-    });
-    await wrapper.trigger("keydown.enter");
-    expect(wrapper.emitted("open")).toEqual([["row-uuid"]]);
-  });
-
-  it("emits open when the row receives Space", async () => {
-    const wrapper = mount(RecordRow, {
-      ...globalConfig,
-      props: { record: makeRecord({ uuid: "row-uuid" }), selected: false },
-    });
-    await wrapper.trigger("keydown.space");
-    expect(wrapper.emitted("open")).toEqual([["row-uuid"]]);
-  });
+  // Enter/Space activation is a native <button> behavior (see the a11y fix
+  // that made the title a real button instead of a div with role="button"),
+  // not custom JS — nothing here to unit-test beyond the click above.
 
   it("emits toggle-select without opening the record when the checkbox changes", async () => {
     const wrapper = mount(RecordRow, {

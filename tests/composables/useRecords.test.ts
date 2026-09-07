@@ -486,17 +486,26 @@ describe("useRecords selection", () => {
       meta: { hasMore: false },
     });
 
-    const { loadRecords, isAllVisibleSelected, toggleSelectAllVisible } =
-      useRecords("all");
+    const {
+      loadRecords,
+      selectedCount,
+      isAllVisibleSelected,
+      toggleSelectAllVisible,
+    } = useRecords("all");
     await loadRecords();
 
     // Selecting "all" can only ever reach the cap, so isAllVisibleSelected
     // must key off the capped set — otherwise the header checkbox could never
-    // show checked, and a second click could never clear it.
+    // show checked, and a second click could never clear it. Assert the
+    // selection size directly: isAllVisibleSelected alone can't tell a
+    // correctly-capped selection from an over-cap one — both leave every
+    // capped uuid selected, which is all that flag checks.
     toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
     expect(isAllVisibleSelected.value).toBe(true);
 
     toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(0);
     expect(isAllVisibleSelected.value).toBe(false);
   });
 

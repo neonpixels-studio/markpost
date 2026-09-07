@@ -1,13 +1,7 @@
 <template>
   <div
     class="row"
-    role="button"
-    tabindex="0"
-    :aria-label="`Open record ${record.attributes.title}`"
-    style="padding: 13px 18px; cursor: pointer; transition: background 0.1s"
-    @click="emit('open', record.attributes.uuid)"
-    @keydown.enter="emit('open', record.attributes.uuid)"
-    @keydown.space.prevent="emit('open', record.attributes.uuid)"
+    style="padding: 13px 18px; transition: background 0.1s"
     @mouseenter="
       ($event.currentTarget as HTMLElement).style.background = 'var(--bg-2)'
     "
@@ -46,7 +40,10 @@
         }}
       </span>
     </span>
-    <span
+    <button
+      type="button"
+      class="record-open-btn"
+      :aria-label="`Open record ${record.attributes.title}`"
       style="
         flex: 1;
         font-size: 14px;
@@ -55,10 +52,18 @@
         overflow: hidden;
         text-overflow: ellipsis;
         padding-right: 16px;
+        text-align: left;
+        background: none;
+        border: 0;
+        padding-left: 0;
+        font-family: inherit;
+        color: inherit;
+        cursor: pointer;
       "
+      @click="emit('open', record.attributes.uuid)"
     >
       {{ record.attributes.title }}
-    </span>
+    </button>
     <span
       class="mono"
       :style="{

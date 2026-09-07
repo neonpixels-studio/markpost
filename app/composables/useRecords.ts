@@ -337,13 +337,16 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
 
   // Mirrors the server's own MAX_*_BATCH_SIZE cap: once a selection is already
   // at the limit, a further add is rejected with a visible message rather than
-  // silently discarding the click (fail loud, not quiet).
+  // silently discarding the click (fail loud, not quiet). Any successful
+  // change (add or remove) clears a prior actionError — the cap message in
+  // particular must not linger once the selection is back under the limit.
   function toggleSelection(uuid: string): void {
     const next = new Set(selectedUuids.value);
 
     if (next.has(uuid)) {
       next.delete(uuid);
       selectedUuids.value = next;
+      actionError.value = null;
       return;
     }
 
@@ -354,10 +357,12 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
 
     next.add(uuid);
     selectedUuids.value = next;
+    actionError.value = null;
   }
 
   function clearSelection(): void {
     selectedUuids.value = new Set();
+    actionError.value = null;
   }
 
   // Removes only the given uuids from the selection, leaving the rest
@@ -474,6 +479,14 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       return 0;
     }
 
+    // The cap is enforced here too, not just in the selection helpers — a
+    // future caller that builds its own uuid list (bypassing toggleSelection)
+    // must not be able to send a batch the server would reject outright.
+    if (uuids.length > BULK_ACTION_MAX_BATCH_SIZE) {
+      actionError.value = `You can act on at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
+      return 0;
+    }
+
     isDeleting.value = true;
     actionError.value = null;
 
@@ -524,6 +537,13 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     status: RecordStatus,
   ): Promise<RecordResource[]> {
     if (uuids.length === 0) {
+      return [];
+    }
+
+    // Same boundary guard as deleteRecords — enforced here, not just in the
+    // selection helpers.
+    if (uuids.length > BULK_ACTION_MAX_BATCH_SIZE) {
+      actionError.value = `You can act on at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
       return [];
     }
 

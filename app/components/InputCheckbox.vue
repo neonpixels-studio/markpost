@@ -1,5 +1,9 @@
 <template>
-  <label class="row gap-3" style="cursor: pointer">
+  <label
+    class="row gap-3"
+    :class="attrs.class"
+    :style="[{ cursor: 'pointer' }, attrs.style as string]"
+  >
     <span
       :style="{
         width: '19px',
@@ -27,8 +31,8 @@
     </span>
     <input
       type="checkbox"
+      v-bind="inputAttrs"
       :checked="modelValue"
-      v-bind="attrs"
       style="position: absolute; opacity: 0; pointer-events: none"
       @change="
         emit('update:modelValue', ($event.target as HTMLInputElement).checked)
@@ -48,11 +52,21 @@
 </template>
 
 <script setup lang="ts">
-// Attrs like aria-label describe the actual checkbox control, not the
-// wrapping <label> — forward them onto the real <input> instead of letting
-// Vue's default fallthrough land them on the root element.
+// Non-presentational attrs (e.g. aria-label) describe the actual checkbox
+// control, not the wrapping <label> — forward those onto the real <input>
+// instead of letting Vue's default fallthrough land them on the root. class
+// and style stay on the <label> (the visible root), since a caller styling
+// this component means the visible element, not the invisible native input.
 defineOptions({ inheritAttrs: false });
 const attrs = useAttrs();
+const inputAttrs = computed(() => {
+  const {
+    class: _presentationClass,
+    style: _presentationStyle,
+    ...rest
+  } = attrs;
+  return rest;
+});
 
 const focused = ref(false);
 
