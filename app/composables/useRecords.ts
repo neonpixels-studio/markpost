@@ -484,7 +484,6 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       );
       records.value = [...records.value, ...page.records];
       hasMore.value = page.hasMore;
-      pruneSelection();
     } catch (fetchError) {
       console.error("[useRecords] loadMore error:", fetchError);
       loadError.value = "Failed to load more records. Please try again.";

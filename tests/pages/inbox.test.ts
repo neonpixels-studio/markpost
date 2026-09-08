@@ -187,7 +187,7 @@ const globalConfig = {
         // Mirrors the real RecordRow.vue contract: only a dedicated control
         // emits "open" — the row container itself has no click handler.
         template:
-          '<div class="record-row"><button class="row-open" @click="$emit(\'open\', record.attributes.uuid)">{{ record.attributes.title }}</button><button class="row-select" :disabled="disabled" @click="$emit(\'toggle-select\', record.attributes.uuid)">{{ selected ? "selected" : "select" }}</button><button class="row-delete" :disabled="disabled" @click="$emit(\'delete\', record.attributes.uuid)">delete</button></div>',
+          '<div class="record-row"><button class="row-open" @click="$emit(\'open\', record.attributes.uuid)">{{ record.attributes.title }}</button><button class="row-select" @click="$emit(\'toggle-select\', record.attributes.uuid)">{{ selected ? "selected" : "select" }}</button><button class="row-delete" :disabled="disabled" @click="$emit(\'delete\', record.attributes.uuid)">delete</button></div>',
         props: ["record", "selected", "disabled"],
         emits: ["open", "toggle-select", "delete"],
       },
