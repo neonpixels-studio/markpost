@@ -233,7 +233,7 @@
     <ConfirmDialog
       v-if="pendingDeleteUuids"
       :title="deleteConfirmTitle"
-      :message="DELETE_CONFIRM_MESSAGE"
+      :message="deleteConfirmMessage"
       confirm-label="delete"
       :disabled="isBulkActionInFlight"
       @confirm="confirmDelete"
@@ -261,8 +261,6 @@ useHead({ title: "Inbox" });
 
 const INBOX_PATH = "/inbox";
 const RECORD_QUERY_KEY = "record";
-const DELETE_CONFIRM_MESSAGE =
-  "This will permanently delete the selected record(s). This cannot be undone.";
 
 const {
   records,
@@ -313,6 +311,13 @@ const pendingDeleteUuids = ref<string[] | null>(null);
 const deleteConfirmTitle = computed(() => {
   const count = pendingDeleteUuids.value?.length ?? 0;
   return count === 1 ? "Delete record?" : `Delete ${count} records?`;
+});
+
+const deleteConfirmMessage = computed(() => {
+  const count = pendingDeleteUuids.value?.length ?? 0;
+  return count === 1
+    ? "This will permanently delete this record. This cannot be undone."
+    : `This will permanently delete ${count} selected records. This cannot be undone.`;
 });
 
 function requestSingleDelete(uuid: string): void {
