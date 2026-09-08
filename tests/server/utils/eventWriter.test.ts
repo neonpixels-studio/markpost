@@ -1,20 +1,22 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import {
   validateEventKind,
   writeEvent,
   writeEventOncePerRecord,
 } from "../../../server/utils/eventWriter";
+import {
+  events,
+  eventRecordKindDedupPredicate,
+} from "../../../server/db/schema";
 
 const insertMock = vi.fn();
-const selectMock = vi.fn();
 
 vi.mock("../../../server/db", () => ({
-  getDb: () => ({ insert: insertMock, select: selectMock }),
-}));
-
-vi.mock("drizzle-orm", () => ({
-  and: (...conditions: unknown[]) => ({ op: "and", conditions }),
-  eq: (column: unknown, value: unknown) => ({ column, value }),
+  getDb: () => ({ insert: insertMock }),
 }));
 
 // Retention is covered in eventRetention.test.ts; stub it here so writeEvent's
@@ -24,6 +26,29 @@ vi.mock("../../../server/utils/eventRetention", () => ({
   maybePruneEventsForUser: (userId: string) =>
     maybePruneEventsForUserMock(userId),
 }));
+
+// Chains insert().values()[.onConflictDoNothing()].returning() the way the
+// real drizzle query builder does, so each mock stage can be asserted
+// individually. `returningRows` stands in for what the DB would actually
+// return: a row on a genuine insert, an empty array when the partial unique
+// index on (record_uuid, kind) absorbed a duplicate via onConflictDoNothing.
+function stubConflictInsert(returningRows: unknown[]) {
+  const returning = vi.fn(() => Promise.resolve(returningRows));
+  const onConflictDoNothing = vi.fn(() => ({ returning }));
+  const values = vi.fn(() => ({ onConflictDoNothing }));
+  insertMock.mockReturnValue({ values });
+  return { values, onConflictDoNothing, returning };
+}
+
+// For rows that fall outside the partial index's predicate (kind not ok/err,
+// or no recordUuid): insertEventRow (server/utils/eventWriter.ts) skips
+// onConflictDoNothing entirely, so the chain is one level shallower.
+function stubPlainInsert(returningRows: unknown[]) {
+  const returning = vi.fn(() => Promise.resolve(returningRows));
+  const values = vi.fn(() => ({ returning }));
+  insertMock.mockReturnValue({ values });
+  return { values, returning };
+}
 
 describe("validateEventKind", () => {
   it("accepts ok", () => {
@@ -64,8 +89,7 @@ describe("writeEvent", () => {
   });
 
   it("inserts an event row with required fields", async () => {
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
+    const { values } = stubPlainInsert([{ id: "new-event" }]);
 
     await writeEvent({
       userId: "user_abc",
@@ -74,7 +98,7 @@ describe("writeEvent", () => {
     });
 
     expect(insertMock).toHaveBeenCalledOnce();
-    expect(valuesMock).toHaveBeenCalledWith({
+    expect(values).toHaveBeenCalledWith({
       userId: "user_abc",
       kind: "ok",
       message: "Record synced",
@@ -85,8 +109,7 @@ describe("writeEvent", () => {
   });
 
   it("inserts an event row with optional recordUuid and sourceId", async () => {
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
+    const { values } = stubPlainInsert([{ id: "new-event" }]);
 
     await writeEvent({
       userId: "user_abc",
@@ -96,7 +119,7 @@ describe("writeEvent", () => {
       sourceId: "src-uuid",
     });
 
-    expect(valuesMock).toHaveBeenCalledWith({
+    expect(values).toHaveBeenCalledWith({
       userId: "user_abc",
       kind: "warn",
       message: "Sync conflict",
@@ -106,8 +129,7 @@ describe("writeEvent", () => {
   });
 
   it("coerces undefined recordUuid and sourceId to null", async () => {
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
+    const { values } = stubPlainInsert([{ id: "new-event" }]);
 
     await writeEvent({
       userId: "user_abc",
@@ -118,26 +140,78 @@ describe("writeEvent", () => {
     });
 
     const insertedValues = (
-      valuesMock.mock.calls[0] as [Record<string, unknown>]
+      values.mock.calls[0] as [Record<string, unknown>]
     )[0];
 
     expect(insertedValues.recordUuid).toBeNull();
     expect(insertedValues.sourceId).toBeNull();
   });
+
+  it("does not target the ON CONFLICT arbiter for a kind outside ok/err", async () => {
+    // "dim"/"warn" fall outside the partial index's predicate entirely, so
+    // insertEventRow must skip onConflictDoNothing rather than attach a
+    // conflict clause that could never match.
+    const { values } = stubPlainInsert([{ id: "new-event" }]);
+
+    await writeEvent({
+      userId: "user_abc",
+      kind: "dim",
+      message: "Deleted 3 records",
+      recordUuid: "rec-uuid",
+    });
+
+    expect(values).toHaveBeenCalledOnce();
+    const chain = values.mock.results[0]?.value as Record<string, unknown>;
+    expect(chain).not.toHaveProperty("onConflictDoNothing");
+  });
+
+  it("targets the ON CONFLICT arbiter when kind is ok/err and recordUuid is set, so a same-kind duplicate is a no-op instead of a raw unique_violation", async () => {
+    // This is the structural guard for the invariant documented above
+    // writeEvent: the partial unique index constrains the whole table, not
+    // just writeEventOncePerRecord, so a second "ok"/"err" for a recordUuid
+    // that already has one must resolve to a no-op here too, not a rejection.
+    const { onConflictDoNothing, returning } = stubConflictInsert([]);
+
+    await expect(
+      writeEvent({
+        userId: "user_abc",
+        kind: "ok",
+        message: "Webhook received: Deploy",
+        recordUuid: "rec-uuid",
+        sourceId: "src-uuid",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(onConflictDoNothing).toHaveBeenCalledOnce();
+    expect(returning).toHaveBeenCalledOnce();
+    expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
+  });
+
+  it("does not swallow a genuine insert failure (unlike writeEventOncePerRecord)", async () => {
+    // writeEvent has no fail-closed catch of its own — a real DB failure must
+    // still propagate to the caller exactly as a plain insert always has,
+    // since every current caller already wraps writeEvent in its own catch
+    // (see server/api/records/index.post.ts, index.delete.ts, index.patch.ts,
+    // and server/api/hooks/[slug].post.ts's fresh-insert branch).
+    const { returning } = stubConflictInsert([]);
+    returning.mockReturnValue(Promise.reject(new Error("connection blip")));
+
+    await expect(
+      writeEvent({
+        userId: "user_abc",
+        kind: "ok",
+        message: "Webhook received: Deploy",
+        recordUuid: "rec-uuid",
+      }),
+    ).rejects.toThrow("connection blip");
+
+    expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("writeEventOncePerRecord", () => {
-  function stubEventLookup(rows: unknown[]) {
-    const limit = vi.fn(() => Promise.resolve(rows));
-    const where = vi.fn(() => ({ limit }));
-    const from = vi.fn(() => ({ where }));
-    selectMock.mockReturnValue({ from });
-    return { from, where, limit };
-  }
-
   beforeEach(() => {
     insertMock.mockReset();
-    selectMock.mockReset();
     maybePruneEventsForUserMock.mockClear();
   });
 
@@ -145,10 +219,10 @@ describe("writeEventOncePerRecord", () => {
     vi.restoreAllMocks();
   });
 
-  it("writes the event when no event of that kind exists for the record", async () => {
-    stubEventLookup([]);
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
+  it("writes the event when it is the first of its kind for the record", async () => {
+    const { values, onConflictDoNothing, returning } = stubConflictInsert([
+      { id: "new-event" },
+    ]);
 
     await writeEventOncePerRecord({
       userId: "user_abc",
@@ -159,43 +233,107 @@ describe("writeEventOncePerRecord", () => {
     });
 
     expect(insertMock).toHaveBeenCalledOnce();
-    expect(valuesMock).toHaveBeenCalledWith({
+    expect(values).toHaveBeenCalledWith({
       userId: "user_abc",
       kind: "ok",
       message: "Webhook received: Deploy",
       recordUuid: "rec-uuid",
       sourceId: "src-uuid",
     });
+    expect(onConflictDoNothing).toHaveBeenCalledOnce();
+    expect(returning).toHaveBeenCalledOnce();
+    expect(maybePruneEventsForUserMock).toHaveBeenCalledWith("user_abc");
   });
 
-  it("skips the write when an event of that kind already exists for the record", async () => {
-    stubEventLookup([{ id: "existing-event" }]);
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
+  it("targets the partial unique index on (record_uuid, kind), scoped to ok/err", async () => {
+    const { onConflictDoNothing } = stubConflictInsert([{ id: "new-event" }]);
 
     await writeEventOncePerRecord({
       userId: "user_abc",
-      kind: "ok",
-      message: "Webhook received: Deploy",
+      kind: "err",
+      message: "Failed to confirm webhook ingestion",
       recordUuid: "rec-uuid",
-      sourceId: "src-uuid",
     });
 
-    expect(insertMock).not.toHaveBeenCalled();
-    expect(valuesMock).not.toHaveBeenCalled();
+    const config = onConflictDoNothing.mock.calls[0]?.[0] as {
+      target: unknown[];
+      where: SQL;
+    };
+    expect(config.target).toEqual([events.recordUuid, events.kind]);
+    // The predicate is a real drizzle `sql` template (built by
+    // eventRecordKindDedupPredicate, shared with the schema's index
+    // definition) rather than a mock — render it through the actual Postgres
+    // dialect (not a hand-rolled chunk walk) so this asserts the exact SQL
+    // text sent to Postgres, since ON CONFLICT resolves its target index by
+    // proving this predicate is implied by the index's own WHERE clause.
+    const { sql: renderedSql } = new PgDialect().sqlToQuery(config.where);
+    expect(renderedSql).toBe(
+      `"events"."record_uuid" is not null and "events"."kind" in ('ok', 'err')`,
+    );
+
+    // Ties the predicate to the actual applied migration, not just a literal
+    // in this test: if a future schema change (a regenerated migration, a
+    // hand edit, or a kind added to EVENT_DEDUPED_KINDS without a matching
+    // migration) drifts the two apart, this fails here instead of surfacing
+    // only as a swallowed 42P10 in production.
+    const migrationSql = readFileSync(
+      join(
+        import.meta.dirname,
+        "../../../server/db/migrations/0025_add_events_record_kind_dedup_index.sql",
+      ),
+      "utf8",
+    );
+    expect(migrationSql).toContain(renderedSql);
   });
 
-  it("fails closed — skips the write when the existence check itself throws, and does not reject", async () => {
-    // The read and the follow-up write share a connection, so a transient read
-    // failure hits both. Skipping the write (rather than attempting it and
-    // rejecting into the caller's error path, which flips a healthy record to
-    // error) risks only a missing event, never corruption.
-    const limit = vi.fn(() => Promise.reject(new Error("read blip")));
-    const where = vi.fn(() => ({ limit }));
-    const from = vi.fn(() => ({ where }));
-    selectMock.mockReturnValue({ from });
-    const valuesMock = vi.fn(() => Promise.resolve());
-    insertMock.mockReturnValue({ values: valuesMock });
+  it("renders the same predicate whether called from the table-builder callback or with the real events table", () => {
+    // eventRecordKindDedupPredicate is called two ways: with `table` inside
+    // events' own column-builder callback (server/db/schema.ts, before
+    // `events` exists) and with the real `events` export from
+    // writeEventOncePerRecord above. Both must render identically, since
+    // Postgres compares the ON CONFLICT predicate against the index's own.
+    const dialect = new PgDialect();
+    const fromRealTable = dialect.sqlToQuery(
+      eventRecordKindDedupPredicate(events),
+    );
+    const fromTableShape = dialect.sqlToQuery(
+      eventRecordKindDedupPredicate({
+        recordUuid: events.recordUuid,
+        kind: events.kind,
+      }),
+    );
+
+    expect(fromTableShape.sql).toBe(fromRealTable.sql);
+  });
+
+  it("is a no-op when a duplicate (record_uuid, kind) insert is absorbed by the DB-level unique index", async () => {
+    // returning() resolving empty mirrors onConflictDoNothing actually firing
+    // at the DB layer for a concurrent duplicate — this is what makes the
+    // dedup exact instead of check-then-act.
+    const { returning } = stubConflictInsert([]);
+
+    await expect(
+      writeEventOncePerRecord({
+        userId: "user_abc",
+        kind: "ok",
+        message: "Webhook received: Deploy",
+        recordUuid: "rec-uuid",
+        sourceId: "src-uuid",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(returning).toHaveBeenCalledOnce();
+    expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed — a transient insert error is caught and does not reject or prune", async () => {
+    // The insert is now the only DB round trip in this path (no separate
+    // existence read), so any transient failure surfaces here. This must not
+    // reject: for the webhook ingest healing path
+    // (server/api/hooks/[slug].post.ts), a rejection here flips an
+    // otherwise-healthy record to `error`.
+    const { returning } = stubConflictInsert([]);
+    returning.mockReturnValue(Promise.reject(new Error("connection blip")));
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
@@ -210,35 +348,68 @@ describe("writeEventOncePerRecord", () => {
       }),
     ).resolves.toBeUndefined();
 
-    // No write is attempted, so nothing can reject into the record-error path.
-    expect(insertMock).not.toHaveBeenCalled();
+    expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[eventWriter]"),
+      expect.stringContaining(
+        "[eventWriter] deduped event insert failed; skipping the write:",
+      ),
       expect.any(Error),
     );
 
     consoleErrorSpy.mockRestore();
   });
 
-  it("scopes the existence check to the record uuid and the event kind", async () => {
-    const { where } = stubEventLookup([]);
-    insertMock.mockReturnValue({ values: vi.fn(() => Promise.resolve()) });
-
-    await writeEventOncePerRecord({
-      userId: "user_abc",
-      kind: "ok",
-      message: "Webhook received: Deploy",
-      recordUuid: "rec-uuid",
-    });
-
-    const whereArg = where.mock.calls[0]?.[0] as {
-      conditions: Array<{ value: unknown }>;
-    };
-    expect(whereArg.conditions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ value: "rec-uuid" }),
-        expect.objectContaining({ value: "ok" }),
-      ]),
+  it("fails closed with a distinct log message when the ON CONFLICT arbiter index is missing (42P10)", async () => {
+    // Distinguishes "migration 0025 not applied yet" from a generic transient
+    // failure, so this specific, self-recovering-on-deploy cause is
+    // greppable in logs rather than indistinguishable from any other error.
+    const { returning } = stubConflictInsert([]);
+    const arbiterMissingError = Object.assign(
+      new Error(
+        "no unique or exclusion constraint matching the ON CONFLICT specification",
+      ),
+      { code: "42P10" },
     );
+    returning.mockReturnValue(Promise.reject(arbiterMissingError));
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    await expect(
+      writeEventOncePerRecord({
+        userId: "user_abc",
+        kind: "ok",
+        message: "Webhook received: Deploy",
+        recordUuid: "rec-uuid",
+        sourceId: "src-uuid",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("migration 0025 not applied"),
+      arbiterMissingError,
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("rejects a kind outside ok/err, since the partial index does not cover it", async () => {
+    stubConflictInsert([{ id: "new-event" }]);
+
+    // `kind` is typed to "ok" | "err" at every real call site; this simulates
+    // a caller that bypasses the type (e.g. a dynamic string), which the
+    // runtime guard below the type must still catch.
+    const kindOutsideDedup = "warn" as unknown as "ok" | "err";
+
+    await expect(
+      writeEventOncePerRecord({
+        userId: "user_abc",
+        kind: kindOutsideDedup,
+        message: "Sync conflict",
+        recordUuid: "rec-uuid",
+      }),
+    ).rejects.toThrow("writeEventOncePerRecord only supports kinds: ok, err");
+
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });

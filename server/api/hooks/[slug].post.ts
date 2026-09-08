@@ -615,7 +615,7 @@ async function recordIngestEventFailure(
 function okEventInput(
   source: SourceRow,
   record: IngestedRecord,
-): WriteEventInput & { recordUuid: string } {
+): WriteEventInput & { recordUuid: string; kind: "ok" } {
   return {
     userId: source.userId,
     kind: EVENT_KIND_OK,
@@ -629,8 +629,11 @@ function logStatsError(updateError: unknown): void {
   console.error("[hooks/ingest] failed to update source stats:", updateError);
 }
 
+// Narrowed to kind: "ok" (not the full EventKind) to match
+// writeEventOncePerRecord's dedup-only kind param (server/utils/eventWriter.ts)
+// — this writer only ever logs the ok event, never err.
 type OkEventWriter = (
-  input: WriteEventInput & { recordUuid: string },
+  input: WriteEventInput & { recordUuid: string; kind: "ok" },
 ) => Promise<void>;
 
 // The ingest side effects, shared by every outcome. The stat bump is claimed

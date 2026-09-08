@@ -1,6 +1,11 @@
-import { and, eq } from "drizzle-orm";
 import { getDb } from "../db";
-import { events, EVENT_KINDS, type EventKind } from "../db/schema";
+import {
+  events,
+  EVENT_KINDS,
+  EVENT_DEDUPED_KINDS,
+  eventRecordKindDedupPredicate,
+  type EventKind,
+} from "../db/schema";
 import { maybePruneEventsForUser } from "./eventRetention";
 
 export type WriteEventInput = {
@@ -10,6 +15,8 @@ export type WriteEventInput = {
   recordUuid?: string | null;
   sourceId?: string | null;
 };
+
+type DedupedEventKind = (typeof EVENT_DEDUPED_KINDS)[number];
 
 function isValidKind(value: string): value is EventKind {
   return (EVENT_KINDS as readonly string[]).includes(value);
@@ -25,17 +32,67 @@ export function validateEventKind(value: string): EventKind {
   return value;
 }
 
-export async function writeEvent(input: WriteEventInput): Promise<void> {
-  const validatedKind = validateEventKind(input.kind);
-  const db = getDb();
+function isDedupedKind(kind: EventKind): boolean {
+  return (EVENT_DEDUPED_KINDS as readonly string[]).includes(kind);
+}
 
-  await db.insert(events).values({
+// Shared insert payload shape for both write paths below, so a future field
+// change (e.g. message truncation) can't land in one and silently miss the
+// other.
+function buildEventRow(input: WriteEventInput, kind: EventKind) {
+  return {
     userId: input.userId,
-    kind: validatedKind,
+    kind,
     message: input.message,
     recordUuid: input.recordUuid ?? null,
     sourceId: input.sourceId ?? null,
-  });
+  };
+}
+
+// The one insert path for this module, shared by writeEvent and
+// writeEventOncePerRecord below, so the partial unique index on
+// events(record_uuid, kind) (ok/err only — migration 0025) is guarded the
+// same way regardless of which function performs the insert. When the row
+// could actually collide with that index (kind is ok/err and recordUuid is
+// set), the insert targets it with onConflictDoNothing so a duplicate is a
+// no-op (empty return) instead of a raw 23505 unique_violation. For any other
+// kind, or a null recordUuid, the row falls outside the partial index's
+// predicate — Postgres never considers it for that arbiter — so this behaves
+// exactly like a plain insert and always returns the new row.
+//
+// Does not catch: a rejection here (a real DB failure, not a duplicate)
+// propagates to the caller exactly as it always has for a plain insert. Only
+// writeEventOncePerRecord adds fail-closed handling on top, since its callers
+// specifically need a failed dedup-write to never flip a healthy record to
+// error (see the comment above it).
+async function insertEventRow(
+  input: WriteEventInput,
+  kind: EventKind,
+): Promise<{ id: string }[]> {
+  const db = getDb();
+  const row = buildEventRow(input, kind);
+
+  if (isDedupedKind(kind) && input.recordUuid) {
+    return db
+      .insert(events)
+      .values(row)
+      .onConflictDoNothing({
+        target: [events.recordUuid, events.kind],
+        where: eventRecordKindDedupPredicate(events),
+      })
+      .returning({ id: events.id });
+  }
+
+  return db.insert(events).values(row).returning({ id: events.id });
+}
+
+export async function writeEvent(input: WriteEventInput): Promise<void> {
+  const validatedKind = validateEventKind(input.kind);
+  const inserted = await insertEventRow(input, validatedKind);
+
+  if (inserted.length === 0) {
+    return;
+  }
 
   // Opportunistically enforce retention so the highest-write table stays
   // bounded without a scheduled job (see eventRetention.ts). Best-effort — it
@@ -43,62 +100,81 @@ export async function writeEvent(input: WriteEventInput): Promise<void> {
   await maybePruneEventsForUser(input.userId);
 }
 
-// Fails CLOSED: on any read error, log and return true ("assume already
-// logged"), so the caller skips the write rather than attempting it. This never
-// rejects. Failing open would be worse than it looks: the dedup read and the
-// follow-up write share a connection, so a transient failure hits both — the
-// write then rejects into the caller's error path, which for the webhook ingest
-// flow flips an otherwise-healthy record to `error`. Skipping instead risks only
-// a missing activity event on the rare heal; the recordCount counter is guarded
-// independently (by the record's counted_at claim), so it is never mis-counted.
-async function eventAlreadyLoggedForRecord(
-  recordUuid: string,
-  kind: EventKind,
-): Promise<boolean> {
-  const db = getDb();
-  try {
-    const [existing] = await db
-      .select({ id: events.id })
-      .from(events)
-      .where(and(eq(events.recordUuid, recordUuid), eq(events.kind, kind)))
-      .limit(1);
+// Postgres SQLSTATE raised when an ON CONFLICT target can't be resolved to a
+// real arbiter index/constraint — the app deploying before migration 0025
+// lands events_record_uuid_kind_ok_err_unique. Distinguished from other insert
+// failures (a transient DB blip) only so the log line names the actual cause;
+// both are handled identically (skip the write) since either way there is no
+// safe way to enforce the dedup for this write. Matches the shallow
+// `(error as { code }).code` pattern already used in
+// server/api/sources/index.post.ts (not the deeper `cause`-chain walk in
+// filePathCollision.ts, which exists to identify one specific constraint by
+// name — this only needs to distinguish one SQLSTATE for a log message).
+const ARBITER_INDEX_MISSING_SQLSTATE = "42P10";
 
-    return Boolean(existing);
-  } catch (lookupError) {
-    console.error(
-      "[eventWriter] event existence check failed; skipping the write:",
-      lookupError,
-    );
-    return true;
+function describeInsertFailure(insertError: unknown): string {
+  const code = (insertError as { code?: string } | null)?.code;
+
+  if (code === ARBITER_INDEX_MISSING_SQLSTATE) {
+    return "[eventWriter] deduped event insert failed: ON CONFLICT arbiter index missing (migration 0025 not applied?); skipping the write:";
   }
+
+  return "[eventWriter] deduped event insert failed; skipping the write:";
 }
 
-// Best-effort dedup for callers that may re-run a side effect (e.g. a webhook
+// Exact dedup for callers that may re-run a side effect (e.g. a webhook
 // provider retry that heals a crash between the record insert and its side
-// effects). Dedupes by (record, kind): if an event of this kind already exists
-// for the record, the write is skipped, so a sequential retry is a no-op while a
-// genuinely first write still lands. Requires a recordUuid — that is the dedup
-// key, so a null/absent one would defeat the guard. Because the existence check
-// fails closed (skips on read error), the only failure this propagates is a real
-// write failure.
+// effects, or a concurrent race where a losing writer still needs to log its
+// own copy of the event). Dedupes by (record, kind) at the DB layer: the
+// insert targets the partial unique index on events(record_uuid, kind) (ok/err
+// only, see migration 0025 and eventRecordKindDedupPredicate in
+// server/db/schema.ts) with onConflictDoNothing, so two concurrent writers
+// racing the same (recordUuid, kind) can never both land a row — one wins,
+// the other is a no-op. This replaces the earlier check-then-act (a read
+// followed by an insert), which left a race window where both writers could
+// observe "absent" and both insert, producing a duplicate.
 //
-// This is check-then-act, not atomic: two concurrent writers can both read
-// "absent" and both insert, so under genuine concurrency it can still emit a
-// duplicate — a cosmetic extra activity-log entry, never a mis-count (the
-// counter is guarded separately by the record's counted_at claim). A partial
-// unique index on (record_uuid, kind) plus onConflictDoNothing would make it
-// exact and is tracked as a follow-up.
+// Requires a recordUuid — that is the dedup key, so a null/absent one would
+// defeat the guard. `kind` is typed to ok/err only (the only kinds the
+// partial index covers; dim/warn may legitimately repeat) so a wrong-kind call
+// is a compile-time error at every call site; the runtime check below is a
+// defense-in-depth guard against a caller that bypasses the type (e.g. a
+// dynamic string), and intentionally throws rather than failing closed — a
+// caller-contract violation is a programmer bug that must surface loudly, not
+// be silently absorbed by the DB-failure handling below.
+//
+// Fails CLOSED on the insert itself: a transient DB blip, or the app
+// deploying before migration 0025 lands the arbiter index, is logged and
+// skipped rather than rejected. This is specifically for this function's
+// callers (server/api/hooks/[slug].post.ts's retry/race-loser paths — the
+// guaranteed-first-write path uses plain writeEvent instead, which does not
+// swallow insert failures), where a rejection propagates into
+// recordIngestEventFailure and flips an otherwise-healthy record to `error`
+// over a failed *log write*, not a real ingest failure. Skipping instead
+// risks only a missing activity event on the rare heal; the recordCount
+// counter is guarded independently (by the record's counted_at claim), so it
+// is never mis-counted.
 export async function writeEventOncePerRecord(
-  input: WriteEventInput & { recordUuid: string },
+  input: WriteEventInput & { recordUuid: string; kind: DedupedEventKind },
 ): Promise<void> {
-  const alreadyLogged = await eventAlreadyLoggedForRecord(
-    input.recordUuid,
-    input.kind,
+  const validatedKind = validateEventKind(input.kind);
+
+  if (!isDedupedKind(validatedKind)) {
+    throw new Error(
+      `writeEventOncePerRecord only supports kinds: ${EVENT_DEDUPED_KINDS.join(", ")}. Got "${validatedKind}".`,
+    );
+  }
+
+  const inserted = await insertEventRow(input, validatedKind).catch(
+    (insertError) => {
+      console.error(describeInsertFailure(insertError), insertError);
+      return [];
+    },
   );
 
-  if (alreadyLogged) {
+  if (inserted.length === 0) {
     return;
   }
 
-  await writeEvent(input);
+  await maybePruneEventsForUser(input.userId);
 }
