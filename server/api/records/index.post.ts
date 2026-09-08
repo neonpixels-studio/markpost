@@ -30,6 +30,7 @@ import {
 } from "../../utils/validate";
 import { writeEvent } from "../../utils/eventWriter";
 import { assertWithinRecordLimit } from "../../utils/planLimits";
+import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
 
 const DEFAULT_FILENAME_TEMPLATE = "{{date}}-{{slug}}.md";
 
@@ -507,9 +508,16 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
 
     await writeRecordCreatedEvent(userId, record);
 
+    // Resolved the same way as patch/bulk-patch (see server/utils/sourceType.ts):
+    // a fresh lookup keyed on the row that was actually persisted, rather than
+    // trusting that it matches the sourceId validated earlier in the request.
+    const sourceTypeMap = await resolveSourceTypes(db, userId, [
+      record.sourceId,
+    ]);
+
     setResponseStatus(event, 201);
 
-    return { data: recordSerializer(record) };
+    return { data: recordSerializer(withSourceType(record, sourceTypeMap)) };
   } catch (error) {
     return apiErrorHandler(error);
   }

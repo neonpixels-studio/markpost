@@ -1194,7 +1194,7 @@
               "sourceId": { "type": ["string", "null"], "format": "uuid" },
               "source": { "type": ["string", "null"] },
               "sourceType": {
-                "description": "Source type resolved by joining the record's source; canonical values are those of SourceType, but the underlying column is free text so a legacy value outside that set may be returned. Authoritative on the list and detail GET endpoints. On create/patch responses (which do not join sources) this is always null and should be treated as a write receipt, not the resolved type — re-read the record via GET to obtain it.",
+                "description": "Source type resolved from the record's source, scoped to the owning user; canonical values are those of SourceType, but the underlying column is free text so a legacy value outside that set may be returned. Populated on list, detail, create, patch, and bulk-patch responses. Null when the record has no source, when the source row is gone or not owned by the caller, or when the (best-effort) post-write resolution lookup on create/patch/bulk-patch failed.",
                 "type": ["string", "null"]
               },
               "status": { "$ref": "#/components/schemas/RecordStatus" },

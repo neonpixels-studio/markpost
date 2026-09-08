@@ -12,6 +12,7 @@ import {
   recordNotFoundError,
   filePathConflictError,
 } from "../../utils/recordErrors";
+import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
 
 type PatchRecordAttributes = {
   status?: string;
@@ -255,7 +256,11 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
       throw recordNotFoundError();
     }
 
-    return { data: recordSerializer(updated) };
+    const sourceTypeMap = await resolveSourceTypes(getDb(), userId, [
+      updated.sourceId,
+    ]);
+
+    return { data: recordSerializer(withSourceType(updated, sourceTypeMap)) };
   } catch (error) {
     return apiErrorHandler(error);
   }

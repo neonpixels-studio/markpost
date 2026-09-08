@@ -10,6 +10,7 @@ import {
 } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
 import { writeEvent } from "../../utils/eventWriter";
+import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
 
 const MAX_UPDATE_BATCH_SIZE = 100;
 
@@ -349,8 +350,16 @@ export default defineEventHandler(
         logBulkUpdate(userId, updatedRecords.length);
       }
 
+      const sourceTypeMap = await resolveSourceTypes(
+        getDb(),
+        userId,
+        updatedRecords.map((record) => record.sourceId),
+      );
+
       return {
-        data: updatedRecords.map((record) => recordSerializer(record)!),
+        data: updatedRecords.map((record) =>
+          recordSerializer(withSourceType(record, sourceTypeMap))!,
+        ),
         meta: { updated: updatedRecords.length },
       };
     } catch (error) {

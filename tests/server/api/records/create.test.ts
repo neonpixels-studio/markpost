@@ -15,6 +15,11 @@ vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
   and: (...conditions: unknown[]) => ({ conditions }),
   isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
+  inArray: (column: unknown, values: unknown[]) => ({
+    op: "inArray",
+    column,
+    values,
+  }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     op: "sql",
     strings,
@@ -371,6 +376,88 @@ describe("POST /api/records", () => {
         links: { self: `/api/records/${sampleRecordWithExtras.uuid}` },
       },
     });
+  });
+
+  it("resolves and includes the real sourceType for a record created with a sourceId", async () => {
+    const sampleRecordWithSource = {
+      ...sampleRecord,
+      sourceId: validSourceId,
+      source: "My GitHub hook",
+    };
+
+    // Two distinct selects: validateSourceOwnership's ownership check (reads
+    // only `uuid`, run before insert) and the post-insert resolveSourceTypes
+    // lookup (reads `uuid` + `type`, run against the persisted row). Giving
+    // them different rows proves `sourceType` can only come from the second
+    // call, not from reusing the first — see the "avoid double query" revert
+    // in this branch's history: the ownership check alone must not be able
+    // to satisfy this assertion.
+    let selectCall = 0;
+    selectMock.mockImplementation(() => {
+      selectCall += 1;
+      const rows =
+        selectCall === 1
+          ? [{ uuid: validSourceId }]
+          : [{ uuid: validSourceId, type: "github" }];
+      const where = vi.fn(() => Promise.resolve(rows));
+      const from = vi.fn(() => ({ where }));
+      return { from };
+    });
+
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        title: "My Title",
+        content: "My Content",
+        sourceId: validSourceId,
+      }),
+    );
+    stubInsertResult([sampleRecordWithSource]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(response.data?.attributes.sourceType).toBe("github");
+  });
+
+  it("returns sourceType: null (never fails the create) when the post-insert type lookup throws", async () => {
+    const sampleRecordWithSource = {
+      ...sampleRecord,
+      sourceId: validSourceId,
+      source: "My GitHub hook",
+    };
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    // First select (ownership check) succeeds; second (resolveSourceTypes)
+    // rejects, simulating a transient DB error after the record already
+    // committed.
+    let selectCall = 0;
+    selectMock.mockImplementation(() => {
+      const where = vi.fn(() => {
+        selectCall += 1;
+        return selectCall === 1
+          ? Promise.resolve([{ uuid: validSourceId }])
+          : Promise.reject(new Error("connection reset"));
+      });
+      const from = vi.fn(() => ({ where }));
+      return { from };
+    });
+
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        title: "My Title",
+        content: "My Content",
+        sourceId: validSourceId,
+      }),
+    );
+    stubInsertResult([sampleRecordWithSource]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 201);
+    expect(response.data?.attributes.sourceType).toBeNull();
+    consoleErrorSpy.mockRestore();
   });
 
   it("disambiguates a generated filePath that collides with an existing record", async () => {

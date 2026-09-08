@@ -17,11 +17,15 @@ type RecordAttributes = {
   content: string;
   sourceId: string | null;
   source: string | null;
-  // The canonical source type (`sources.type`), resolved by joining
-  // `records.sourceId → sources.uuid`. Distinct from `source`, which stores the
-  // free-text display name. Null when a record has no source (direct API create)
-  // or is returned by an endpoint that does not join sources (create/patch);
-  // the list and detail GET endpoints populate the real value.
+  // The canonical source type (`sources.type`). The list/show GET endpoints
+  // resolve it by joining `records.sourceId → sources.uuid` directly in their
+  // SELECT; the create/patch/bulk-patch endpoints only have an
+  // insert/update `.returning()` (no join), so they resolve it with a
+  // follow-up `resolveSourceTypes` lookup (see server/utils/sourceType.ts).
+  // Distinct from `source`, which stores the free-text display name. Null
+  // when the record has no source, when the source row is gone or not owned
+  // by the caller, or when the post-write lookup failed (resolveSourceTypes
+  // fails soft rather than turning an already-successful write into an error).
   sourceType: string | null;
   status: string;
   filePath: string | null;
@@ -31,8 +35,9 @@ type RecordAttributes = {
   errorMessage: string | null;
 };
 
-// Callers that do not join sources (create/patch/hooks) pass a plain record row
-// without `sourceType`; the serializer defaults it to null for them.
+// Callers that haven't resolved sourceType yet (e.g. a raw insert/update row
+// before the follow-up lookup runs) may pass a plain record row without it;
+// the serializer defaults it to null for them.
 type RecordInput = Omit<RecordAttributes, "sourceType"> & {
   sourceType?: string | null;
 };
