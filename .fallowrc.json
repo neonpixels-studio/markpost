@@ -12,7 +12,6 @@
     "@pinia/nuxt",
     "@sentry/nuxt",
     "@vue/test-utils",
-    "geist",
     "pinia",
     "vue"
   ]

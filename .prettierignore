@@ -1,2 +1,7 @@
 # dotenvx-managed env files (encrypted values; never reformat)
 .env*
+
+# Local scratch files; git-ignored globally, but Prettier reads ignore files
+# rather than git's rules, so it needs the pattern repeated here.
+_claude-*
+_scratch.md
