@@ -42,6 +42,9 @@ const RECORD_STATUS_PENDING = "pending";
 const RECORD_STATUS_ERROR = "error";
 const EVENT_KIND_OK = "ok";
 const EVENT_KIND_ERR = "err";
+const EVENT_KIND_DIM = "dim";
+const PING_DISCARDED_MESSAGE =
+  "GitHub ping received (connectivity check, not stored)";
 
 type SourceRow = {
   uuid: string;
@@ -637,6 +640,28 @@ function logStatsError(updateError: unknown): void {
   console.error("[hooks/ingest] failed to update source stats:", updateError);
 }
 
+function logPingEventError(writeError: unknown): void {
+  console.error("[hooks/ingest] failed to write ping event:", writeError);
+}
+
+// The two best-effort side effects for a discarded GitHub ping: refresh
+// lastHitAt (never recordCount — touchLastHitAt's whole purpose) so the
+// source doesn't read as "never delivered" in the UI, and log a `dim`
+// activity event so the user can see the ping actually arrived. Both run
+// concurrently and independently, mirroring writeIngestSideEffects below —
+// neither failure may turn this discard's 2xx into a 500.
+async function discardGithubPing(source: SourceRow): Promise<void> {
+  await Promise.allSettled([
+    touchLastHitAt(source.uuid).catch(logStatsError),
+    writeEvent({
+      userId: source.userId,
+      kind: EVENT_KIND_DIM,
+      message: PING_DISCARDED_MESSAGE,
+      sourceId: source.uuid,
+    }).catch(logPingEventError),
+  ]);
+}
+
 // Narrowed to kind: "ok" (not the full EventKind) to match
 // writeEventOncePerRecord's dedup-only kind param (server/utils/eventWriter.ts)
 // — this writer only ever logs the ok event, never err.
@@ -707,39 +732,25 @@ export default defineEventHandler(async (event) => {
     // Read once, reused below by both the ping check and extractDeliveryId.
     const deliveryHeaders = buildDeliveryHeaders(event);
 
-    // Discard GitHub's setup ping (fired the moment the webhook is created)
-    // before it can be parsed into a junk "Untitled" record — it carries no
-    // user content (just a `zen` string and hook/repository metadata). Checked
-    // after the throttle (metered like any other request) but before the
-    // plan-limit check and body parsing, since it must never consume either.
-    // Still records the delivery as a hit (touchLastHitAt, never
-    // recordCount) and logs a `dim` activity event so a correctly wired
-    // GitHub source doesn't read as "never delivered" in the UI just because
-    // its first delivery was a ping.
-    if (isGithubPingEvent(source.provider, deliveryHeaders)) {
-      await Promise.allSettled([
-        touchLastHitAt(source.uuid).catch(logStatsError),
-        writeEvent({
-          userId: source.userId,
-          kind: "dim",
-          message: "GitHub ping received (connectivity check, not stored)",
-          sourceId: source.uuid,
-        }).catch((writeError) => {
-          console.error(
-            "[hooks/ingest] failed to write ping event:",
-            writeError,
-          );
-        }),
-      ]);
-      return { data: { received: true } };
-    }
-
     // Validate the body before the plan-limit check: a malformed delivery will
     // never create a record, so it must not consume the user's plan-limit budget
     // (assertWithinRecordLimit's subscription lookup + monthly COUNT). Kept after
     // enforceThrottle so a slug-only flood of junk bodies still counts against the
-    // throttle window (see the reasoning on enforceThrottle above).
+    // throttle window (see the reasoning on enforceThrottle above). Also what
+    // the ping check below verifies against, since x-github-event alone is
+    // signable-around (see isGithubPingEvent).
     const payload = requireJsonObjectBody(source, rawBody);
+
+    // Discard GitHub's setup ping (fired the moment the webhook is created)
+    // before it can be parsed into a junk "Untitled" record — it carries no
+    // user content (just a `zen` string and hook/repository metadata). Checked
+    // after the throttle (metered like any other request) and body parsing,
+    // but before the plan-limit check and dedup lookup, since a ping must
+    // never consume either.
+    if (isGithubPingEvent(source.provider, deliveryHeaders, payload)) {
+      await discardGithubPing(source);
+      return { data: { received: true } };
+    }
 
     // Idempotency: a provider (Stripe/GitHub) re-sends the same delivery on any
     // non-2xx or timeout. Skip an already-ingested delivery so retries return

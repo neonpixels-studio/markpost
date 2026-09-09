@@ -1092,6 +1092,27 @@ describe("POST /api/hooks/[slug]", () => {
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
     });
+
+    // Security-critical: X-Hub-Signature-256 covers only the raw body, not
+    // headers, so x-github-event is unsigned. A real, correctly signed
+    // delivery whose x-github-event header gets rewritten to "ping" in
+    // transit (misconfigured proxy, compromised edge) must still be ingested
+    // — the ping discard also requires the body to look like GitHub's actual
+    // ping payload (`zen` + `hook_id`), which a header rewrite alone can't
+    // forge.
+    it("ingests a signed delivery even if x-github-event is rewritten to ping, when the body isn't ping-shaped", async () => {
+      const rawBody = JSON.stringify({ ref: "main" });
+
+      stubSourceAndSettings([githubSource]);
+      stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubGithubHeaders(rawBody, GITHUB_SECRET, "ping");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+    });
   });
 
   describe("zapier / shortcuts shared-secret verification", () => {

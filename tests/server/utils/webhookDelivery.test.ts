@@ -73,43 +73,70 @@ describe("extractDeliveryId", () => {
 });
 
 describe("isGithubPingEvent", () => {
-  it("returns true for a GitHub source with the ping event header", () => {
-    expect(isGithubPingEvent("github", { [GITHUB_EVENT_HEADER]: "ping" })).toBe(
-      true,
-    );
+  // GitHub's real ping payload: a `zen` string plus `hook_id` (and more
+  // metadata this check doesn't look at).
+  const PING_PAYLOAD = { zen: "Design for failure.", hook_id: 12345 };
+  const PING_HEADERS = { [GITHUB_EVENT_HEADER]: "ping" };
+
+  it("returns true for a GitHub source with the ping header and a ping-shaped body", () => {
+    expect(isGithubPingEvent("github", PING_HEADERS, PING_PAYLOAD)).toBe(true);
   });
 
   it("normalizes the provider so a stored `GitHub ` still matches", () => {
-    expect(
-      isGithubPingEvent("GitHub ", { [GITHUB_EVENT_HEADER]: "ping" }),
-    ).toBe(true);
+    expect(isGithubPingEvent("GitHub ", PING_HEADERS, PING_PAYLOAD)).toBe(true);
   });
 
   it("returns false for a non-ping GitHub event", () => {
-    expect(isGithubPingEvent("github", { [GITHUB_EVENT_HEADER]: "push" })).toBe(
-      false,
-    );
+    expect(
+      isGithubPingEvent(
+        "github",
+        { [GITHUB_EVENT_HEADER]: "push" },
+        PING_PAYLOAD,
+      ),
+    ).toBe(false);
   });
 
   it("returns false when the event header is missing", () => {
-    expect(isGithubPingEvent("github", {})).toBe(false);
+    expect(isGithubPingEvent("github", {}, PING_PAYLOAD)).toBe(false);
   });
 
   it("normalizes the event header so surrounding whitespace/case still matches", () => {
     expect(
-      isGithubPingEvent("github", { [GITHUB_EVENT_HEADER]: "Ping " }),
+      isGithubPingEvent(
+        "github",
+        { [GITHUB_EVENT_HEADER]: "Ping " },
+        PING_PAYLOAD,
+      ),
     ).toBe(true);
   });
 
   it("returns false for a non-GitHub provider even if the header says ping", () => {
-    expect(isGithubPingEvent("zapier", { [GITHUB_EVENT_HEADER]: "ping" })).toBe(
+    expect(isGithubPingEvent("zapier", PING_HEADERS, PING_PAYLOAD)).toBe(false);
+  });
+
+  it("returns false for a slug-only source (no provider)", () => {
+    expect(isGithubPingEvent(null, PING_HEADERS, PING_PAYLOAD)).toBe(false);
+  });
+
+  // Security-critical case: X-Hub-Signature-256 covers only the body, not
+  // headers, so a correctly signed real delivery (e.g. push) must not be
+  // discarded just because something between GitHub and this app rewrote
+  // x-github-event to "ping" — the body-shape check is what stops that.
+  it("returns false for a ping header on a non-ping-shaped (real delivery) body", () => {
+    expect(isGithubPingEvent("github", PING_HEADERS, { ref: "main" })).toBe(
       false,
     );
   });
 
-  it("returns false for a slug-only source (no provider)", () => {
-    expect(isGithubPingEvent(null, { [GITHUB_EVENT_HEADER]: "ping" })).toBe(
-      false,
-    );
+  it("returns false when the body has `zen` but no `hook_id`", () => {
+    expect(
+      isGithubPingEvent("github", PING_HEADERS, { zen: "Design for failure." }),
+    ).toBe(false);
+  });
+
+  it("returns false when the body's `zen` is not a string", () => {
+    expect(
+      isGithubPingEvent("github", PING_HEADERS, { zen: 1, hook_id: 12345 }),
+    ).toBe(false);
   });
 });
