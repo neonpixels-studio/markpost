@@ -59,4 +59,56 @@ describe("InputCheckbox", () => {
     await wrapper.find("input").setValue(false);
     expect(wrapper.emitted("update:modelValue")?.[0]).toEqual([false]);
   });
+
+  it("forwards a non-presentational attr like aria-label onto the real input", () => {
+    const wrapper = mount(InputCheckbox, {
+      ...globalConfig,
+      props: { modelValue: false },
+      attrs: { "aria-label": "Select all" },
+    });
+    expect(wrapper.find("input").attributes("aria-label")).toBe("Select all");
+    expect(wrapper.find("label").attributes("aria-label")).toBeUndefined();
+  });
+
+  it("keeps a caller's class and style on the visible label, not the hidden input", () => {
+    const wrapper = mount(InputCheckbox, {
+      ...globalConfig,
+      props: { modelValue: false },
+      attrs: { class: "extra-class", style: "margin-left: 8px" },
+    });
+    const label = wrapper.find("label");
+    expect(label.classes()).toContain("extra-class");
+    expect(label.attributes("style")).toContain("margin-left: 8px");
+    expect(wrapper.find("input").attributes("style")).not.toContain(
+      "margin-left",
+    );
+  });
+
+  it("also accepts an object-form style binding, not just a string", () => {
+    const wrapper = mount(InputCheckbox, {
+      ...globalConfig,
+      props: { modelValue: false },
+      attrs: { style: { marginLeft: "8px" } },
+    });
+    expect(wrapper.find("label").attributes("style")).toContain(
+      "margin-left: 8px",
+    );
+  });
+
+  it("re-syncs the native input's checked state when the caller rejects the change (controlled binding)", async () => {
+    // modelValue stays false throughout — simulates a parent that ignores the
+    // update:modelValue emit (e.g. useRecords rejecting a toggle at the
+    // selection cap), which the real DOM input doesn't know about on its own.
+    const wrapper = mount(InputCheckbox, {
+      ...globalConfig,
+      props: { modelValue: false, label: "Capped" },
+    });
+    const input = wrapper.find("input").element as HTMLInputElement;
+
+    input.checked = true;
+    await wrapper.find("input").trigger("change");
+
+    expect(wrapper.emitted("update:modelValue")?.[0]).toEqual([true]);
+    expect(input.checked).toBe(false);
+  });
 });

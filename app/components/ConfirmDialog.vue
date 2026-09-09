@@ -29,9 +29,12 @@
       </p>
       <div class="row gap-3" style="justify-content: flex-end">
         <AppBtn variant="ghost" @click="emit('cancel')">cancel</AppBtn>
-        <AppBtn variant="accent" @click="emit('confirm')">{{
-          confirmLabel
-        }}</AppBtn>
+        <AppBtn
+          variant="accent"
+          :disabled="disabled"
+          @click="emit('confirm')"
+          >{{ confirmLabel }}</AppBtn
+        >
       </div>
     </div>
   </div>
@@ -43,9 +46,14 @@ withDefaults(
     title: string;
     message: string;
     confirmLabel?: string;
+    // Set while the action this dialog confirms can't run yet (e.g. another
+    // bulk action is already in flight) — disables just the confirm button so
+    // a click gets a visible "not yet" instead of silently doing nothing.
+    disabled?: boolean;
   }>(),
   {
     confirmLabel: "confirm",
+    disabled: false,
   },
 );
 

@@ -18,6 +18,7 @@ import {
   fetchRecordStats,
   buildFetchUrl,
   RECORD_FILTER_OPTIONS,
+  BULK_ACTION_MAX_BATCH_SIZE,
   triggerRecordExportDownload,
   useRecords,
   type RecordResource,
@@ -396,5 +397,663 @@ describe("useRecords loadMore", () => {
     expect(loadError.value).toBe(
       "Failed to load more records. Please try again.",
     );
+  });
+});
+
+describe("useRecords selection", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("starts with nothing selected", () => {
+    const { selectedCount, isSelected } = useRecords("all");
+    expect(selectedCount.value).toBe(0);
+    expect(isSelected("uuid-1")).toBe(false);
+  });
+
+  it("toggles a uuid in and out of the selection", () => {
+    const { selectedCount, isSelected, toggleSelection } = useRecords("all");
+
+    toggleSelection("uuid-1");
+    expect(isSelected("uuid-1")).toBe(true);
+    expect(selectedCount.value).toBe(1);
+
+    toggleSelection("uuid-1");
+    expect(isSelected("uuid-1")).toBe(false);
+    expect(selectedCount.value).toBe(0);
+  });
+
+  it("clears every selected uuid", () => {
+    const { selectedCount, toggleSelection, clearSelection } =
+      useRecords("all");
+
+    toggleSelection("uuid-1");
+    toggleSelection("uuid-2");
+    expect(selectedCount.value).toBe(2);
+
+    clearSelection();
+    expect(selectedCount.value).toBe(0);
+  });
+
+  it("caps selection at BULK_ACTION_MAX_BATCH_SIZE and surfaces an error on the next attempt", () => {
+    const { selectedCount, actionError, toggleSelection } = useRecords("all");
+
+    for (let index = 0; index < BULK_ACTION_MAX_BATCH_SIZE; index += 1) {
+      toggleSelection(`uuid-${index}`);
+    }
+    expect(actionError.value).toBeNull();
+
+    toggleSelection("uuid-over-cap");
+
+    expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
+    expect(actionError.value).toBe(
+      `You can select at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`,
+    );
+  });
+
+  it("clears the cap error once the selection drops back under the limit", () => {
+    const { actionError, toggleSelection } = useRecords("all");
+
+    for (let index = 0; index < BULK_ACTION_MAX_BATCH_SIZE; index += 1) {
+      toggleSelection(`uuid-${index}`);
+    }
+    toggleSelection("uuid-over-cap");
+    expect(actionError.value).not.toBeNull();
+
+    // Deselecting one uuid routes through setSelection, which every legal
+    // selection change goes through — the cap message must not linger once
+    // the selection is legal again.
+    toggleSelection("uuid-0");
+
+    expect(actionError.value).toBeNull();
+  });
+
+  it("reports isAllVisibleSelected once every loaded record is selected", async () => {
+    mockFetch.mockResolvedValue({
+      data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+      meta: { hasMore: false },
+    });
+
+    const {
+      loadRecords,
+      isAllVisibleSelected,
+      toggleSelectAllVisible,
+      selectedCount,
+    } = useRecords("all");
+    await loadRecords();
+
+    expect(isAllVisibleSelected.value).toBe(false);
+
+    toggleSelectAllVisible();
+    expect(isAllVisibleSelected.value).toBe(true);
+    expect(selectedCount.value).toBe(2);
+
+    toggleSelectAllVisible();
+    expect(isAllVisibleSelected.value).toBe(false);
+    expect(selectedCount.value).toBe(0);
+  });
+
+  it("reports isAllVisibleSelected against the batch cap when more records are loaded than the cap allows", async () => {
+    const oversizedPage = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE + 10 },
+      (_unused, index) => makeRecordResource(`uuid-${index}`),
+    );
+    mockFetch.mockResolvedValue({
+      data: oversizedPage,
+      meta: { hasMore: false },
+    });
+
+    const {
+      loadRecords,
+      selectedCount,
+      isAllVisibleSelected,
+      toggleSelectAllVisible,
+    } = useRecords("all");
+    await loadRecords();
+
+    // Selecting "all" can only ever reach the cap, so isAllVisibleSelected
+    // must key off the capped set — otherwise the header checkbox could never
+    // show checked, and a second click could never clear it. Assert the
+    // selection size directly: isAllVisibleSelected alone can't tell a
+    // correctly-capped selection from an over-cap one — both leave every
+    // capped uuid selected, which is all that flag checks.
+    toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
+    expect(isAllVisibleSelected.value).toBe(true);
+
+    toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(0);
+    expect(isAllVisibleSelected.value).toBe(false);
+  });
+
+  it("drops a selected uuid that no longer appears after a reload", async () => {
+    mockFetch.mockResolvedValueOnce({
+      data: [makeRecordResource("uuid-1")],
+      meta: { hasMore: false },
+    });
+
+    const { loadRecords, toggleSelection, isSelected, selectedCount } =
+      useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+    expect(selectedCount.value).toBe(1);
+
+    mockFetch.mockResolvedValueOnce({
+      data: [makeRecordResource("uuid-2")],
+      meta: { hasMore: false },
+    });
+    await loadRecords();
+
+    expect(isSelected("uuid-1")).toBe(false);
+    expect(selectedCount.value).toBe(0);
+  });
+});
+
+describe("useRecords deleteRecords", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("does nothing and skips the request for an empty uuid list", async () => {
+    const { deleteRecords } = useRecords("all");
+    const deletedCount = await deleteRecords([]);
+
+    expect(deletedCount).toBe(0);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a batch larger than the cap without sending a request", async () => {
+    const { actionError, deleteRecords } = useRecords("all");
+    const uuids = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE + 1 },
+      (_unused, index) => `uuid-${index}`,
+    );
+
+    const deletedCount = await deleteRecords(uuids);
+
+    expect(deletedCount).toBe(0);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(actionError.value).toContain(String(BULK_ACTION_MAX_BATCH_SIZE));
+  });
+
+  it("sends a DELETE request with the given uuids and removes them from the list", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      })
+      .mockResolvedValueOnce({ meta: { deleted: 1 } });
+
+    const { loadRecords, records, deleteRecords } = useRecords("all");
+    await loadRecords();
+
+    const deletedCount = await deleteRecords(["uuid-1"]);
+
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/records", {
+      method: "DELETE",
+      body: { data: { attributes: { uuids: ["uuid-1"] } } },
+    });
+    expect(deletedCount).toBe(1);
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+  });
+
+  it("also drops a deleted uuid from the selection", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1")],
+        meta: { hasMore: false },
+      })
+      .mockResolvedValueOnce({ meta: { deleted: 1 } });
+
+    const { loadRecords, toggleSelection, selectedCount, deleteRecords } =
+      useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+    expect(selectedCount.value).toBe(1);
+
+    await deleteRecords(["uuid-1"]);
+
+    expect(selectedCount.value).toBe(0);
+  });
+
+  it("sets actionError and returns 0 when the request fails", async () => {
+    mockFetch.mockRejectedValue(new Error("network error"));
+
+    const { actionError, deleteRecords } = useRecords("all");
+    const deletedCount = await deleteRecords(["uuid-1"]);
+
+    expect(deletedCount).toBe(0);
+    expect(actionError.value).toBe(
+      "Failed to delete records. Please try again.",
+    );
+  });
+
+  it("tracks isDeleting while the request is in flight", async () => {
+    let resolveDelete!: (value: { meta: { deleted: number } }) => void;
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+
+    const { isDeleting, deleteRecords } = useRecords("all");
+    const pendingDelete = deleteRecords(["uuid-1"]);
+
+    expect(isDeleting.value).toBe(true);
+    resolveDelete({ meta: { deleted: 1 } });
+    await pendingDelete;
+
+    expect(isDeleting.value).toBe(false);
+  });
+
+  it("rejects a second bulk action while the first is still in flight", async () => {
+    let resolveDelete!: (value: { meta: { deleted: number } }) => void;
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+
+    const { actionError, deleteRecords, updateRecordsStatus } =
+      useRecords("all");
+    const pendingDelete = deleteRecords(["uuid-1"]);
+
+    const secondDeleteCount = await deleteRecords(["uuid-2"]);
+    expect(secondDeleteCount).toBe(0);
+    expect(actionError.value).toBe(
+      "Another bulk action is still running. Please wait.",
+    );
+
+    const updateResult = await updateRecordsStatus(["uuid-2"], "synced");
+    expect(updateResult).toEqual([]);
+
+    resolveDelete({ meta: { deleted: 1 } });
+    await pendingDelete;
+  });
+
+  it("reloads and surfaces a mismatch instead of trusting a partial delete", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      })
+      // Only 1 of the 2 requested uuids was actually deleted server-side.
+      .mockResolvedValueOnce({ meta: { deleted: 1 } })
+      // The reload that follows a mismatch.
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      });
+
+    const { loadRecords, records, actionError, deleteRecords } =
+      useRecords("all");
+    await loadRecords();
+
+    const deletedCount = await deleteRecords(["uuid-1", "uuid-2"]);
+
+    expect(deletedCount).toBe(1);
+    expect(actionError.value).toBe(
+      "Deleted 1 of 2 records. Reloading the list.",
+    );
+    // Reflects the reload's response, not a locally-filtered guess.
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+  });
+
+  it("reloads from the server when deleting empties the page but more records remain", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1")],
+        meta: { hasMore: true },
+      })
+      .mockResolvedValueOnce({ meta: { deleted: 1 } })
+      // The backfill reload triggered because the page is now empty.
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      });
+
+    const { loadRecords, records, hasMore, deleteRecords } = useRecords("all");
+    await loadRecords();
+    expect(hasMore.value).toBe(true);
+
+    await deleteRecords(["uuid-1"]);
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+    expect(hasMore.value).toBe(false);
+  });
+});
+
+describe("useRecords updateRecordsStatus", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("does nothing and skips the request for an empty uuid list", async () => {
+    const { updateRecordsStatus } = useRecords("all");
+    const updated = await updateRecordsStatus([], "synced");
+
+    expect(updated).toEqual([]);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a batch larger than the cap without sending a request", async () => {
+    const { actionError, updateRecordsStatus } = useRecords("all");
+    const uuids = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE + 1 },
+      (_unused, index) => `uuid-${index}`,
+    );
+
+    const updated = await updateRecordsStatus(uuids, "synced");
+
+    expect(updated).toEqual([]);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(actionError.value).toContain(String(BULK_ACTION_MAX_BATCH_SIZE));
+  });
+
+  it("stamps syncedAt and clears errorMessage when marking records as synced, since the server only writes fields it's given", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00Z"));
+
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [
+          {
+            ...makeRecordResource("uuid-1"),
+            attributes: {
+              ...makeRecordResource("uuid-1").attributes,
+              status: "error",
+              errorMessage: "Sync failed: 500",
+            },
+          },
+        ],
+        meta: { hasMore: false },
+      })
+      .mockResolvedValueOnce({ data: [] });
+
+    const { loadRecords, updateRecordsStatus } = useRecords("all");
+    await loadRecords();
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/records", {
+      method: "PATCH",
+      body: {
+        data: {
+          attributes: {
+            records: [
+              {
+                uuid: "uuid-1",
+                status: "synced",
+                syncedAt: "2026-06-27T12:00:00.000Z",
+                errorMessage: null,
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("does not send errorMessage, but clears syncedAt, when marking records as error, since the failure reason should stick but the record is no longer synced", async () => {
+    mockFetch.mockResolvedValueOnce({ data: [] });
+
+    const { updateRecordsStatus } = useRecords("all");
+    await updateRecordsStatus(["uuid-1"], "error");
+
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/records", {
+      method: "PATCH",
+      body: {
+        data: {
+          attributes: {
+            records: [{ uuid: "uuid-1", status: "error", syncedAt: null }],
+          },
+        },
+      },
+    });
+  });
+
+  it("clears errorMessage and syncedAt when marking records as pending, so a stale failure reason and a stale sync stamp don't linger on a not-yet-attempted record", async () => {
+    mockFetch.mockResolvedValueOnce({ data: [] });
+
+    const { updateRecordsStatus } = useRecords("all");
+    await updateRecordsStatus(["uuid-1"], "pending");
+
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/records", {
+      method: "PATCH",
+      body: {
+        data: {
+          attributes: {
+            records: [
+              {
+                uuid: "uuid-1",
+                status: "pending",
+                syncedAt: null,
+                errorMessage: null,
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it("sends a PATCH request and merges the updated record in place", async () => {
+    const originalRecord = makeRecordResource("uuid-1");
+    const updatedRecord: RecordResource = {
+      ...originalRecord,
+      attributes: { ...originalRecord.attributes, status: "pending" },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [originalRecord],
+        meta: { hasMore: false },
+      })
+      .mockResolvedValueOnce({ data: [updatedRecord] });
+
+    const { loadRecords, records, updateRecordsStatus } = useRecords("all");
+    await loadRecords();
+
+    const updated = await updateRecordsStatus(["uuid-1"], "pending");
+
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/records", {
+      method: "PATCH",
+      body: {
+        data: {
+          attributes: {
+            records: [
+              {
+                uuid: "uuid-1",
+                status: "pending",
+                syncedAt: null,
+                errorMessage: null,
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(updated).toEqual([updatedRecord]);
+    expect(records.value[0]?.attributes.status).toBe("pending");
+  });
+
+  it("drops a record from the 'errors' filter once it's no longer an error", async () => {
+    const errorRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "error",
+      },
+    };
+    const syncedRecord: RecordResource = {
+      ...errorRecord,
+      attributes: { ...errorRecord.attributes, status: "synced" },
+    };
+    mockFetch
+      .mockResolvedValueOnce({ data: [errorRecord], meta: { hasMore: false } })
+      .mockResolvedValueOnce({ data: [syncedRecord] });
+
+    const { loadRecords, records, filter, updateRecordsStatus } =
+      useRecords("errors");
+    filter.value = "errors";
+    await loadRecords();
+    expect(records.value).toHaveLength(1);
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(records.value).toHaveLength(0);
+  });
+
+  it("reloads from the server when a status update empties the filtered page but more records remain", async () => {
+    const errorRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "error",
+      },
+    };
+    const syncedRecord: RecordResource = {
+      ...errorRecord,
+      attributes: { ...errorRecord.attributes, status: "synced" },
+    };
+    const nextErrorRecord: RecordResource = {
+      ...makeRecordResource("uuid-2"),
+      attributes: {
+        ...makeRecordResource("uuid-2").attributes,
+        status: "error",
+      },
+    };
+    mockFetch
+      .mockResolvedValueOnce({ data: [errorRecord], meta: { hasMore: true } })
+      .mockResolvedValueOnce({ data: [syncedRecord] })
+      // The backfill reload triggered because the "errors" page is now empty.
+      .mockResolvedValueOnce({
+        data: [nextErrorRecord],
+        meta: { hasMore: false },
+      });
+
+    const { loadRecords, records, hasMore, filter, updateRecordsStatus } =
+      useRecords("errors");
+    filter.value = "errors";
+    await loadRecords();
+    expect(hasMore.value).toBe(true);
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+    expect(hasMore.value).toBe(false);
+  });
+
+  it("keeps a record under a source filter once its status changes, since the filter isn't status-based", async () => {
+    const githubRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        sourceType: "github",
+        status: "pending",
+      },
+    };
+    const syncedGithubRecord: RecordResource = {
+      ...githubRecord,
+      attributes: { ...githubRecord.attributes, status: "synced" },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [githubRecord],
+        meta: { hasMore: false },
+      })
+      .mockResolvedValueOnce({ data: [syncedGithubRecord] });
+
+    const { loadRecords, records, filter, updateRecordsStatus } =
+      useRecords("github");
+    filter.value = "github";
+    await loadRecords();
+    expect(records.value).toHaveLength(1);
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(records.value).toHaveLength(1);
+    expect(records.value[0]?.attributes.status).toBe("synced");
+  });
+
+  it("clears a selected uuid once its status update succeeds", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1")],
+        meta: { hasMore: false },
+      })
+      .mockResolvedValueOnce({ data: [makeRecordResource("uuid-1")] });
+
+    const { loadRecords, toggleSelection, selectedCount, updateRecordsStatus } =
+      useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+    expect(selectedCount.value).toBe(1);
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(selectedCount.value).toBe(0);
+  });
+
+  it("sets actionError and returns an empty list when the request fails", async () => {
+    mockFetch.mockRejectedValue(new Error("network error"));
+
+    const { actionError, updateRecordsStatus } = useRecords("all");
+    const updated = await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(updated).toEqual([]);
+    expect(actionError.value).toBe(
+      "Failed to update records. Please try again.",
+    );
+  });
+
+  it("keeps only the un-updated uuid selected and surfaces a mismatch on a partial update", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+        meta: { hasMore: false },
+      })
+      // The server only echoes back uuid-1 — uuid-2's update didn't apply.
+      .mockResolvedValueOnce({ data: [makeRecordResource("uuid-1")] });
+
+    const {
+      loadRecords,
+      toggleSelection,
+      isSelected,
+      actionError,
+      updateRecordsStatus,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+    toggleSelection("uuid-2");
+
+    await updateRecordsStatus(["uuid-1", "uuid-2"], "synced");
+
+    expect(isSelected("uuid-1")).toBe(false);
+    expect(isSelected("uuid-2")).toBe(true);
+    expect(actionError.value).toBe(
+      "Updated 1 of 2 records. Please try again for the rest.",
+    );
+  });
+
+  it("tracks isUpdatingStatus while the request is in flight", async () => {
+    let resolvePatch!: (value: { data: RecordResource[] }) => void;
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePatch = resolve;
+      }),
+    );
+
+    const { isUpdatingStatus, updateRecordsStatus } = useRecords("all");
+    const pendingUpdate = updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(isUpdatingStatus.value).toBe(true);
+    resolvePatch({ data: [] });
+    await pendingUpdate;
+
+    expect(isUpdatingStatus.value).toBe(false);
   });
 });
