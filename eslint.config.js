@@ -134,6 +134,8 @@ export default [
       "dist/**",
       "node_modules/**",
       "coverage/**",
+      "_claude-*",
+      "_scratch.md",
     ],
   },
 ];
