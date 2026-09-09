@@ -738,7 +738,7 @@ export default defineEventHandler(async (event) => {
     // enforceThrottle so a slug-only flood of junk bodies still counts against the
     // throttle window (see the reasoning on enforceThrottle above). Also what
     // the ping check below verifies against, since x-github-event alone is
-    // signable-around (see isGithubPingEvent).
+    // unsigned and forgeable (see isGithubPingEvent).
     const payload = requireJsonObjectBody(source, rawBody);
 
     // Discard GitHub's setup ping (fired the moment the webhook is created)
