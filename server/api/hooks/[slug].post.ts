@@ -312,7 +312,6 @@ function buildProviderHeaders(
     [GITHUB_SIGNATURE_HEADER]:
       getHeader(event, GITHUB_SIGNATURE_HEADER) ?? undefined,
     [SHARED_SECRET_HEADER]: getHeader(event, SHARED_SECRET_HEADER) ?? undefined,
-    [GITHUB_EVENT_HEADER]: getHeader(event, GITHUB_EVENT_HEADER) ?? undefined,
   };
 }
 
@@ -565,12 +564,18 @@ async function findAlreadyIngested(
   return findRecordByDelivery(source.uuid, deliveryId);
 }
 
+// GITHUB_EVENT_HEADER rides along here rather than in buildProviderHeaders:
+// it's GitHub delivery metadata (used to detect a ping, and by
+// extractDeliveryId below), not auth material passed to
+// verifyProviderSignature — this is the module that already owns that header
+// (webhookDelivery.ts), same as GITHUB_DELIVERY_HEADER.
 function buildDeliveryHeaders(
   event: H3Event,
 ): Record<string, string | undefined> {
   return {
     [GITHUB_DELIVERY_HEADER]:
       getHeader(event, GITHUB_DELIVERY_HEADER) ?? undefined,
+    [GITHUB_EVENT_HEADER]: getHeader(event, GITHUB_EVENT_HEADER) ?? undefined,
   };
 }
 
@@ -699,12 +704,33 @@ export default defineEventHandler(async (event) => {
     // must still be metered even though it goes on to be discarded below.
     await enforceThrottle(event, source);
 
+    // Read once, reused below by both the ping check and extractDeliveryId.
+    const deliveryHeaders = buildDeliveryHeaders(event);
+
     // Discard GitHub's setup ping (fired the moment the webhook is created)
     // before it can be parsed into a junk "Untitled" record — it carries no
     // user content (just a `zen` string and hook/repository metadata). Checked
     // after the throttle (metered like any other request) but before the
     // plan-limit check and body parsing, since it must never consume either.
-    if (isGithubPingEvent(source.provider, providerHeaders)) {
+    // Still records the delivery as a hit (touchLastHitAt, never
+    // recordCount) and logs a `dim` activity event so a correctly wired
+    // GitHub source doesn't read as "never delivered" in the UI just because
+    // its first delivery was a ping.
+    if (isGithubPingEvent(source.provider, deliveryHeaders)) {
+      await Promise.allSettled([
+        touchLastHitAt(source.uuid).catch(logStatsError),
+        writeEvent({
+          userId: source.userId,
+          kind: "dim",
+          message: "GitHub ping received (connectivity check, not stored)",
+          sourceId: source.uuid,
+        }).catch((writeError) => {
+          console.error(
+            "[hooks/ingest] failed to write ping event:",
+            writeError,
+          );
+        }),
+      ]);
       return { data: { received: true } };
     }
 
@@ -722,7 +748,7 @@ export default defineEventHandler(async (event) => {
     // already counted.
     const deliveryId = extractDeliveryId(
       source.provider,
-      buildDeliveryHeaders(event),
+      deliveryHeaders,
       payload,
     );
     const alreadyIngested = await findAlreadyIngested(source, deliveryId);

@@ -24,8 +24,11 @@ export const GITHUB_DELIVERY_HEADER = "x-github-delivery";
 // ping, ...). The hooks endpoint only needs to recognize one value here: `ping`,
 // the automatic delivery GitHub fires the moment a webhook is created to confirm
 // the endpoint is reachable. Its body carries no user content (just a `zen`
-// string and hook/repository metadata), so it must never reach
-// parseWebhookPayload — that would fall back to an empty "Untitled" record.
+// string and hook/repository metadata) — a delivery that carries this header
+// with value `ping` is routed away from parseWebhookPayload before it can fall
+// back to an empty "Untitled" record. Detection is header-only: GitHub always
+// sets this header (it is not optional/attacker-omittable the way a body field
+// would be), so there is no body-shape fallback for a ping missing it.
 export const GITHUB_EVENT_HEADER = "x-github-event";
 const GITHUB_PING_EVENT_NAME = "ping";
 

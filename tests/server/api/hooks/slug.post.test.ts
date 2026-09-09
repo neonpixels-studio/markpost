@@ -1015,6 +1015,7 @@ describe("POST /api/hooks/[slug]", () => {
 
     it("discards a signed GitHub ping delivery without creating a record", async () => {
       stubSourceOnly([githubSource]);
+      const { set } = stubUpdateStats();
       mockReadRawBody.mockResolvedValue(PING_BODY);
       stubGithubHeaders(PING_BODY, GITHUB_SECRET, "ping");
 
@@ -1028,10 +1029,30 @@ describe("POST /api/hooks/[slug]", () => {
       expect(mockRecordWebhookHit).toHaveBeenCalledWith(githubSource.uuid);
       expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
       expect(mockSetResponseStatus).not.toHaveBeenCalled();
+      // Still counts as a hit (lastHitAt) so a correctly wired source doesn't
+      // read as undelivered, without touching recordCount.
+      expect(set).toHaveBeenCalledWith(
+        expect.objectContaining({ lastHitAt: expect.any(Date) }),
+      );
+      expect(set).not.toHaveBeenCalledWith(
+        expect.objectContaining({ recordCount: expect.anything() }),
+      );
+      expect(mockWriteEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: USER_ID,
+          kind: "dim",
+          sourceId: SOURCE_UUID,
+        }),
+      );
+      const writtenEvent = mockWriteEvent.mock.calls[0]?.[0] as {
+        recordUuid?: string;
+      };
+      expect(writtenEvent.recordUuid).toBeUndefined();
     });
 
     it("discards a ping delivery that carries a delivery id before any dedup lookup", async () => {
       stubSourceOnly([githubSource]);
+      stubUpdateStats();
       mockReadRawBody.mockResolvedValue(PING_BODY);
       stubGithubHeaders(PING_BODY, GITHUB_SECRET, "ping", "gh-delivery-ping-1");
 
