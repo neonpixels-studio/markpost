@@ -312,6 +312,7 @@ function buildProviderHeaders(
     [GITHUB_SIGNATURE_HEADER]:
       getHeader(event, GITHUB_SIGNATURE_HEADER) ?? undefined,
     [SHARED_SECRET_HEADER]: getHeader(event, SHARED_SECRET_HEADER) ?? undefined,
+    [GITHUB_EVENT_HEADER]: getHeader(event, GITHUB_EVENT_HEADER) ?? undefined,
   };
 }
 
@@ -422,19 +423,6 @@ function checkSignature(
   if (!sigResult.ok) {
     throw signatureError(sigResult.reason);
   }
-}
-
-// GitHub fires an automatic `ping` delivery the moment a webhook is created, to
-// confirm the endpoint is reachable — it carries no user content, so it must
-// never reach requireJsonObjectBody/parseWebhookPayload (which would fall back
-// to an empty "Untitled" record). Checked after signature verification (so an
-// unsigned request can't fake a discard the same way it can't fake a real
-// delivery) but before the throttle/plan-limit/insert path, since a one-time
-// setup ping should not spend any of that budget.
-function isPingDelivery(event: H3Event, source: SourceRow): boolean {
-  return isGithubPingEvent(source.provider, {
-    [GITHUB_EVENT_HEADER]: getHeader(event, GITHUB_EVENT_HEADER) ?? undefined,
-  });
 }
 
 const RETRY_AFTER_HEADER = "Retry-After";
@@ -700,18 +688,25 @@ export default defineEventHandler(async (event) => {
     const providerHeaders = buildProviderHeaders(event);
     checkSignature(source, providerHeaders, rawBody);
 
-    // Discard GitHub's setup ping before it can spend throttle/plan-limit
-    // budget or get parsed into a junk "Untitled" record — see isPingDelivery.
-    if (isPingDelivery(event, source)) {
-      return { data: { received: true } };
-    }
-
     // Throttle before the plan-limit check: recordWebhookHit must observe every
     // request that gets this far, or a user sitting at their monthly cap would
     // throw past the throttle on each delivery and never register in the window.
     // It is also the cheaper guard, so it sheds load before the subscription
-    // lookup and monthly COUNT that assertWithinRecordLimit runs.
+    // lookup and monthly COUNT that assertWithinRecordLimit runs. This includes
+    // a GitHub ping delivery: the throttle is an abuse control on the signed
+    // endpoint, not a budget, and a captured signed ping can be replayed
+    // indefinitely (GitHub's HMAC has no timestamp/freshness component), so it
+    // must still be metered even though it goes on to be discarded below.
     await enforceThrottle(event, source);
+
+    // Discard GitHub's setup ping (fired the moment the webhook is created)
+    // before it can be parsed into a junk "Untitled" record — it carries no
+    // user content (just a `zen` string and hook/repository metadata). Checked
+    // after the throttle (metered like any other request) but before the
+    // plan-limit check and body parsing, since it must never consume either.
+    if (isGithubPingEvent(source.provider, providerHeaders)) {
+      return { data: { received: true } };
+    }
 
     // Validate the body before the plan-limit check: a malformed delivery will
     // never create a record, so it must not consume the user's plan-limit budget

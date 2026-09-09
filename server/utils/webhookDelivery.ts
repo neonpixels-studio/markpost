@@ -39,7 +39,8 @@ export function isGithubPingEvent(
 ): boolean {
   return (
     normalizeProvider(provider) === GITHUB_PROVIDER &&
-    headers[GITHUB_EVENT_HEADER] === GITHUB_PING_EVENT_NAME
+    headers[GITHUB_EVENT_HEADER]?.trim().toLowerCase() ===
+      GITHUB_PING_EVENT_NAME
   );
 }
 

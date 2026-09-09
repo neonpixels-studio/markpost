@@ -95,6 +95,12 @@ describe("isGithubPingEvent", () => {
     expect(isGithubPingEvent("github", {})).toBe(false);
   });
 
+  it("normalizes the event header so surrounding whitespace/case still matches", () => {
+    expect(
+      isGithubPingEvent("github", { [GITHUB_EVENT_HEADER]: "Ping " }),
+    ).toBe(true);
+  });
+
   it("returns false for a non-GitHub provider even if the header says ping", () => {
     expect(isGithubPingEvent("zapier", { [GITHUB_EVENT_HEADER]: "ping" })).toBe(
       false,
