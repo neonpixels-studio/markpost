@@ -26,6 +26,8 @@ import {
 import {
   extractDeliveryId,
   GITHUB_DELIVERY_HEADER,
+  GITHUB_EVENT_HEADER,
+  isGithubPingEvent,
 } from "../../utils/webhookDelivery";
 import { recordWebhookHit } from "../../utils/webhookThrottle";
 import {
@@ -422,6 +424,19 @@ function checkSignature(
   }
 }
 
+// GitHub fires an automatic `ping` delivery the moment a webhook is created, to
+// confirm the endpoint is reachable — it carries no user content, so it must
+// never reach requireJsonObjectBody/parseWebhookPayload (which would fall back
+// to an empty "Untitled" record). Checked after signature verification (so an
+// unsigned request can't fake a discard the same way it can't fake a real
+// delivery) but before the throttle/plan-limit/insert path, since a one-time
+// setup ping should not spend any of that budget.
+function isPingDelivery(event: H3Event, source: SourceRow): boolean {
+  return isGithubPingEvent(source.provider, {
+    [GITHUB_EVENT_HEADER]: getHeader(event, GITHUB_EVENT_HEADER) ?? undefined,
+  });
+}
+
 const RETRY_AFTER_HEADER = "Retry-After";
 
 async function enforceThrottle(
@@ -684,6 +699,12 @@ export default defineEventHandler(async (event) => {
     // the throttle primarily exists for.
     const providerHeaders = buildProviderHeaders(event);
     checkSignature(source, providerHeaders, rawBody);
+
+    // Discard GitHub's setup ping before it can spend throttle/plan-limit
+    // budget or get parsed into a junk "Untitled" record — see isPingDelivery.
+    if (isPingDelivery(event, source)) {
+      return { data: { received: true } };
+    }
 
     // Throttle before the plan-limit check: recordWebhookHit must observe every
     // request that gets this far, or a user sitting at their monthly cap would

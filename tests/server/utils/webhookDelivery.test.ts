@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   extractDeliveryId,
   GITHUB_DELIVERY_HEADER,
+  GITHUB_EVENT_HEADER,
+  isGithubPingEvent,
 } from "../../../server/utils/webhookDelivery";
 
 describe("extractDeliveryId", () => {
@@ -67,5 +69,41 @@ describe("extractDeliveryId", () => {
   it("returns null for a shared-secret provider with no delivery id", () => {
     const id = extractDeliveryId("zapier", {}, { id: "evt_ignored" });
     expect(id).toBeNull();
+  });
+});
+
+describe("isGithubPingEvent", () => {
+  it("returns true for a GitHub source with the ping event header", () => {
+    expect(isGithubPingEvent("github", { [GITHUB_EVENT_HEADER]: "ping" })).toBe(
+      true,
+    );
+  });
+
+  it("normalizes the provider so a stored `GitHub ` still matches", () => {
+    expect(
+      isGithubPingEvent("GitHub ", { [GITHUB_EVENT_HEADER]: "ping" }),
+    ).toBe(true);
+  });
+
+  it("returns false for a non-ping GitHub event", () => {
+    expect(isGithubPingEvent("github", { [GITHUB_EVENT_HEADER]: "push" })).toBe(
+      false,
+    );
+  });
+
+  it("returns false when the event header is missing", () => {
+    expect(isGithubPingEvent("github", {})).toBe(false);
+  });
+
+  it("returns false for a non-GitHub provider even if the header says ping", () => {
+    expect(isGithubPingEvent("zapier", { [GITHUB_EVENT_HEADER]: "ping" })).toBe(
+      false,
+    );
+  });
+
+  it("returns false for a slug-only source (no provider)", () => {
+    expect(isGithubPingEvent(null, { [GITHUB_EVENT_HEADER]: "ping" })).toBe(
+      false,
+    );
   });
 });

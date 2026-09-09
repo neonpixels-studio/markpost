@@ -977,6 +977,80 @@ describe("POST /api/hooks/[slug]", () => {
     });
   });
 
+  describe("github ping event", () => {
+    const GITHUB_SECRET = "github_test_secret";
+    const githubSource = {
+      ...sampleSource,
+      provider: "github",
+      providerSecret: GITHUB_SECRET,
+    };
+
+    function stubGithubHeaders(
+      rawBody: string,
+      secret: string,
+      githubEvent: string | undefined,
+    ): void {
+      mockGetHeader.mockImplementation((_event: unknown, name: string) => {
+        if (name === "x-hub-signature-256") {
+          return buildValidGithubHeader(rawBody, secret);
+        }
+        if (name === "x-github-event") {
+          return githubEvent;
+        }
+        return undefined;
+      });
+    }
+
+    it("discards a signed GitHub ping delivery without creating a record", async () => {
+      // A real ping body: no user content, just a `zen` string and hook metadata.
+      const rawBody = JSON.stringify({
+        zen: "Design for failure.",
+        hook_id: 12345,
+        hook: { type: "Repository", events: ["push"] },
+        repository: { full_name: "octocat/hello-world" },
+      });
+
+      stubSourceOnly([githubSource]);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubGithubHeaders(rawBody, GITHUB_SECRET, "ping");
+
+      const response = await handler(buildEvent());
+
+      expect(response).toMatchObject({ data: { received: true } });
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(mockRecordWebhookHit).not.toHaveBeenCalled();
+      expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
+      expect(mockSetResponseStatus).not.toHaveBeenCalled();
+    });
+
+    it("still requires a valid signature for a ping delivery", async () => {
+      const rawBody = JSON.stringify({ zen: "Design for failure." });
+
+      stubSourceOnly([githubSource]);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubGithubHeaders(rawBody, "wrong_secret", "ping");
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 401,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("still ingests a normal (non-ping) GitHub delivery", async () => {
+      const rawBody = JSON.stringify({ ref: "main" });
+
+      stubSourceAndSettings([githubSource]);
+      stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubGithubHeaders(rawBody, GITHUB_SECRET, "push");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+    });
+  });
+
   describe("zapier / shortcuts shared-secret verification", () => {
     const SHARED_SECRET = "shared_test_secret";
     // Only the hash is ever stored (see hashSharedSecret / isHashedStorageProvider);

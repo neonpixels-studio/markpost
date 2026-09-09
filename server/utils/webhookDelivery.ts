@@ -20,6 +20,29 @@ import {
 // before this guard; documented so the asymmetry with Stripe is explicit.
 export const GITHUB_DELIVERY_HEADER = "x-github-delivery";
 
+// GitHub stamps every delivery with the event type it represents (push, issues,
+// ping, ...). The hooks endpoint only needs to recognize one value here: `ping`,
+// the automatic delivery GitHub fires the moment a webhook is created to confirm
+// the endpoint is reachable. Its body carries no user content (just a `zen`
+// string and hook/repository metadata), so it must never reach
+// parseWebhookPayload — that would fall back to an empty "Untitled" record.
+export const GITHUB_EVENT_HEADER = "x-github-event";
+const GITHUB_PING_EVENT_NAME = "ping";
+
+// True only for a GitHub source's ping delivery. Gated on provider (not just the
+// header) so a non-GitHub source that happens to forward an
+// `x-github-event: ping` header isn't affected — pings are a GitHub-specific
+// concept.
+export function isGithubPingEvent(
+  provider: string | null,
+  headers: Record<string, string | undefined>,
+): boolean {
+  return (
+    normalizeProvider(provider) === GITHUB_PROVIDER &&
+    headers[GITHUB_EVENT_HEADER] === GITHUB_PING_EVENT_NAME
+  );
+}
+
 // Cap the extracted id well under Postgres' btree row-size limit (~2704 bytes):
 // a pathologically long id (e.g. a hostile multi-KB Stripe `id`) would otherwise
 // throw "index row size exceeds btree maximum" on insert, 500, and drive an
