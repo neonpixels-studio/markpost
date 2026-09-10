@@ -49,7 +49,7 @@ describe("error page", () => {
     window.location.reload = originalReload;
   });
 
-  it("shows the server-error copy and status message for a 500", () => {
+  it("shows the server-error copy for a 500, replacing statusMessage with a generic string", () => {
     const wrapper = mount(ErrorPage, {
       ...globalConfig,
       props: {
@@ -59,10 +59,21 @@ describe("error page", () => {
 
     expect(wrapper.find(".code").text()).toBe("500");
     expect(wrapper.find(".stroke-color").text()).toBe("var(--err)");
-    expect(wrapper.find(".terminal-output").text()).toBe(
-      "Internal Server Error",
-    );
+    expect(wrapper.find(".terminal-output").text()).toBe("internal error");
     expect(wrapper.text()).toContain("Something went wrong.");
+  });
+
+  it("defaults to a 500 when the error carries no statusCode", () => {
+    const wrapper = mount(ErrorPage, {
+      ...globalConfig,
+      props: {
+        error: {},
+      },
+    });
+
+    expect(wrapper.find(".code").text()).toBe("500");
+    expect(wrapper.find(".stroke-color").text()).toBe("var(--err)");
+    expect(wrapper.find("button.app-btn").exists()).toBe(true);
   });
 
   it("shows the client-error copy and status message for a 4xx", () => {
@@ -114,6 +125,24 @@ describe("error page", () => {
 
     expect(wrapper.find(".terminal-output").text()).toBe("unhandled error");
     expect(wrapper.text()).not.toContain("/api/internal/records/9");
+  });
+
+  it("never renders a 500's message or statusMessage, since both are arbitrary server text", () => {
+    const wrapper = mount(ErrorPage, {
+      ...globalConfig,
+      props: {
+        error: {
+          statusCode: 500,
+          statusMessage: "connect ECONNREFUSED db.internal:5432",
+          message:
+            "connect ECONNREFUSED to internal database host (redacted-token-abc123)",
+        },
+      },
+    });
+
+    expect(wrapper.find(".terminal-output").text()).toBe("internal error");
+    expect(wrapper.text()).not.toContain("ECONNREFUSED");
+    expect(wrapper.text()).not.toContain("redacted-token-abc123");
   });
 
   it("offers retry, as the primary action, only for a 5xx", () => {

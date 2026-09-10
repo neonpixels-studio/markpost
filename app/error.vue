@@ -44,15 +44,17 @@ const heading = computed(() =>
 
 useHead({ title: heading });
 
-// `error.message` can carry internals (a DB driver's connection string, an
-// upstream API's raw response) even on a 4xx, e.g. a rethrown $fetch error.
-// `statusMessage` is the only field safe to show unfiltered, so it's the
-// only one we render.
+// Both `error.message` and `error.statusMessage` are free text a server
+// route can set to anything (a rethrown driver error, an upstream API's raw
+// response), so neither is safe to render for a 5xx. A 4xx is routinely
+// thrown by our own route handlers with a deliberate, user-facing
+// `statusMessage` (e.g. "Invalid webhook secret"), so that one field is
+// trusted below 500 — `message` still isn't.
 const statusMessage = computed(() => {
-  if (props.error.statusMessage) {
-    return props.error.statusMessage;
+  if (isServerError.value) {
+    return "internal error";
   }
-  return isServerError.value ? "internal error" : "unhandled error";
+  return props.error.statusMessage || "unhandled error";
 });
 
 const lead = computed(() =>
