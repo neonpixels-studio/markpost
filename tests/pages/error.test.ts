@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount } from "@vue/test-utils";
 
+const mockUseHead = vi.fn();
+vi.stubGlobal("useHead", mockUseHead);
+
 import ErrorPage from "../../app/error.vue";
 
 const globalConfig = {
@@ -11,7 +14,10 @@ const globalConfig = {
           <div>
             <span class="code">{{ code }}</span>
             <span class="stroke-color">{{ strokeColor }}</span>
+            <span class="terminal-command">{{ terminalCommand }}</span>
             <span class="terminal-output">{{ terminalOutput }}</span>
+            <span class="terminal-output-color">{{ terminalOutputColor }}</span>
+            <span class="home-external">{{ homeExternal }}</span>
             <h1>{{ heading }}</h1>
             <p>{{ lead }}</p>
             <slot />
@@ -26,6 +32,7 @@ const globalConfig = {
           "terminalOutputColor",
           "heading",
           "lead",
+          "homeExternal",
         ],
       },
       AppBtn: {
@@ -43,6 +50,7 @@ describe("error page", () => {
 
   beforeEach(() => {
     window.location.reload = vi.fn();
+    mockUseHead.mockClear();
   });
 
   afterEach(() => {
@@ -61,6 +69,23 @@ describe("error page", () => {
     expect(wrapper.find(".stroke-color").text()).toBe("var(--err)");
     expect(wrapper.find(".terminal-output").text()).toBe("internal error");
     expect(wrapper.text()).toContain("Something went wrong.");
+  });
+
+  it("always forces a full reload on the home link, and sets the doc title from the heading", () => {
+    const wrapper = mount(ErrorPage, {
+      ...globalConfig,
+      props: {
+        error: { statusCode: 500, statusMessage: "Internal Server Error" },
+      },
+    });
+
+    expect(wrapper.find(".terminal-command").text()).toBe("markpost sync");
+    expect(wrapper.find(".terminal-output-color").text()).toBe("var(--err)");
+    expect(wrapper.find(".home-external").text()).toBe("true");
+
+    expect(mockUseHead).toHaveBeenCalledTimes(1);
+    const headArg = mockUseHead.mock.calls[0][0];
+    expect(headArg.title.value).toBe("Something went wrong.");
   });
 
   it("defaults to a 500 when the error carries no statusCode", () => {

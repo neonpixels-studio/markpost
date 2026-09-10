@@ -8,6 +8,7 @@
     :terminal-output-color="strokeColor"
     :heading="heading"
     :lead="lead"
+    :home-external="true"
   >
     <AppBtn
       v-if="isServerError"
@@ -60,7 +61,7 @@ const statusMessage = computed(() => {
 const lead = computed(() =>
   isServerError.value
     ? "The sync hit a snag on our end. Try again, or head back home while we look into it."
-    : "Check the link and try again, or head back home.",
+    : "This request can't be completed as sent. Head back home to keep going.",
 );
 
 // A full reload re-requests the page that errored, so if the failure was

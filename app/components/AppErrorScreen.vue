@@ -11,9 +11,13 @@
     "
   >
     <AppTopo :seed="seed" />
-    <a href="/" style="position: absolute; top: 28px; left: 40px">
+    <NuxtLink
+      to="/"
+      :external="homeExternal"
+      style="position: absolute; top: 28px; left: 40px"
+    >
       <AppLogo />
-    </a>
+    </NuxtLink>
     <div style="position: relative; text-align: center; max-width: 540px">
       <div class="mono err-glyph" :style="{ '--stroke-color': strokeColor }">
         {{ code }}
@@ -26,13 +30,15 @@
           <span class="lang">terminal</span>
           <span class="mono faint" style="font-size: 11px">exit 1</span>
         </div>
-        <div class="code-body mono" style="font-size: 13px">
+        <div
+          class="code-body mono"
+          :style="{ fontSize: '13px', overflowWrap: 'anywhere' }"
+        >
           <span :style="{ color: 'var(--accent)' }">$</span>
           {{ terminalCommand }}<br />
-          <span
-            :style="{ color: terminalOutputColor, overflowWrap: 'anywhere' }"
-            >{{ terminalOutput }}</span
-          >
+          <span :style="{ color: terminalOutputColor }">{{
+            terminalOutput
+          }}</span>
         </div>
       </div>
       <h1 class="h1" style="margin-top: 28px">{{ heading }}</h1>
@@ -58,11 +64,17 @@ withDefaults(
     terminalOutputColor?: string;
     heading: string;
     lead: string;
+    // The runtime error boundary (error.vue) needs the logo link to force a
+    // full page load so Nuxt's error state actually clears; a client-side
+    // NuxtLink nav changes the URL but leaves the error rendered. The 404
+    // page has no such state to clear, so it keeps normal client-side nav.
+    homeExternal?: boolean;
   }>(),
   {
     seed: 0,
     strokeColor: "var(--accent)",
     terminalOutputColor: "var(--err)",
+    homeExternal: false,
   },
 );
 </script>

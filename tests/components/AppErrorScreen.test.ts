@@ -8,6 +8,12 @@ import AppIcon from "../../app/components/AppIcon.vue";
 const globalConfig = {
   global: {
     components: { AppTopo, AppLogo, AppIcon },
+    stubs: {
+      NuxtLink: {
+        template: '<a :href="to" :data-external="external"><slot /></a>',
+        props: ["to", "external"],
+      },
+    },
   },
 };
 
@@ -73,6 +79,60 @@ describe("AppErrorScreen", () => {
     expect(
       wrapper.find(".code-body span:last-child").attributes("style"),
     ).toContain("color: var(--err)");
+  });
+
+  it("defaults the home link to client-side navigation", () => {
+    const wrapper = mount(AppErrorScreen, {
+      ...globalConfig,
+      props: {
+        code: "404",
+        terminalCommand: "cat /vault/missing.md",
+        terminalOutput: "cat: no such file or directory",
+        heading: "This page never synced.",
+        lead: "The record you're looking for isn't in the vault.",
+      },
+    });
+
+    expect(wrapper.find("a[href='/']").attributes("data-external")).toBe(
+      "false",
+    );
+  });
+
+  it("forces a full page load on the home link when homeExternal is set", () => {
+    const wrapper = mount(AppErrorScreen, {
+      ...globalConfig,
+      props: {
+        code: "500",
+        terminalCommand: "markpost sync",
+        terminalOutput: "internal error",
+        heading: "Something went wrong.",
+        lead: "Try again.",
+        homeExternal: true,
+      },
+    });
+
+    expect(wrapper.find("a[href='/']").attributes("data-external")).toBe(
+      "true",
+    );
+  });
+
+  it("wraps the whole terminal body so a long command can't push the page wide", () => {
+    const longCommand = `cat /vault/${"a".repeat(300)}.md`;
+    const wrapper = mount(AppErrorScreen, {
+      ...globalConfig,
+      props: {
+        code: "404",
+        terminalCommand: longCommand,
+        terminalOutput: "cat: no such file or directory",
+        heading: "This page never synced.",
+        lead: "The record you're looking for isn't in the vault.",
+      },
+    });
+
+    expect(wrapper.find(".code-body").attributes("style")).toContain(
+      "overflow-wrap: anywhere",
+    );
+    expect(wrapper.text()).toContain(longCommand);
   });
 
   it("applies the given stroke color to the glyph via a CSS custom property", () => {
