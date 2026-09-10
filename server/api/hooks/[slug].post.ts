@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { H3Event } from "h3";
 import { getDb } from "../../db";
 import { records, sources, userSettings } from "../../db/schema";
@@ -218,17 +218,37 @@ async function incrementSourceStats(sourceId: string): Promise<void> {
     .where(eq(sources.uuid, sourceId));
 }
 
-// True once currentLastHitAt is missing or older than the debounce window —
-// i.e. this hit is the one allowed to write. Exported and isolated from
-// touchLastHitAt so the boundary (just-inside vs just-outside the window) is
-// directly unit-testable without a database.
-export function isLastHitStale(currentLastHitAt: Date | null): boolean {
+const MILLISECONDS_PER_SECOND = 1000;
+
+// The single staleness cutoff both the in-memory fast path and the database
+// WHERE clause compare currentLastHitAt against. Computed once per
+// touchLastHitAt call from one reference time so the two checks can never
+// disagree at the exact boundary — a prior version re-derived "now" and used
+// a different comparison (>= vs a strict <) in each place, which could make
+// the fast path say "write" while the database, evaluated a moment later,
+// said "not stale" and matched zero rows.
+function dedupTouchStaleBefore(referenceTime: Date): Date {
+  return new Date(
+    referenceTime.getTime() -
+      DEDUP_TOUCH_STALENESS_SECONDS * MILLISECONDS_PER_SECOND,
+  );
+}
+
+// True once currentLastHitAt is missing or at/before staleBefore — i.e. this
+// hit is the one allowed to write. Exported and isolated from touchLastHitAt
+// so the boundary (just-inside vs just-outside the window) is directly
+// unit-testable without a database. Takes the exact cutoff touchLastHitAt's
+// WHERE clause will use (see dedupTouchStaleBefore) rather than recomputing
+// its own, so the fast path and the database guard always agree.
+export function isLastHitStale(
+  currentLastHitAt: Date | null,
+  staleBefore: Date,
+): boolean {
   if (!currentLastHitAt) {
     return true;
   }
 
-  const elapsedSeconds = (Date.now() - currentLastHitAt.getTime()) / 1000;
-  return elapsedSeconds >= DEDUP_TOUCH_STALENESS_SECONDS;
+  return currentLastHitAt.getTime() <= staleBefore.getTime();
 }
 
 // Refresh only lastHitAt, leaving recordCount untouched. Used when the counter
@@ -252,13 +272,12 @@ async function touchLastHitAt(
   sourceId: string,
   currentLastHitAt: Date | null,
 ): Promise<void> {
-  if (!isLastHitStale(currentLastHitAt)) {
+  const staleBefore = dedupTouchStaleBefore(new Date());
+
+  if (!isLastHitStale(currentLastHitAt, staleBefore)) {
     return;
   }
 
-  const staleBefore = new Date(
-    Date.now() - DEDUP_TOUCH_STALENESS_SECONDS * 1000,
-  );
   const db = getDb();
   await db
     .update(sources)
@@ -266,7 +285,7 @@ async function touchLastHitAt(
     .where(
       and(
         eq(sources.uuid, sourceId),
-        or(isNull(sources.lastHitAt), lt(sources.lastHitAt, staleBefore)),
+        or(isNull(sources.lastHitAt), lte(sources.lastHitAt, staleBefore)),
       ),
     );
 }
