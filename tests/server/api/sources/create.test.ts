@@ -260,6 +260,53 @@ describe("POST /api/sources", () => {
     );
   });
 
+  it("accepts a valid fieldMapping", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        type: "webhook",
+        name: "My Webhook",
+        routeFolder: "99-incoming/",
+        fieldMapping: { title: "data.subject" },
+      }),
+    );
+    const { values } = stubInsertResult([
+      { ...sampleSource, fieldMapping: { title: "data.subject" } },
+    ]);
+
+    await handler(buildEvent(userId));
+
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fieldMapping: { title: "data.subject" },
+      }),
+    );
+  });
+
+  it("throws 422 when fieldMapping has a non-string value for a recognized key", async () => {
+    mockReadBody.mockResolvedValue(
+      buildBody({
+        type: "webhook",
+        name: "My Webhook",
+        routeFolder: "99-incoming/",
+        fieldMapping: { title: 42 },
+      }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            source: { pointer: "/data/attributes/fieldMapping" },
+          }),
+        ],
+      },
+    });
+  });
+
   it("throws 422 when routeFolder is whitespace-only (slips past the required check)", async () => {
     mockReadBody.mockResolvedValue(
       buildBody({ type: "webhook", name: "My Webhook", routeFolder: "   " }),

@@ -57,12 +57,24 @@
 
         <AppAlert tone="info" title="How mapping works">
           Each field is a dot path into the incoming JSON payload, e.g.
-          <code class="mono">data.subject</code>. Leave a field blank to fall
-          back to raw ingestion for it (top-level
-          <code class="mono">title</code>, <code class="mono">content</code>,
-          <code class="mono">html</code>, <code class="mono">tags</code>,
-          <code class="mono">created</code>
-          keys). Clearing every field removes the mapping entirely.
+          <code class="mono">data.subject</code>. Once any field below is set,
+          every field is read only from its own mapped path — a blank field is
+          left empty, it does <strong>not</strong> fall back to that payload's
+          raw top-level key. Clearing every field removes the mapping entirely
+          and restores raw ingestion (top-level <code class="mono">title</code>,
+          <code class="mono">content</code>, <code class="mono">html</code>,
+          <code class="mono">tags</code>,
+          <code class="mono">created</code> keys).
+        </AppAlert>
+
+        <AppAlert
+          v-if="isPartialMapping"
+          tone="warn"
+          title="Partial mapping"
+          style="margin-top: 14px"
+        >
+          Only some fields are mapped — the rest will be left empty on every
+          delivery, even if the payload also has a matching top-level key.
         </AppAlert>
 
         <div class="col gap-4" style="margin-top: 18px">
@@ -132,6 +144,19 @@ const emit = defineEmits<{
 const formValues = ref(
   fieldMappingToFormValues(props.fieldMappingState.source.fieldMapping),
 );
+
+// applyFieldMapping (server/utils/fieldMapper.ts) has no per-field fallback:
+// once any field is mapped, every field is read only from its own path, and
+// an unmapped field is left empty rather than falling back to that payload's
+// raw top-level key. A form with some fields set and others blank is the one
+// shape most likely to surprise the user with silently-dropped data, so it
+// gets its own warning alongside the general explanation above.
+const isPartialMapping = computed(() => {
+  const filledCount = FIELD_MAPPING_FIELDS.filter(
+    (field) => formValues.value[field.key].trim().length > 0,
+  ).length;
+  return filledCount > 0 && filledCount < FIELD_MAPPING_FIELDS.length;
+});
 
 function handleSave(): void {
   if (props.submitting) {

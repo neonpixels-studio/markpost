@@ -1,4 +1,5 @@
 import { computeElapsedBuckets } from "../utils/timeBuckets";
+import type { FieldMappingConfig } from "#shared/utils/fieldMapping";
 
 const WEBHOOK_INGEST_BASE = "https://ingest.markpost.io/v1/hooks";
 const EMAIL_DOMAIN = "in.markpost.io";
@@ -188,22 +189,6 @@ async function deleteSource(uuid: string): Promise<void> {
 // secret exactly once; for manual-secret providers (stripe) the caller passes
 // the new value the provider issued. Mirrors createSource: the response is the
 // one and only place the revealed secret appears.
-async function patchSourceFieldMapping(
-  uuid: string,
-  fieldMapping: unknown,
-): Promise<SourceResource> {
-  const response = await $fetch<SourceResponse>(`/api/sources/${uuid}`, {
-    method: "PATCH",
-    body: { data: { type: "sources", attributes: { fieldMapping } } },
-  });
-
-  if (!response.data) {
-    throw new Error("Server returned no data for the updated source");
-  }
-
-  return response.data;
-}
-
 async function rotateSourceSecret(
   uuid: string,
   providerSecret?: string,
@@ -220,6 +205,26 @@ async function rotateSourceSecret(
 
   if (!response.data) {
     throw new Error("Server returned no data for the rotated source");
+  }
+
+  return response.data;
+}
+
+// Patches a source's fieldMapping (its only editable attribute from the
+// sources UI today — routeFolder editing has no UI yet). Unlike rotateSecret,
+// there's nothing one-time or unrecoverable in the response, so this carries
+// no reveal-once concerns.
+async function patchSourceFieldMapping(
+  uuid: string,
+  fieldMapping: FieldMappingConfig | null,
+): Promise<SourceResource> {
+  const response = await $fetch<SourceResponse>(`/api/sources/${uuid}`, {
+    method: "PATCH",
+    body: { data: { type: "sources", attributes: { fieldMapping } } },
+  });
+
+  if (!response.data) {
+    throw new Error("Server returned no data for the updated source");
   }
 
   return response.data;
@@ -296,19 +301,15 @@ export function useSources() {
 
   async function updateFieldMapping(
     uuid: string,
-    fieldMapping: unknown,
+    fieldMapping: FieldMappingConfig | null,
   ): Promise<SourceResource> {
     const updated = await patchSourceFieldMapping(uuid, fieldMapping);
-    // Fail loud rather than reporting a save the list never reflected: if the
-    // entry vanished between opening the editor and the response (a parallel
-    // loadSources replacing the array, a delete in another tab), the caller
-    // would otherwise show a false success over stale state.
-    const index = sources.value.findIndex(
-      (source) => source.attributes.uuid === uuid,
-    );
-    if (index === -1) {
-      throw new Error(`Updated source ${uuid} is no longer in the list`);
-    }
+    // Unlike rotateSecret, a missing list entry here isn't a reason to fail:
+    // there's no one-time secret at risk, so a save that already succeeded on
+    // the server (a parallel loadSources replacing the array, a delete in
+    // another tab) should still report success rather than a false failure
+    // the user can't do anything about. `.map` over an array that no longer
+    // contains this uuid is simply a no-op.
     sources.value = sources.value.map((source) =>
       source.attributes.uuid === uuid ? updated : source,
     );

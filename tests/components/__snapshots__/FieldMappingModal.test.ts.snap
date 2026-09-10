@@ -21,7 +21,18 @@ exports[`FieldMappingModal > matches snapshot with an existing mapping 1`] = `
         </svg>
         <div class="a-body">
           <div class="a-title">How mapping works</div>
-          <div class="a-text"> Each field is a dot path into the incoming JSON payload, e.g. <code class="mono">data.subject</code>. Leave a field blank to fall back to raw ingestion for it (top-level <code class="mono">title</code>, <code class="mono">content</code>, <code class="mono">html</code>, <code class="mono">tags</code>, <code class="mono">created</code> keys). Clearing every field removes the mapping entirely. </div>
+          <div class="a-text"> Each field is a dot path into the incoming JSON payload, e.g. <code class="mono">data.subject</code>. Once any field below is set, every field is read only from its own mapped path — a blank field is left empty, it does <strong>not</strong> fall back to that payload's raw top-level key. Clearing every field removes the mapping entirely and restores raw ingestion (top-level <code class="mono">title</code>, <code class="mono">content</code>, <code class="mono">html</code>, <code class="mono">tags</code>, <code class="mono">created</code> keys). </div>
+        </div>
+        <!--v-if-->
+      </div>
+      <div class="alert warn" role="alert" style="margin-top: 14px;"><svg class="ico a-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+        <div class="a-body">
+          <div class="a-title">Partial mapping</div>
+          <div class="a-text"> Only some fields are mapped — the rest will be left empty on every delivery, even if the payload also has a matching top-level key. </div>
         </div>
         <!--v-if-->
       </div>
@@ -85,10 +96,11 @@ exports[`FieldMappingModal > matches snapshot with no existing mapping 1`] = `
         </svg>
         <div class="a-body">
           <div class="a-title">How mapping works</div>
-          <div class="a-text"> Each field is a dot path into the incoming JSON payload, e.g. <code class="mono">data.subject</code>. Leave a field blank to fall back to raw ingestion for it (top-level <code class="mono">title</code>, <code class="mono">content</code>, <code class="mono">html</code>, <code class="mono">tags</code>, <code class="mono">created</code> keys). Clearing every field removes the mapping entirely. </div>
+          <div class="a-text"> Each field is a dot path into the incoming JSON payload, e.g. <code class="mono">data.subject</code>. Once any field below is set, every field is read only from its own mapped path — a blank field is left empty, it does <strong>not</strong> fall back to that payload's raw top-level key. Clearing every field removes the mapping entirely and restores raw ingestion (top-level <code class="mono">title</code>, <code class="mono">content</code>, <code class="mono">html</code>, <code class="mono">tags</code>, <code class="mono">created</code> keys). </div>
         </div>
         <!--v-if-->
       </div>
+      <!--v-if-->
       <div class="col gap-4" style="margin-top: 18px;">
         <div class="field"><span class="field-label"><!--v-if--><span>Title</span>
           <!--v-if-->

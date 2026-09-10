@@ -147,6 +147,15 @@ describe("FieldMappingModal", () => {
     expect(wrapper.emitted("close")).toHaveLength(1);
   });
 
+  it("does not emit close when clicking inside the card", async () => {
+    const wrapper = mount(FieldMappingModal, {
+      ...globalConfig,
+      props: { fieldMappingState: stateWithMapping(null) },
+    });
+    await wrapper.find(".card").trigger("click");
+    expect(wrapper.emitted("close")).toBeUndefined();
+  });
+
   it("does not emit close from the backdrop while submitting", async () => {
     const wrapper = mount(FieldMappingModal, {
       ...globalConfig,
@@ -176,6 +185,41 @@ describe("FieldMappingModal", () => {
 
     await saveButton?.trigger("click");
     expect(wrapper.emitted("save")).toBeUndefined();
+  });
+
+  it("shows no partial-mapping warning with nothing set", () => {
+    const wrapper = mount(FieldMappingModal, {
+      ...globalConfig,
+      props: { fieldMappingState: stateWithMapping(null) },
+    });
+    expect(wrapper.text()).not.toContain("Partial mapping");
+  });
+
+  it("shows a partial-mapping warning once at least one field is set", async () => {
+    const wrapper = mount(FieldMappingModal, {
+      ...globalConfig,
+      props: { fieldMappingState: stateWithMapping(null) },
+    });
+    await findInputByPlaceholder(wrapper, "e.g. title")?.setValue(
+      "data.subject",
+    );
+    expect(wrapper.text()).toContain("Partial mapping");
+  });
+
+  it("shows no partial-mapping warning once every field is set", async () => {
+    const fullMapping = {
+      title: "a",
+      content: "b",
+      html: "c",
+      source: "d",
+      tags: "e",
+      created: "f",
+    };
+    const wrapper = mount(FieldMappingModal, {
+      ...globalConfig,
+      props: { fieldMappingState: stateWithMapping(fullMapping) },
+    });
+    expect(wrapper.text()).not.toContain("Partial mapping");
   });
 
   it("renders a save error inline", () => {

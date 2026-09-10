@@ -593,15 +593,18 @@ describe("useSources", () => {
       );
     });
 
-    it("throws when the updated source is no longer in the list", async () => {
+    it("resolves without throwing when the updated source is no longer in the list", async () => {
+      // Unlike rotateSecret, there's no one-time secret at risk here — a save
+      // that already succeeded server-side must not be reported as a failure
+      // just because a concurrent loadSources/delete moved the list on.
       const updated = makeSourceResource({ id: "gone" });
       updated.attributes.uuid = "gone";
       mockFetch.mockResolvedValue({ data: updated });
       const { sources, updateFieldMapping } = useSources();
       sources.value = [];
-      await expect(updateFieldMapping("gone", null)).rejects.toThrow(
-        "no longer in the list",
-      );
+      const result = await updateFieldMapping("gone", null);
+      expect(result).toEqual(updated);
+      expect(sources.value).toEqual([]);
     });
 
     it("propagates update errors to the caller", async () => {

@@ -380,6 +380,17 @@ describe("sources page", () => {
       expect(wrapper.find(".mapping-modal").exists()).toBe(true);
     });
 
+    it("does not open the mapping modal if the source is no longer in the list by the time the request is handled", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      const wrapper = mount(SourcesPage, globalConfig);
+      const trigger = wrapper.find(".mapping-trigger");
+      // Simulate the source vanishing (a concurrent loadSources/delete)
+      // between render and the click being handled.
+      sourcesRef.value = [];
+      await trigger.trigger("click");
+      expect(wrapper.find(".mapping-modal").exists()).toBe(false);
+    });
+
     it("calls updateFieldMapping with the source uuid and built mapping when saved", async () => {
       sourcesRef.value = [makeSource("uuid-1")];
       mockUpdateFieldMapping.mockResolvedValue(makeSource("uuid-1"));
