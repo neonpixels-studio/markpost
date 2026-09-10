@@ -227,7 +227,8 @@
       :record="detailRecord"
       :is-loading="isDetailLoading"
       :load-error="detailError"
-      :is-retrying="isBulkActionInFlight"
+      :is-retrying="isRetryingActiveRecord"
+      :retry-error="retryError"
       @close="closeRecordDetail"
       @retry="retryRecord"
     />
@@ -462,6 +463,21 @@ const activeRecordUuid = computed(() => {
   return value;
 });
 
+// The modal's retry button needs its own "in flight" and "failed" state
+// rather than reusing isBulkActionInFlight/actionError directly: the modal
+// covers the whole viewport while open, but a bulk action started just
+// before it opened (e.g. select rows, click "mark synced", then open a
+// different record before that resolves) can still be in flight, and would
+// otherwise mislabel the button "retrying…" for a retry that never started.
+const retryingUuid = ref<string | null>(null);
+const retryError = ref<string | null>(null);
+
+const isRetryingActiveRecord = computed(
+  () =>
+    retryingUuid.value !== null &&
+    retryingUuid.value === activeRecordUuid.value,
+);
+
 function openRecord(uuid: string): void {
   void navigateTo({
     path: INBOX_PATH,
@@ -470,6 +486,7 @@ function openRecord(uuid: string): void {
 }
 
 function closeRecordDetail(): void {
+  retryError.value = null;
   const query = { ...route.query };
   delete query[RECORD_QUERY_KEY];
   // Replace so pressing Back after closing doesn't reopen the modal.
@@ -477,25 +494,36 @@ function closeRecordDetail(): void {
 }
 
 // Reuses the same bulk status-update path as the toolbar's "mark pending" so
-// a stuck error record moves out of the error bucket the next CLI sync picks
-// up — this both keeps the table row and stat cards in sync (via
-// updateRecordsStatus's own state) and lets the modal reflect the new status
-// immediately by pushing the server's response into useRecordDetail.
+// a stuck error record moves out of the error bucket the next CLI sync
+// retries it: updateRecordsStatus updates the table row, applyDetailUpdate
+// pushes the fresh record into the modal, and refreshStats updates the stat
+// cards.
 async function retryRecord(uuid: string): Promise<void> {
   if (isBulkActionInFlight.value) {
     return;
   }
 
-  const [updated] = await updateRecordsStatus([uuid], "pending");
-  if (updated) {
+  retryError.value = null;
+  retryingUuid.value = uuid;
+
+  try {
+    const [updated] = await updateRecordsStatus([uuid], "pending");
+    if (!updated) {
+      retryError.value =
+        actionError.value ?? "Failed to retry record. Please try again.";
+      return;
+    }
     applyDetailUpdate(updated);
+    await refreshStats();
+  } finally {
+    retryingUuid.value = null;
   }
-  await refreshStats();
 }
 
 watch(
   activeRecordUuid,
   (uuid) => {
+    retryError.value = null;
     if (!uuid) {
       closeDetail();
       return;

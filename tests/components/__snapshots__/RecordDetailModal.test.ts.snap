@@ -33,7 +33,9 @@ exports[`RecordDetailModal > matches the snapshot for a record in error status 1
       <dd data-v-ee0655ff="" class="mono" style="font-size: 12px; word-break: break-all;">uuid-1</dd>
     </dl>
     <div data-v-ee0655ff="" class="app-alert" data-tone="err" style="margin-bottom: 18px;">
-      <div data-v-ee0655ff="" class="col gap-2"><span data-v-ee0655ff="">disk full</span><button data-v-ee0655ff="" class="app-btn" style="align-self: flex-start;">retry sync</button></div>
+      <div data-v-ee0655ff="" class="col gap-2"><span data-v-ee0655ff="">disk full</span>
+        <!--v-if--><button data-v-ee0655ff="" class="app-btn" style="align-self: flex-start;">retry sync</button>
+      </div>
     </div><span data-v-ee0655ff="" class="kicker">content</span>
     <div data-v-ee0655ff="" class="app-code-block"># Heading
 

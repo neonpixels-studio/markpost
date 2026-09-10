@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, type VueWrapper } from "@vue/test-utils";
 
 import RecordDetailModal from "../../app/components/RecordDetailModal.vue";
+
+function findButtonByText(wrapper: VueWrapper, label: string) {
+  return wrapper.findAll(".app-btn").find((button) => button.text() === label);
+}
 
 // makeRecord() stamps createdAt at 2026-06-27T10:00:00Z; freezing "now" here
 // keeps formatRelativeTime()'s output ("35d ago") deterministic so the snapshot
@@ -130,11 +134,7 @@ describe("RecordDetailModal", () => {
       record: makeRecord({ status: "synced", errorMessage: null }),
     });
     expect(wrapper.find(".app-alert[data-tone='err']").exists()).toBe(false);
-    expect(
-      wrapper
-        .findAll(".app-btn")
-        .some((button) => button.text() === "retry sync"),
-    ).toBe(false);
+    expect(findButtonByText(wrapper, "retry sync")).toBeUndefined();
   });
 
   it("emits retry with the record's uuid when the retry button is clicked", async () => {
@@ -146,9 +146,7 @@ describe("RecordDetailModal", () => {
       }),
     });
 
-    const retryButton = wrapper
-      .findAll(".app-btn")
-      .find((button) => button.text() === "retry sync");
+    const retryButton = findButtonByText(wrapper, "retry sync");
     expect(retryButton).toBeDefined();
     await retryButton?.trigger("click");
 
@@ -161,11 +159,28 @@ describe("RecordDetailModal", () => {
       isRetrying: true,
     });
 
-    const retryButton = wrapper
-      .findAll(".app-btn")
-      .find((button) => button.text() === "retrying…");
+    const retryButton = findButtonByText(wrapper, "retrying…");
     expect(retryButton).toBeDefined();
     expect(retryButton?.attributes("disabled")).toBeDefined();
+  });
+
+  it("shows the retryError message inline when a previous retry attempt failed", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      retryError: "Failed to update records. Please try again.",
+    });
+
+    expect(wrapper.text()).toContain(
+      "Failed to update records. Please try again.",
+    );
+  });
+
+  it("shows no retryError message when the record has never failed a retry", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+    });
+
+    expect(wrapper.text()).not.toContain("Please try again.");
   });
 
   it("emits close when the close button is clicked", async () => {

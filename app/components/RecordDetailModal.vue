@@ -121,24 +121,28 @@
         </dl>
 
         <AppAlert
-          v-if="record.attributes.status === 'error'"
+          v-if="isErrorRecord"
           tone="err"
           title="Sync error"
           :closeable="false"
           style="margin-bottom: 18px"
         >
           <div class="col gap-2">
-            <span>{{
-              record.attributes.errorMessage ?? "No error details available."
-            }}</span>
+            <span>{{ errorMessageDisplay }}</span>
+            <span
+              v-if="retryError"
+              class="mono"
+              style="font-size: 12px; color: var(--err)"
+              >{{ retryError }}</span
+            >
             <AppBtn
               variant="ghost"
               size="sm"
               icon="refresh"
               :disabled="isRetrying"
               style="align-self: flex-start"
-              @click="emit('retry', record.attributes.uuid)"
-              >{{ isRetrying ? "retrying…" : "retry sync" }}</AppBtn
+              @click="handleRetryClick"
+              >{{ retryButtonLabel }}</AppBtn
             >
           </div>
         </AppAlert>
@@ -161,17 +165,23 @@ import {
   type RecordResource,
 } from "~/composables/useRecords";
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     record: RecordResource | null;
     isLoading: boolean;
     loadError: string | null;
-    // Disables the retry button while a retry request for this record is in
-    // flight, mirroring the disabled pattern used elsewhere (e.g. delete).
+    // Disables the retry button and swaps its label while a retry request for
+    // this specific record is in flight, mirroring the disabled pattern used
+    // elsewhere (e.g. delete).
     isRetrying?: boolean;
+    // Set by the caller when the most recent retry attempt for this record
+    // failed, so the modal can show it inline instead of relying on a
+    // page-level alert hidden behind the modal's own backdrop.
+    retryError?: string | null;
   }>(),
   {
     isRetrying: false,
+    retryError: null,
   },
 );
 
@@ -179,6 +189,27 @@ const emit = defineEmits<{
   close: [];
   retry: [uuid: string];
 }>();
+
+const NO_ERROR_DETAILS_MESSAGE = "No error details available.";
+
+const isErrorRecord = computed(
+  () => props.record?.attributes.status === "error",
+);
+
+const errorMessageDisplay = computed(
+  () => props.record?.attributes.errorMessage ?? NO_ERROR_DETAILS_MESSAGE,
+);
+
+const retryButtonLabel = computed(() =>
+  props.isRetrying ? "retrying…" : "retry sync",
+);
+
+function handleRetryClick(): void {
+  if (!props.record) {
+    return;
+  }
+  emit("retry", props.record.attributes.uuid);
+}
 
 const cardElement = ref<HTMLElement | null>(null);
 let previouslyFocused: HTMLElement | null = null;

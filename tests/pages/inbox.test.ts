@@ -168,9 +168,10 @@ const globalConfig = {
         emits: ["update:modelValue"],
       },
       RecordDetailModal: {
+        name: "RecordDetailModal",
         template:
-          '<div class="record-detail-modal" @click="$emit(\'close\')"><button class="detail-retry-btn" :disabled="isRetrying" @click.stop="$emit(\'retry\', record?.attributes?.uuid)">retry</button></div>',
-        props: ["record", "isLoading", "loadError", "isRetrying"],
+          '<div class="record-detail-modal" @click="$emit(\'close\')"><button class="detail-retry-btn" :disabled="isRetrying" @click.stop="$emit(\'retry\', record?.attributes?.uuid)">{{ isRetrying ? "retrying…" : "retry" }}</button><span v-if="retryError" class="detail-retry-error">{{ retryError }}</span></div>',
+        props: ["record", "isLoading", "loadError", "isRetrying", "retryError"],
         emits: ["close", "retry"],
       },
       InputCheckbox: {
@@ -824,13 +825,26 @@ describe("inbox page", () => {
   });
 
   describe("record retry", () => {
-    it("marks the record pending via updateRecordsStatus when the modal emits retry", async () => {
+    async function mountWithOpenErrorRecord() {
       routeQueryRef.value = { record: "query-uuid" };
       detailRecordRef.value = makeRecord({
         uuid: "query-uuid",
         status: "error",
         errorMessage: "disk full",
       });
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      return wrapper;
+    }
+
+    async function mountAndClickRetry() {
+      const wrapper = await mountWithOpenErrorRecord();
+      await wrapper.find(".detail-retry-btn").trigger("click");
+      await flushPromises();
+      return wrapper;
+    }
+
+    beforeEach(() => {
       mockUpdateRecordsStatus.mockResolvedValue([
         makeRecord({
           uuid: "query-uuid",
@@ -838,11 +852,10 @@ describe("inbox page", () => {
           errorMessage: null,
         }),
       ]);
-      const wrapper = mount(InboxPage, globalConfig);
-      await flushPromises();
+    });
 
-      await wrapper.find(".detail-retry-btn").trigger("click");
-      await flushPromises();
+    it("marks the record pending via updateRecordsStatus when the modal emits retry", async () => {
+      await mountAndClickRetry();
 
       expect(mockUpdateRecordsStatus).toHaveBeenCalledWith(
         ["query-uuid"],
@@ -851,60 +864,47 @@ describe("inbox page", () => {
     });
 
     it("pushes the updated record into the detail view after a successful retry", async () => {
-      routeQueryRef.value = { record: "query-uuid" };
-      detailRecordRef.value = makeRecord({
-        uuid: "query-uuid",
-        status: "error",
-        errorMessage: "disk full",
-      });
       const updatedRecord = makeRecord({
         uuid: "query-uuid",
         status: "pending",
         errorMessage: null,
       });
       mockUpdateRecordsStatus.mockResolvedValue([updatedRecord]);
-      const wrapper = mount(InboxPage, globalConfig);
-      await flushPromises();
 
-      await wrapper.find(".detail-retry-btn").trigger("click");
-      await flushPromises();
+      await mountAndClickRetry();
 
       expect(mockApplyDetailUpdate).toHaveBeenCalledWith(updatedRecord);
     });
 
     it("does not push a detail update when the server skips the record", async () => {
-      routeQueryRef.value = { record: "query-uuid" };
-      detailRecordRef.value = makeRecord({
-        uuid: "query-uuid",
-        status: "error",
-        errorMessage: "disk full",
-      });
       mockUpdateRecordsStatus.mockResolvedValue([]);
-      const wrapper = mount(InboxPage, globalConfig);
-      await flushPromises();
 
-      await wrapper.find(".detail-retry-btn").trigger("click");
-      await flushPromises();
+      await mountAndClickRetry();
 
       expect(mockApplyDetailUpdate).not.toHaveBeenCalled();
     });
 
+    it("shows a retry error inline in the modal when the server skips the record", async () => {
+      mockUpdateRecordsStatus.mockResolvedValue([]);
+      actionErrorRef.value = "Failed to update records. Please try again.";
+
+      const wrapper = await mountAndClickRetry();
+
+      expect(wrapper.find(".detail-retry-error").text()).toBe(
+        "Failed to update records. Please try again.",
+      );
+    });
+
+    it("does not carry a retry error over from a previous, unrelated failed bulk action", async () => {
+      actionErrorRef.value = "Failed to delete records. Please try again.";
+
+      const wrapper = await mountWithOpenErrorRecord();
+
+      expect(wrapper.find(".detail-retry-error").exists()).toBe(false);
+    });
+
     it("refreshes stats after a retry, since it can change the stat cards", async () => {
-      routeQueryRef.value = { record: "query-uuid" };
-      detailRecordRef.value = makeRecord({
-        uuid: "query-uuid",
-        status: "error",
-        errorMessage: "disk full",
-      });
-      mockUpdateRecordsStatus.mockResolvedValue([
-        makeRecord({
-          uuid: "query-uuid",
-          status: "pending",
-          errorMessage: null,
-        }),
-      ]);
-      const wrapper = mount(InboxPage, globalConfig);
-      await flushPromises();
+      const wrapper = await mountWithOpenErrorRecord();
       mockFetchRecordStats.mockClear();
 
       await wrapper.find(".detail-retry-btn").trigger("click");
@@ -913,37 +913,65 @@ describe("inbox page", () => {
       expect(mockFetchRecordStats).toHaveBeenCalledOnce();
     });
 
-    it("ignores a retry while a bulk action is already in flight", async () => {
-      routeQueryRef.value = { record: "query-uuid" };
-      detailRecordRef.value = makeRecord({
-        uuid: "query-uuid",
-        status: "error",
-        errorMessage: "disk full",
-      });
-      isUpdatingStatusRef.value = true;
-      const wrapper = mount(InboxPage, globalConfig);
-      await flushPromises();
+    it("does not refresh stats when the retry fails", async () => {
+      mockUpdateRecordsStatus.mockResolvedValue([]);
+      const wrapper = await mountWithOpenErrorRecord();
+      mockFetchRecordStats.mockClear();
 
       await wrapper.find(".detail-retry-btn").trigger("click");
+      await flushPromises();
+
+      expect(mockFetchRecordStats).not.toHaveBeenCalled();
+    });
+
+    it("ignores a retry while a bulk action is already in flight", async () => {
+      const wrapper = await mountWithOpenErrorRecord();
+
+      isUpdatingStatusRef.value = true;
+      await flushPromises();
+      // The button is disabled while isBulkActionInFlight, so trigger('click')
+      // alone wouldn't exercise the guard in retryRecord() — emit directly to
+      // prove the guard itself, not just the disabled attribute, blocks it.
+      await wrapper
+        .findComponent({ name: "RecordDetailModal" })
+        .vm.$emit("retry", "query-uuid");
       await flushPromises();
 
       expect(mockUpdateRecordsStatus).not.toHaveBeenCalled();
     });
 
-    it("passes isBulkActionInFlight through to the modal's isRetrying prop", async () => {
-      routeQueryRef.value = { record: "query-uuid" };
-      detailRecordRef.value = makeRecord({
-        uuid: "query-uuid",
-        status: "error",
-        errorMessage: "disk full",
-      });
-      isUpdatingStatusRef.value = true;
-      const wrapper = mount(InboxPage, globalConfig);
+    it("marks only the record actually being retried as retrying, not every open modal", async () => {
+      let resolveUpdate: (value: unknown) => void = () => {};
+      mockUpdateRecordsStatus.mockReturnValue(
+        new Promise((resolve) => {
+          resolveUpdate = resolve;
+        }),
+      );
+      const wrapper = await mountWithOpenErrorRecord();
+
+      await wrapper.find(".detail-retry-btn").trigger("click");
       await flushPromises();
 
-      expect(
-        wrapper.find(".detail-retry-btn").attributes("disabled"),
-      ).toBeDefined();
+      expect(wrapper.find(".detail-retry-btn").text()).toBe("retrying…");
+
+      resolveUpdate([
+        makeRecord({
+          uuid: "query-uuid",
+          status: "pending",
+          errorMessage: null,
+        }),
+      ]);
+      await flushPromises();
+
+      expect(wrapper.find(".detail-retry-btn").text()).toBe("retry");
+    });
+
+    it("does not mark the button as retrying just because an unrelated bulk action is in flight", async () => {
+      isUpdatingStatusRef.value = true;
+
+      const wrapper = await mountWithOpenErrorRecord();
+
+      expect(wrapper.find(".detail-retry-btn").text()).toBe("retry");
     });
   });
 });
