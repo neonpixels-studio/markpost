@@ -162,8 +162,8 @@ describe("SourceCard", () => {
     expect(wrapper.emitted("configure-mapping")?.[0]).toEqual(["test-uuid-1"]);
   });
 
-  it.each(["webhook", "email", "stripe"])(
-    "shows the configure-mapping button for every source type (%s)",
+  it.each(["webhook", "stripe", "github", "zapier", "shortcuts"])(
+    "shows the configure-mapping button for source types that ingest via the JSON webhook path (%s)",
     (type) => {
       const wrapper = mount(SourceCard, {
         ...globalConfig,
@@ -174,6 +174,16 @@ describe("SourceCard", () => {
       ).toBe(true);
     },
   );
+
+  it("hides the configure-mapping button for an email source (fieldMapping is never applied to email deliveries)", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource({ type: "email" }) },
+    });
+    expect(
+      wrapper.find("button[title='Configure field mapping']").exists(),
+    ).toBe(false);
+  });
 
   it.each(["stripe", "github", "zapier", "shortcuts"])(
     "shows a rotate-secret button for provider-backed source %s",

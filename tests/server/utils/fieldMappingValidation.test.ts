@@ -12,8 +12,24 @@ describe("assertValidFieldMapping", () => {
     expect(assertValidFieldMapping(mapping)).toBe(mapping);
   });
 
-  it("returns an empty object unchanged", () => {
-    expect(assertValidFieldMapping({})).toEqual({});
+  it("normalizes an empty object to null (no recognized field is mapped)", () => {
+    // Storing {} verbatim would make applyFieldMapping (server/utils/
+    // fieldMapper.ts) take the "mapped" branch and return every field
+    // undefined — silently discarding every future delivery's payload.
+    expect(assertValidFieldMapping({})).toBeNull();
+  });
+
+  it("normalizes an object with only unrecognized keys to null", () => {
+    expect(assertValidFieldMapping({ foo: "bar" })).toBeNull();
+  });
+
+  it("normalizes an object whose recognized values are all blank/whitespace to null", () => {
+    expect(assertValidFieldMapping({ title: "   ", content: "" })).toBeNull();
+  });
+
+  it("keeps a mapping with at least one populated recognized field", () => {
+    const mapping = { title: "  ", content: "data.body" };
+    expect(assertValidFieldMapping(mapping)).toBe(mapping);
   });
 
   it("throws a 422 ApiError for a non-string recognized key", () => {

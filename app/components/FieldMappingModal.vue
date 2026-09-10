@@ -77,6 +77,16 @@
           delivery, even if the payload also has a matching top-level key.
         </AppAlert>
 
+        <AppAlert
+          v-if="invalidFieldLabels.length > 0"
+          tone="err"
+          title="Invalid dot path"
+          style="margin-top: 14px"
+        >
+          {{ invalidFieldLabels.join(", ") }} — a dot path can't be empty, start
+          or end with a dot, or contain two dots in a row.
+        </AppAlert>
+
         <div class="col gap-4" style="margin-top: 18px">
           <AppField
             v-for="field in FIELD_MAPPING_FIELDS"
@@ -104,7 +114,7 @@
           <AppBtn
             variant="accent"
             icon="check"
-            :disabled="submitting"
+            :disabled="submitting || invalidFieldLabels.length > 0"
             @click="handleSave"
             >save mapping</AppBtn
           >
@@ -119,6 +129,7 @@ import {
   FIELD_MAPPING_FIELDS,
   fieldMappingToFormValues,
   formValuesToFieldMapping,
+  invalidFieldMappingFields,
 } from "../utils/fieldMappingForm";
 import type { FieldMappingConfig } from "#shared/utils/fieldMapping";
 import type { FieldMappingState } from "~/types/fieldMapping";
@@ -158,8 +169,16 @@ const isPartialMapping = computed(() => {
   return filledCount > 0 && filledCount < FIELD_MAPPING_FIELDS.length;
 });
 
+// A path with an empty segment (leading/trailing/doubled dot) always resolves
+// to undefined at read time (see server/utils/fieldMapper.ts's
+// getNestedValue) — surfaced here as a blocking error rather than allowed to
+// save a field that will silently never populate.
+const invalidFieldLabels = computed(() =>
+  invalidFieldMappingFields(formValues.value).map((field) => field.label),
+);
+
 function handleSave(): void {
-  if (props.submitting) {
+  if (props.submitting || invalidFieldLabels.value.length > 0) {
     return;
   }
   emit("save", formValuesToFieldMapping(formValues.value));

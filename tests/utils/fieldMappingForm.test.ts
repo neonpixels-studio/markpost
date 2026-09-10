@@ -3,6 +3,8 @@ import {
   FIELD_MAPPING_FIELDS,
   fieldMappingToFormValues,
   formValuesToFieldMapping,
+  invalidFieldMappingFields,
+  isValidDotPath,
 } from "../../app/utils/fieldMappingForm";
 
 describe("FIELD_MAPPING_FIELDS", () => {
@@ -112,5 +114,57 @@ describe("formValuesToFieldMapping", () => {
       fieldMappingToFormValues(original),
     );
     expect(roundTripped).toEqual(original);
+  });
+});
+
+describe("isValidDotPath", () => {
+  it.each(["title", "data.subject", "a.b.c", "data_1.sub-field"])(
+    "accepts %s",
+    (path) => {
+      expect(isValidDotPath(path)).toBe(true);
+    },
+  );
+
+  it.each(["", ".", ".data", "data.", "data..subject", ".."])(
+    "rejects %s",
+    (path) => {
+      expect(isValidDotPath(path)).toBe(false);
+    },
+  );
+});
+
+describe("invalidFieldMappingFields", () => {
+  const blankValues = {
+    title: "",
+    content: "",
+    html: "",
+    source: "",
+    tags: "",
+    created: "",
+  };
+
+  it("returns nothing when every field is blank", () => {
+    expect(invalidFieldMappingFields(blankValues)).toEqual([]);
+  });
+
+  it("returns nothing when every non-blank field is a valid path", () => {
+    expect(
+      invalidFieldMappingFields({ ...blankValues, title: "data.subject" }),
+    ).toEqual([]);
+  });
+
+  it("flags a non-blank field with an empty path segment", () => {
+    const invalid = invalidFieldMappingFields({
+      ...blankValues,
+      title: "data..subject",
+      content: ".data",
+    });
+    expect(invalid.map((field) => field.key)).toEqual(["title", "content"]);
+  });
+
+  it("does not flag a whitespace-only field (it's blank, not invalid)", () => {
+    expect(invalidFieldMappingFields({ ...blankValues, title: "   " })).toEqual(
+      [],
+    );
   });
 });

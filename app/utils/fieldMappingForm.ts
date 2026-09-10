@@ -82,9 +82,33 @@ export function fieldMappingToFormValues(
   return values;
 }
 
+// One or more non-dot segments, separated by single dots — rejects a leading,
+// trailing, or doubled dot (e.g. ".data", "data.", "data..subject"). Mirrors
+// how server/utils/fieldMapper.ts's getNestedValue actually walks a path: a
+// dot path that violates this always resolves to undefined, so a field set
+// to one saves cleanly but silently ingests nothing.
+const DOT_PATH_PATTERN = /^[^.]+(\.[^.]+)*$/;
+
+export function isValidDotPath(path: string): boolean {
+  return DOT_PATH_PATTERN.test(path);
+}
+
+// Every non-blank field whose path can never resolve to anything — surfaced
+// by the modal as a blocking error rather than allowed to save silently.
+export function invalidFieldMappingFields(
+  values: FieldMappingFormValues,
+): FieldMappingFieldMeta[] {
+  return FIELD_MAPPING_FIELDS.filter((field) => {
+    const trimmed = values[field.key].trim();
+    return trimmed.length > 0 && !isValidDotPath(trimmed);
+  });
+}
+
 // Trims every field and drops blanks. Returns null when nothing is left —
 // a source is "unmapped" (raw ingestion) both when it was created that way
-// and when every field has since been cleared back to blank.
+// and when every field has since been cleared back to blank. Callers should
+// check invalidFieldMappingFields first — this function doesn't validate dot
+// paths itself, it only decides what's blank.
 export function formValuesToFieldMapping(
   values: FieldMappingFormValues,
 ): FieldMappingConfig | null {

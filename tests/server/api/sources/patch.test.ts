@@ -182,14 +182,16 @@ describe("PATCH /api/sources/:uuid", () => {
   it("updates only fieldMapping without touching routeFolder", async () => {
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(
-      buildBody({ fieldMapping: { event: "$.type" } }),
+      buildBody({ fieldMapping: { title: "data.subject" } }),
     );
     const updatedSource = { ...sampleSource };
     const { set } = stubUpdateResult([updatedSource]);
 
     await handler(buildEvent(userId));
 
-    expect(set).toHaveBeenCalledWith({ fieldMapping: { event: "$.type" } });
+    expect(set).toHaveBeenCalledWith({
+      fieldMapping: { title: "data.subject" },
+    });
   });
 
   it("throws 422 when no updatable fields are provided", async () => {
@@ -316,6 +318,19 @@ describe("PATCH /api/sources/:uuid", () => {
   it("accepts null fieldMapping (clears the mapping)", async () => {
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(buildBody({ fieldMapping: null }));
+    const { set } = stubUpdateResult([{ ...sampleSource, fieldMapping: null }]);
+
+    await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ fieldMapping: null });
+  });
+
+  it("normalizes an empty-object fieldMapping to null instead of storing a no-op mapping", async () => {
+    // A stored {} would make every future delivery's payload silently
+    // discarded (see assertValidFieldMapping's doc comment) — this pins that
+    // the endpoint never persists that trap.
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ fieldMapping: {} }));
     const { set } = stubUpdateResult([{ ...sampleSource, fieldMapping: null }]);
 
     await handler(buildEvent(userId));

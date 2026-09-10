@@ -222,6 +222,38 @@ describe("FieldMappingModal", () => {
     expect(wrapper.text()).not.toContain("Partial mapping");
   });
 
+  it("blocks save and shows an error for a path with an empty segment", async () => {
+    const wrapper = mount(FieldMappingModal, {
+      ...globalConfig,
+      props: { fieldMappingState: stateWithMapping(null) },
+    });
+    await findInputByPlaceholder(wrapper, "e.g. title")?.setValue(
+      "data..subject",
+    );
+
+    expect(wrapper.text()).toContain("Invalid dot path");
+    expect(wrapper.text()).toContain("Title");
+
+    const saveButton = findButton(wrapper, "save mapping");
+    expect(saveButton?.attributes("disabled")).toBeDefined();
+    await saveButton?.trigger("click");
+    expect(wrapper.emitted("save")).toBeUndefined();
+  });
+
+  it("allows save again once the invalid path is corrected", async () => {
+    const wrapper = mount(FieldMappingModal, {
+      ...globalConfig,
+      props: { fieldMappingState: stateWithMapping(null) },
+    });
+    const titleInput = findInputByPlaceholder(wrapper, "e.g. title");
+    await titleInput?.setValue("data..subject");
+    await titleInput?.setValue("data.subject");
+
+    expect(wrapper.text()).not.toContain("Invalid dot path");
+    await findButton(wrapper, "save mapping")?.trigger("click");
+    expect(wrapper.emitted("save")?.[0]).toEqual([{ title: "data.subject" }]);
+  });
+
   it("renders a save error inline", () => {
     const wrapper = mount(FieldMappingModal, {
       ...globalConfig,

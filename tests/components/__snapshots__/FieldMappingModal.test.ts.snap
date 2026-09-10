@@ -36,6 +36,7 @@ exports[`FieldMappingModal > matches snapshot with an existing mapping 1`] = `
         </div>
         <!--v-if-->
       </div>
+      <!--v-if-->
       <div class="col gap-4" style="margin-top: 18px;">
         <div class="field"><span class="field-label"><!--v-if--><span>Title</span>
           <!--v-if-->
@@ -100,6 +101,7 @@ exports[`FieldMappingModal > matches snapshot with no existing mapping 1`] = `
         </div>
         <!--v-if-->
       </div>
+      <!--v-if-->
       <!--v-if-->
       <div class="col gap-4" style="margin-top: 18px;">
         <div class="field"><span class="field-label"><!--v-if--><span>Title</span>

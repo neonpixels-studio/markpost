@@ -54,6 +54,7 @@
           {{ activityStatus.label }}
         </AppBadge>
         <button
+          v-if="isMappable"
           class="icon-btn"
           title="Configure field mapping"
           style="color: var(--ink-3)"
@@ -171,6 +172,13 @@ const PRESET_TYPES = new Set([
   "shortcuts",
 ]);
 
+// applyFieldMapping (server/utils/fieldMapper.ts) has exactly one caller —
+// the JSON webhook ingest handler (server/api/hooks/[slug].post.ts). Email
+// deliveries take a completely different path (parseEmailPayload, via the
+// direct record-create API) that never reads a source's fieldMapping, so
+// configuring one for an email source would silently do nothing.
+const EMAIL_SOURCE_TYPE = "email";
+
 const props = defineProps<{
   source: SourceResource;
 }>();
@@ -185,6 +193,10 @@ const emit = defineEmits<{
 // email-in source has none, so the action is hidden for them.
 const isRotatable = computed(() =>
   isRotatableProvider(props.source.attributes.provider ?? ""),
+);
+
+const isMappable = computed(
+  () => props.source.attributes.type !== EMAIL_SOURCE_TYPE,
 );
 
 const sourceType = computed(() => props.source.attributes.type);
