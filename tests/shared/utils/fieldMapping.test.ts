@@ -4,6 +4,7 @@ import {
   FIELD_MAPPING_KEYS,
   FIELD_MAPPING_PATH_MAX_LENGTH,
   isFieldMappingConfig,
+  isSourceMappable,
   isValidFieldMappingPath,
 } from "#shared/utils/fieldMapping";
 
@@ -91,5 +92,51 @@ describe("isValidFieldMappingPath", () => {
     expect(
       isValidFieldMappingPath("a".repeat(FIELD_MAPPING_PATH_MAX_LENGTH + 1)),
     ).toBe(false);
+  });
+
+  it.each(["items[0]", "data.items[0].name", "[0]"])(
+    "rejects bracket array syntax %s (getNestedValue has no bracket support)",
+    (path) => {
+      expect(isValidFieldMappingPath(path)).toBe(false);
+    },
+  );
+
+  it("accepts a numeric segment as the array-index equivalent", () => {
+    expect(isValidFieldMappingPath("data.items.0.name")).toBe(true);
+  });
+
+  it("rejects a whitespace-only segment", () => {
+    expect(isValidFieldMappingPath("data. .subject")).toBe(false);
+  });
+});
+
+describe("isSourceMappable", () => {
+  it("is always mappable for a non-email source type, regardless of fieldMapping", () => {
+    expect(isSourceMappable("webhook", null)).toBe(true);
+    expect(isSourceMappable("webhook", undefined)).toBe(true);
+    expect(isSourceMappable("stripe", { title: "x" })).toBe(true);
+  });
+
+  it("is not mappable for an email source with no stored mapping", () => {
+    expect(isSourceMappable("email", null)).toBe(false);
+  });
+
+  it("is not mappable for an email source whose fieldMapping is undefined", () => {
+    // fieldMapping is typed `unknown` throughout the client (see
+    // app/composables/useSources.ts) — undefined is type-legal, and must not
+    // be treated as "has a mapping".
+    expect(isSourceMappable("email", undefined)).toBe(false);
+  });
+
+  it("is not mappable for an email source with a non-conforming stored value", () => {
+    expect(isSourceMappable("email", { event: "$.type" })).toBe(false);
+  });
+
+  it("is not mappable for an email source whose mapping has every field blank", () => {
+    expect(isSourceMappable("email", { title: "   " })).toBe(false);
+  });
+
+  it("is mappable for an email source with a genuinely populated mapping", () => {
+    expect(isSourceMappable("email", { title: "subject" })).toBe(true);
   });
 });

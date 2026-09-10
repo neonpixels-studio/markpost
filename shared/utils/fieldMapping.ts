@@ -58,12 +58,31 @@ export const FIELD_MAPPING_PATH_MAX_LENGTH = 200;
 
 const DOT_PATH_PATTERN = /^[^.]+(\.[^.]+)*$/;
 
+// getNestedValue (server/utils/fieldMapper.ts) walks a path with a plain
+// `hasOwnProperty` per segment — it has no bracket-index syntax, so
+// "items[0]" is looked up as the literal property name `items[0]`, which
+// essentially never exists (array indices resolve via the plain numeric
+// segment "0" instead, since hasOwnProperty(array, "0") is true).
+function hasArrayBracketSyntax(segment: string): boolean {
+  return segment.includes("[") || segment.includes("]");
+}
+
+function isResolvableSegment(segment: string): boolean {
+  return (
+    segment.trim().length > 0 &&
+    !hasArrayBracketSyntax(segment) &&
+    !FIELD_MAPPING_FORBIDDEN_SEGMENTS.has(segment)
+  );
+}
+
 // A dot path is only useful if getNestedValue (server/utils/fieldMapper.ts)
-// can actually resolve it: no empty segment (leading/trailing/doubled dot),
-// no forbidden segment, and within the length cap. Shared so
-// app/utils/fieldMappingForm.ts's live form validation and
-// server/utils/fieldMappingValidation.ts's write-time validation enforce
-// identically rather than one silently accepting what the other rejects.
+// can actually resolve it: no empty or whitespace-only segment
+// (leading/trailing/doubled dot, or a typo'd blank), no bracket-index syntax
+// (unsupported — use a numeric segment instead, e.g. "items.0"), no forbidden
+// segment, and within the length cap. Shared so app/utils/fieldMappingForm.ts's
+// live form validation and server/utils/fieldMappingValidation.ts's
+// write-time validation enforce identically rather than one silently
+// accepting what the other rejects.
 export function isValidFieldMappingPath(path: string): boolean {
   if (path.length === 0 || path.length > FIELD_MAPPING_PATH_MAX_LENGTH) {
     return false;
@@ -73,9 +92,25 @@ export function isValidFieldMappingPath(path: string): boolean {
     return false;
   }
 
-  return !path
-    .split(".")
-    .some((segment) => FIELD_MAPPING_FORBIDDEN_SEGMENTS.has(segment));
+  return path.split(".").every(isResolvableSegment);
+}
+
+// A stored mapping is worth surfacing only if it's both a shape the editor
+// can actually read (see fieldMappingToFormValues, which blanks out anything
+// isFieldMappingConfig rejects) and has at least one field genuinely
+// populated — the same "does this mapping do anything" test
+// server/utils/fieldMappingValidation.ts's assertValidFieldMapping applies
+// before persisting one. `unknown` is deliberate here (not `=== null`): the
+// attribute is typed unknown throughout the client (see
+// app/composables/useSources.ts), so a fixture or a future partial response
+// that omits it entirely (`undefined`) must not be treated as "has a mapping".
+function hasMeaningfulFieldMapping(fieldMapping: unknown): boolean {
+  return (
+    isFieldMappingConfig(fieldMapping) &&
+    FIELD_MAPPING_KEYS.some(
+      (key) => (fieldMapping[key] ?? "").trim().length > 0,
+    )
+  );
 }
 
 // applyFieldMapping has exactly one caller — the JSON webhook ingest handler
@@ -95,5 +130,5 @@ export function isSourceMappable(
   if (sourceType !== EMAIL_SOURCE_TYPE) {
     return true;
   }
-  return fieldMapping !== null;
+  return hasMeaningfulFieldMapping(fieldMapping);
 }

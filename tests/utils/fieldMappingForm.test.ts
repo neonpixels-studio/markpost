@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { FIELD_MAPPING_KEYS } from "#shared/utils/fieldMapping";
 import {
+  BLANKABLE_FIELD_MAPPING_FIELDS,
   FIELD_MAPPING_FIELDS,
   fieldMappingToFormValues,
   formValuesToFieldMapping,
@@ -7,14 +9,12 @@ import {
 } from "../../app/utils/fieldMappingForm";
 
 describe("FIELD_MAPPING_FIELDS", () => {
-  it("has one entry per recognized mapping key", () => {
+  it("has exactly one entry per key in FIELD_MAPPING_KEYS, in order", () => {
+    // Asserted against the shared source of truth (not a hardcoded literal)
+    // so a key added to FIELD_MAPPING_KEYS without a matching entry here
+    // fails this test rather than silently rendering no input for it.
     expect(FIELD_MAPPING_FIELDS.map((field) => field.key)).toEqual([
-      "title",
-      "content",
-      "html",
-      "source",
-      "tags",
-      "created",
+      ...FIELD_MAPPING_KEYS,
     ]);
   });
 
@@ -23,6 +23,14 @@ describe("FIELD_MAPPING_FIELDS", () => {
       expect(field.label.length).toBeGreaterThan(0);
       expect(field.hint.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("BLANKABLE_FIELD_MAPPING_FIELDS", () => {
+  it("excludes only 'source' (the one field applyFieldMapping falls back for)", () => {
+    expect(BLANKABLE_FIELD_MAPPING_FIELDS.map((field) => field.key)).toEqual(
+      FIELD_MAPPING_KEYS.filter((key) => key !== "source"),
+    );
   });
 });
 
@@ -165,5 +173,13 @@ describe("invalidFieldMappingFields", () => {
       title: "a".repeat(201),
     });
     expect(invalid.map((field) => field.key)).toEqual(["title"]);
+  });
+
+  it("flags a path using array bracket syntax", () => {
+    const invalid = invalidFieldMappingFields({
+      ...blankValues,
+      tags: "data.items[0].name",
+    });
+    expect(invalid.map((field) => field.key)).toEqual(["tags"]);
   });
 });

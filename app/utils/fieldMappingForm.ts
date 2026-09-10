@@ -18,38 +18,56 @@ export interface FieldMappingFieldMeta {
   hint: string;
 }
 
-export const FIELD_MAPPING_FIELDS: FieldMappingFieldMeta[] = [
-  {
-    key: "title",
+// A plain array here (rather than derived from FIELD_MAPPING_KEYS) would let
+// a new key added to that list compile silently with no input rendered for
+// it — and since formValuesToFieldMapping only ever writes what the form
+// holds, the first save on a source that already has that key stored would
+// silently delete it. Keying by FIELD_MAPPING_KEYS makes a missing label/hint
+// a type error instead.
+const FIELD_MAPPING_META: Record<
+  (typeof FIELD_MAPPING_KEYS)[number],
+  Pick<FieldMappingFieldMeta, "label" | "hint">
+> = {
+  title: {
     label: "Title",
     hint: "Dot path to the record title, e.g. data.subject",
   },
-  {
-    key: "content",
+  content: {
     label: "Content",
     hint: "Dot path to the markdown/plain-text body",
   },
-  {
-    key: "html",
+  html: {
     label: "HTML",
     hint: "Dot path to an HTML body — converted to markdown",
   },
-  {
-    key: "source",
+  source: {
     label: "Source",
     hint: "Dot path to override the source name shown on the record",
   },
-  {
-    key: "tags",
+  tags: {
     label: "Tags",
-    hint: "Dot path to a tags array, or a comma-separated string",
+    hint: "Dot path to a tags array — use a numeric segment for an index, e.g. data.items.0",
   },
-  {
-    key: "created",
+  created: {
     label: "Created",
     hint: "Dot path to an ISO timestamp",
   },
-];
+};
+
+export const FIELD_MAPPING_FIELDS: FieldMappingFieldMeta[] =
+  FIELD_MAPPING_KEYS.map((key) => ({ key, ...FIELD_MAPPING_META[key] }));
+
+// applyFieldMapping (server/utils/fieldMapper.ts) falls back to the source's
+// own name only for `source` — every other field is simply left empty when
+// unmapped. A blank `source` is therefore never a sign of a half-finished
+// mapping the way a blank title/content/html/tags/created is, so it's
+// excluded from the partial-mapping check below (see isPartialMapping in
+// FieldMappingModal.vue): otherwise a fully-intentional mapping of the other
+// five fields would show a "some fields are blank" warning forever, since
+// `source` almost never needs to be set explicitly.
+export const BLANKABLE_FIELD_MAPPING_FIELDS = FIELD_MAPPING_FIELDS.filter(
+  (field) => field.key !== "source",
+);
 
 function emptyFormValues(): FieldMappingFormValues {
   return {

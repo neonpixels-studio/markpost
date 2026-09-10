@@ -59,11 +59,12 @@
           Each field is a dot path into the incoming JSON payload, e.g.
           <code class="mono">data.subject</code>. Once any field below is set,
           every field is read only from its own mapped path — a blank field is
-          left empty, it does <strong>not</strong> fall back to that payload's
-          raw top-level key. Clearing every field removes the mapping entirely
-          and restores raw ingestion (top-level <code class="mono">title</code>,
-          <code class="mono">content</code>, <code class="mono">html</code>,
-          <code class="mono">tags</code>,
+          left empty (except <code class="mono">source</code>, which falls back
+          to this source's name), it does <strong>not</strong> fall back to that
+          payload's raw top-level key. Clearing every field removes the mapping
+          entirely and restores raw ingestion (top-level
+          <code class="mono">title</code>, <code class="mono">content</code>,
+          <code class="mono">html</code>, <code class="mono">tags</code>,
           <code class="mono">created</code> keys).
         </AppAlert>
 
@@ -84,7 +85,13 @@
           style="margin-top: 14px"
         >
           {{ invalidFieldLabels.join(", ") }} — a dot path can't be empty, start
-          or end with a dot, or contain two dots in a row.
+          or end with a dot, contain two dots in a row, use
+          <code class="mono">[ ]</code> array brackets (use a numeric segment
+          instead, e.g. <code class="mono">data.items.0</code>), contain
+          <code class="mono">__proto__</code>,
+          <code class="mono">constructor</code>, or
+          <code class="mono">prototype</code>, or exceed
+          {{ FIELD_MAPPING_PATH_MAX_LENGTH }} characters.
         </AppAlert>
 
         <div class="col gap-4" style="margin-top: 18px">
@@ -126,12 +133,16 @@
 
 <script setup lang="ts">
 import {
+  BLANKABLE_FIELD_MAPPING_FIELDS,
   FIELD_MAPPING_FIELDS,
   fieldMappingToFormValues,
   formValuesToFieldMapping,
   invalidFieldMappingFields,
 } from "../utils/fieldMappingForm";
-import type { FieldMappingConfig } from "#shared/utils/fieldMapping";
+import {
+  FIELD_MAPPING_PATH_MAX_LENGTH,
+  type FieldMappingConfig,
+} from "#shared/utils/fieldMapping";
 import type { FieldMappingState } from "~/types/fieldMapping";
 
 const props = withDefaults(
@@ -156,17 +167,20 @@ const formValues = ref(
   fieldMappingToFormValues(props.fieldMappingState.source.fieldMapping),
 );
 
-// applyFieldMapping (server/utils/fieldMapper.ts) has no per-field fallback:
-// once any field is mapped, every field is read only from its own path, and
-// an unmapped field is left empty rather than falling back to that payload's
-// raw top-level key. A form with some fields set and others blank is the one
-// shape most likely to surprise the user with silently-dropped data, so it
-// gets its own warning alongside the general explanation above.
+// applyFieldMapping (server/utils/fieldMapper.ts) has no per-field fallback
+// except for `source` (which falls back to the source's own name) — every
+// other mapped field is read only from its own path, and an unmapped one is
+// left empty rather than falling back to that payload's raw top-level key. A
+// form with some of those fields set and others blank is the one shape most
+// likely to surprise the user with silently-dropped data, so it gets its own
+// warning alongside the general explanation above. `source` is excluded (see
+// BLANKABLE_FIELD_MAPPING_FIELDS) so a fully-intentional mapping of the other
+// five doesn't warn forever just because `source` was never set.
 const isPartialMapping = computed(() => {
-  const filledCount = FIELD_MAPPING_FIELDS.filter(
+  const filledCount = BLANKABLE_FIELD_MAPPING_FIELDS.filter(
     (field) => formValues.value[field.key].trim().length > 0,
   ).length;
-  return filledCount > 0 && filledCount < FIELD_MAPPING_FIELDS.length;
+  return filledCount > 0 && filledCount < BLANKABLE_FIELD_MAPPING_FIELDS.length;
 });
 
 // A path with an empty segment (leading/trailing/doubled dot) always resolves

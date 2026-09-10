@@ -222,6 +222,34 @@ describe("FieldMappingModal", () => {
     expect(wrapper.text()).not.toContain("Partial mapping");
   });
 
+  it("shows no partial-mapping warning when only 'source' is left blank (it falls back to the source's name, unlike every other field)", () => {
+    const everyOtherField = {
+      title: "a",
+      content: "b",
+      html: "c",
+      tags: "e",
+      created: "f",
+    };
+    const wrapper = mount(FieldMappingModal, {
+      ...globalConfig,
+      props: { fieldMappingState: stateWithMapping(everyOtherField) },
+    });
+    expect(wrapper.text()).not.toContain("Partial mapping");
+  });
+
+  it("blocks save and shows an error for a path using array bracket syntax", async () => {
+    const wrapper = mount(FieldMappingModal, {
+      ...globalConfig,
+      props: { fieldMappingState: stateWithMapping(null) },
+    });
+    await findInputByPlaceholder(wrapper, "e.g. tags")?.setValue(
+      "data.items[0]",
+    );
+    expect(wrapper.text()).toContain("Invalid dot path");
+    await findButton(wrapper, "save mapping")?.trigger("click");
+    expect(wrapper.emitted("save")).toBeUndefined();
+  });
+
   it("blocks save and shows an error for a path with an empty segment", async () => {
     const wrapper = mount(FieldMappingModal, {
       ...globalConfig,

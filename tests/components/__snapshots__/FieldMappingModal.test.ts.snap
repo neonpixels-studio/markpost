@@ -21,7 +21,7 @@ exports[`FieldMappingModal > matches snapshot with an existing mapping 1`] = `
         </svg>
         <div class="a-body">
           <div class="a-title">How mapping works</div>
-          <div class="a-text"> Each field is a dot path into the incoming JSON payload, e.g. <code class="mono">data.subject</code>. Once any field below is set, every field is read only from its own mapped path — a blank field is left empty, it does <strong>not</strong> fall back to that payload's raw top-level key. Clearing every field removes the mapping entirely and restores raw ingestion (top-level <code class="mono">title</code>, <code class="mono">content</code>, <code class="mono">html</code>, <code class="mono">tags</code>, <code class="mono">created</code> keys). </div>
+          <div class="a-text"> Each field is a dot path into the incoming JSON payload, e.g. <code class="mono">data.subject</code>. Once any field below is set, every field is read only from its own mapped path — a blank field is left empty (except <code class="mono">source</code>, which falls back to this source's name), it does <strong>not</strong> fall back to that payload's raw top-level key. Clearing every field removes the mapping entirely and restores raw ingestion (top-level <code class="mono">title</code>, <code class="mono">content</code>, <code class="mono">html</code>, <code class="mono">tags</code>, <code class="mono">created</code> keys). </div>
         </div>
         <!--v-if-->
       </div>
@@ -56,7 +56,7 @@ exports[`FieldMappingModal > matches snapshot with an existing mapping 1`] = `
         </div>
         <div class="field"><span class="field-label"><!--v-if--><span>Tags</span>
           <!--v-if-->
-          <!--v-if--></span><input class="input mono" style="font-size: 13.5px;" placeholder="e.g. tags"><span class="field-msg"><!--v-if--><!--v-if--> Dot path to a tags array, or a comma-separated string</span>
+          <!--v-if--></span><input class="input mono" style="font-size: 13.5px;" placeholder="e.g. tags"><span class="field-msg"><!--v-if--><!--v-if--> Dot path to a tags array — use a numeric segment for an index, e.g. data.items.0</span>
         </div>
         <div class="field"><span class="field-label"><!--v-if--><span>Created</span>
           <!--v-if-->
@@ -97,7 +97,7 @@ exports[`FieldMappingModal > matches snapshot with no existing mapping 1`] = `
         </svg>
         <div class="a-body">
           <div class="a-title">How mapping works</div>
-          <div class="a-text"> Each field is a dot path into the incoming JSON payload, e.g. <code class="mono">data.subject</code>. Once any field below is set, every field is read only from its own mapped path — a blank field is left empty, it does <strong>not</strong> fall back to that payload's raw top-level key. Clearing every field removes the mapping entirely and restores raw ingestion (top-level <code class="mono">title</code>, <code class="mono">content</code>, <code class="mono">html</code>, <code class="mono">tags</code>, <code class="mono">created</code> keys). </div>
+          <div class="a-text"> Each field is a dot path into the incoming JSON payload, e.g. <code class="mono">data.subject</code>. Once any field below is set, every field is read only from its own mapped path — a blank field is left empty (except <code class="mono">source</code>, which falls back to this source's name), it does <strong>not</strong> fall back to that payload's raw top-level key. Clearing every field removes the mapping entirely and restores raw ingestion (top-level <code class="mono">title</code>, <code class="mono">content</code>, <code class="mono">html</code>, <code class="mono">tags</code>, <code class="mono">created</code> keys). </div>
         </div>
         <!--v-if-->
       </div>
@@ -122,7 +122,7 @@ exports[`FieldMappingModal > matches snapshot with no existing mapping 1`] = `
         </div>
         <div class="field"><span class="field-label"><!--v-if--><span>Tags</span>
           <!--v-if-->
-          <!--v-if--></span><input class="input mono" style="font-size: 13.5px;" placeholder="e.g. tags"><span class="field-msg"><!--v-if--><!--v-if--> Dot path to a tags array, or a comma-separated string</span>
+          <!--v-if--></span><input class="input mono" style="font-size: 13.5px;" placeholder="e.g. tags"><span class="field-msg"><!--v-if--><!--v-if--> Dot path to a tags array — use a numeric segment for an index, e.g. data.items.0</span>
         </div>
         <div class="field"><span class="field-label"><!--v-if--><span>Created</span>
           <!--v-if-->
