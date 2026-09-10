@@ -46,6 +46,7 @@ const EVENT_KIND_ERR = "err";
 // row-locking UPDATE per duplicate; gating on this staleness interval
 // collapses that to one write per window per source.
 export const DEDUP_TOUCH_STALENESS_SECONDS = 60;
+export const MILLISECONDS_PER_SECOND = 1000;
 
 type SourceRow = {
   uuid: string;
@@ -218,15 +219,9 @@ async function incrementSourceStats(sourceId: string): Promise<void> {
     .where(eq(sources.uuid, sourceId));
 }
 
-const MILLISECONDS_PER_SECOND = 1000;
-
-// The single staleness cutoff both the in-memory fast path and the database
-// WHERE clause compare currentLastHitAt against. Computed once per
-// touchLastHitAt call from one reference time so the two checks can never
-// disagree at the exact boundary — a prior version re-derived "now" and used
-// a different comparison (>= vs a strict <) in each place, which could make
-// the fast path say "write" while the database, evaluated a moment later,
-// said "not stale" and matched zero rows.
+// The single staleness cutoff shared by the in-memory fast path and the
+// database WHERE clause, computed once per touchLastHitAt call so the two
+// checks always agree at the boundary.
 function dedupTouchStaleBefore(referenceTime: Date): Date {
   return new Date(
     referenceTime.getTime() -

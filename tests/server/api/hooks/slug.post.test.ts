@@ -91,7 +91,11 @@ vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
 
 const handlerModule = await import("../../../../server/api/hooks/[slug].post");
 const handler = handlerModule.default;
-const { DEDUP_TOUCH_STALENESS_SECONDS, isLastHitStale } = handlerModule;
+const {
+  DEDUP_TOUCH_STALENESS_SECONDS,
+  MILLISECONDS_PER_SECOND,
+  isLastHitStale,
+} = handlerModule;
 
 const SOURCE_UUID = "550e8400-e29b-41d4-a716-446655440001";
 const USER_ID = "user_abc123";
@@ -1739,7 +1743,8 @@ describe("POST /api/hooks/[slug]", () => {
         type: "charge.succeeded",
       });
       const freshLastHitAt = new Date(
-        Date.now() - (DEDUP_TOUCH_STALENESS_SECONDS - 5) * 1000,
+        Date.now() -
+          (DEDUP_TOUCH_STALENESS_SECONDS - 5) * MILLISECONDS_PER_SECOND,
       );
       stubSourceThenDelivery(
         [{ ...stripeSource, lastHitAt: freshLastHitAt }],
@@ -1784,7 +1789,8 @@ describe("POST /api/hooks/[slug]", () => {
           type: "charge.succeeded",
         });
         const staleLastHitAt = new Date(
-          now.getTime() - (DEDUP_TOUCH_STALENESS_SECONDS + 5) * 1000,
+          now.getTime() -
+            (DEDUP_TOUCH_STALENESS_SECONDS + 5) * MILLISECONDS_PER_SECOND,
         );
         stubSourceThenDelivery(
           [{ ...stripeSource, lastHitAt: staleLastHitAt }],
@@ -1836,7 +1842,8 @@ describe("POST /api/hooks/[slug]", () => {
         );
         expect(staleGuard).toBeDefined();
         const expectedStaleBefore = new Date(
-          now.getTime() - DEDUP_TOUCH_STALENESS_SECONDS * 1000,
+          now.getTime() -
+            DEDUP_TOUCH_STALENESS_SECONDS * MILLISECONDS_PER_SECOND,
         );
         expect(staleGuard?.conditions).toEqual(
           expect.arrayContaining([
@@ -1971,7 +1978,8 @@ describe("POST /api/hooks/[slug]", () => {
         type: "charge.succeeded",
       });
       const freshLastHitAt = new Date(
-        Date.now() - (DEDUP_TOUCH_STALENESS_SECONDS - 5) * 1000,
+        Date.now() -
+          (DEDUP_TOUCH_STALENESS_SECONDS - 5) * MILLISECONDS_PER_SECOND,
       );
       stubSourceThenDelivery(
         [{ ...stripeSource, lastHitAt: freshLastHitAt }],
