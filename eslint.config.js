@@ -57,7 +57,6 @@ const nuxtGlobals = {
   useSeoMeta: "readonly",
   navigateTo: "readonly",
   abortNavigation: "readonly",
-  clearError: "readonly",
   useState: "readonly",
   useFetch: "readonly",
   useLazyFetch: "readonly",

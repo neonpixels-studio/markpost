@@ -30,7 +30,7 @@ const globalConfig = {
       },
       AppBtn: {
         template:
-          '<a v-if="href" :href="href" class="app-btn"><slot /></a><button v-else class="app-btn" @click="$emit(\'click\')"><slot /></button>',
+          '<a v-if="href" :href="href" class="app-btn" :data-variant="variant"><slot /></a><button v-else class="app-btn" :data-variant="variant" @click="$emit(\'click\')"><slot /></button>',
         props: ["variant", "icon", "href"],
         emits: ["click"],
       },
@@ -65,19 +65,17 @@ describe("error page", () => {
     expect(wrapper.text()).toContain("Something went wrong.");
   });
 
-  it("shows the client-error copy for a 4xx and does not leak internal message detail", () => {
+  it("shows the client-error copy and status message for a 4xx", () => {
     const wrapper = mount(ErrorPage, {
       ...globalConfig,
       props: {
-        error: { statusCode: 404, message: "no route matched /widgets/9" },
+        error: { statusCode: 404, statusMessage: "Not Found" },
       },
     });
 
     expect(wrapper.find(".code").text()).toBe("404");
     expect(wrapper.find(".stroke-color").text()).toBe("var(--accent)");
-    expect(wrapper.find(".terminal-output").text()).toBe(
-      "no route matched /widgets/9",
-    );
+    expect(wrapper.find(".terminal-output").text()).toBe("Not Found");
     expect(wrapper.text()).toContain("That request didn't work.");
   });
 
@@ -92,22 +90,7 @@ describe("error page", () => {
     expect(wrapper.find(".terminal-output").text()).toBe("internal error");
   });
 
-  it("never surfaces a 500's raw error.message, even if one is present", () => {
-    const wrapper = mount(ErrorPage, {
-      ...globalConfig,
-      props: {
-        error: {
-          statusCode: 500,
-          message: "connection to postgres://internal-host failed",
-        },
-      },
-    });
-
-    expect(wrapper.find(".terminal-output").text()).toBe("internal error");
-    expect(wrapper.text()).not.toContain("postgres://internal-host");
-  });
-
-  it("falls back to a generic message when a 4xx carries neither statusMessage nor message", () => {
+  it("falls back to a generic status message when a 4xx carries no statusMessage", () => {
     const wrapper = mount(ErrorPage, {
       ...globalConfig,
       props: {
@@ -116,6 +99,52 @@ describe("error page", () => {
     });
 
     expect(wrapper.find(".terminal-output").text()).toBe("unhandled error");
+  });
+
+  it("never renders error.message, which can carry internal detail even on a 4xx", () => {
+    const wrapper = mount(ErrorPage, {
+      ...globalConfig,
+      props: {
+        error: {
+          statusCode: 404,
+          message: '[GET] "/api/internal/records/9": 404 Not Found',
+        },
+      },
+    });
+
+    expect(wrapper.find(".terminal-output").text()).toBe("unhandled error");
+    expect(wrapper.text()).not.toContain("/api/internal/records/9");
+  });
+
+  it("offers retry, as the primary action, only for a 5xx", () => {
+    const wrapper = mount(ErrorPage, {
+      ...globalConfig,
+      props: {
+        error: { statusCode: 500, statusMessage: "Internal Server Error" },
+      },
+    });
+
+    const retryButton = wrapper.find("button.app-btn");
+    expect(retryButton.exists()).toBe(true);
+    expect(retryButton.attributes("data-variant")).toBe("accent");
+
+    const homeLink = wrapper.find("a.app-btn[href='/']");
+    expect(homeLink.attributes("data-variant")).toBe("");
+  });
+
+  it("hides retry and makes home the primary action for a 4xx, since reloading repeats the same error", () => {
+    const wrapper = mount(ErrorPage, {
+      ...globalConfig,
+      props: {
+        error: { statusCode: 404, statusMessage: "Not Found" },
+      },
+    });
+
+    expect(wrapper.find("button.app-btn").exists()).toBe(false);
+
+    const homeLink = wrapper.find("a.app-btn[href='/']");
+    expect(homeLink.exists()).toBe(true);
+    expect(homeLink.attributes("data-variant")).toBe("accent");
   });
 
   it("reloads the current page when retrying, rather than redirecting home", async () => {
@@ -129,17 +158,5 @@ describe("error page", () => {
     await wrapper.find("button.app-btn").trigger("click");
 
     expect(window.location.reload).toHaveBeenCalled();
-  });
-
-  it("links back to home", () => {
-    const wrapper = mount(ErrorPage, {
-      ...globalConfig,
-      props: {
-        error: { statusCode: 404, statusMessage: "Not Found" },
-      },
-    });
-
-    const homeLink = wrapper.find("a.app-btn[href='/']");
-    expect(homeLink.exists()).toBe(true);
   });
 });

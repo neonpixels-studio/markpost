@@ -9,10 +9,17 @@
     :heading="heading"
     :lead="lead"
   >
-    <AppBtn variant="accent" icon="refresh" @click="handleRetry">
+    <AppBtn
+      v-if="isServerError"
+      variant="accent"
+      icon="refresh"
+      @click="handleRetry"
+    >
       try again
     </AppBtn>
-    <AppBtn icon="arrowR" href="/">back to home</AppBtn>
+    <AppBtn :variant="isServerError ? '' : 'accent'" icon="arrowR" href="/">
+      back to home
+    </AppBtn>
   </AppErrorScreen>
 </template>
 
@@ -23,29 +30,30 @@ const props = defineProps<{
   error: NuxtError;
 }>();
 
-useHead({ title: "Something went wrong" });
-
 const statusCode = computed(() => props.error.statusCode ?? 500);
 
-// 5xx bodies can carry internal detail (thrown from a DB call, an upstream
-// API, etc.) in `message`, so only surface it below 500 where it's routinely
-// a client-facing validation message. `statusMessage` is always safe to show.
 const isServerError = computed(() => statusCode.value >= 500);
 
 const strokeColor = computed(() =>
   isServerError.value ? "var(--err)" : "var(--accent)",
 );
 
-const statusMessage = computed(() => {
-  if (isServerError.value) {
-    return props.error.statusMessage || "internal error";
-  }
-  return props.error.statusMessage || props.error.message || "unhandled error";
-});
-
 const heading = computed(() =>
   isServerError.value ? "Something went wrong." : "That request didn't work.",
 );
+
+useHead({ title: heading });
+
+// `error.message` can carry internals (a DB driver's connection string, an
+// upstream API's raw response) even on a 4xx, e.g. a rethrown $fetch error.
+// `statusMessage` is the only field safe to show unfiltered, so it's the
+// only one we render.
+const statusMessage = computed(() => {
+  if (props.error.statusMessage) {
+    return props.error.statusMessage;
+  }
+  return isServerError.value ? "internal error" : "unhandled error";
+});
 
 const lead = computed(() =>
   isServerError.value
@@ -55,7 +63,8 @@ const lead = computed(() =>
 
 // A full reload re-requests the page that errored, so if the failure was
 // transient (a dropped connection, a stale deploy) the user lands back where
-// they were instead of being punted home.
+// they were instead of being punted home. Only offered for 5xx: a 4xx will
+// reproduce the same error on reload, so the only useful action is leaving.
 function handleRetry() {
   window.location.reload();
 }

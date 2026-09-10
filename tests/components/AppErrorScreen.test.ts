@@ -74,4 +74,22 @@ describe("AppErrorScreen", () => {
       wrapper.find(".code-body span:last-child").attributes("style"),
     ).toContain("color: var(--err)");
   });
+
+  it("applies the given stroke color to the glyph via a CSS custom property", () => {
+    const wrapper = mount(AppErrorScreen, {
+      ...globalConfig,
+      props: {
+        code: "500",
+        strokeColor: "var(--err)",
+        terminalCommand: "markpost sync",
+        terminalOutput: "internal error",
+        heading: "Something went wrong.",
+        lead: "Try again.",
+      },
+    });
+
+    expect(wrapper.find(".err-glyph").attributes("style")).toContain(
+      "--stroke-color: var(--err)",
+    );
+  });
 });

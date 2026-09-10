@@ -15,10 +15,7 @@
       <AppLogo />
     </a>
     <div style="position: relative; text-align: center; max-width: 540px">
-      <div
-        class="mono"
-        :style="`font-size: clamp(80px, 14vw, 150px); font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: transparent; -webkit-text-stroke: 2px ${strokeColor};`"
-      >
+      <div class="mono err-glyph" :style="{ '--stroke-color': strokeColor }">
         {{ code }}
       </div>
       <div
@@ -33,7 +30,7 @@
           <span :style="{ color: 'var(--accent)' }">$</span>
           {{ terminalCommand }}<br />
           <span
-            :style="`color: ${terminalOutputColor}; overflow-wrap: anywhere;`"
+            :style="{ color: terminalOutputColor, overflowWrap: 'anywhere' }"
             >{{ terminalOutput }}</span
           >
         </div>
