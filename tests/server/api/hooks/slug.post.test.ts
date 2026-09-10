@@ -87,8 +87,9 @@ const mockSetHeader = vi.fn();
 
 vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
 
-const handler = (await import("../../../../server/api/hooks/[slug].post"))
-  .default;
+const handlerModule = await import("../../../../server/api/hooks/[slug].post");
+const handler = handlerModule.default;
+const { DEDUP_TOUCH_STALENESS_SECONDS } = handlerModule;
 
 const SOURCE_UUID = "550e8400-e29b-41d4-a716-446655440001";
 const USER_ID = "user_abc123";
@@ -110,6 +111,10 @@ const sampleSource = {
   name: SOURCE_NAME,
   provider: null,
   fieldMapping: null,
+  // null reads as "never touched" — always stale, so every existing dedup
+  // test below still exercises a write unless a test overrides this to
+  // exercise the debounce boundary specifically.
+  lastHitAt: null,
 };
 
 const sampleRecord = {
@@ -1683,6 +1688,70 @@ describe("POST /api/hooks/[slug]", () => {
         ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
       );
       expect(bumped).toBe(false);
+      const lastCall = (
+        statsSet.mock.calls.at(-1) as [Record<string, unknown>]
+      )[0];
+      expect(lastCall).toHaveProperty("lastHitAt");
+    });
+
+    // Debounce boundary (inside the window): a retry lands while the source's
+    // lastHitAt is still fresh, so touchLastHitAt must skip its UPDATE
+    // entirely — the only db.update call left is the losing claim attempt.
+    // This is what collapses a redelivery storm to one write per interval
+    // instead of one row-locking UPDATE per duplicate.
+    it("skips the lastHitAt write when the source was touched inside the debounce window", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_dup_fresh",
+        type: "charge.succeeded",
+      });
+      const freshLastHitAt = new Date(
+        Date.now() - (DEDUP_TOUCH_STALENESS_SECONDS - 5) * 1000,
+      );
+      stubSourceThenDelivery(
+        [{ ...stripeSource, lastHitAt: freshLastHitAt }],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      // claimWins=false: counted_at already set, so the claim loses and falls
+      // through to the debounced touch.
+      const { set: statsSet } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      // Only the claim attempt touched db.update; no follow-up lastHitAt set.
+      expect(statsSet).toHaveBeenCalledOnce();
+      const lastCall = (
+        statsSet.mock.calls.at(-1) as [Record<string, unknown>]
+      )[0];
+      expect(lastCall).not.toHaveProperty("lastHitAt");
+    });
+
+    // Debounce boundary (outside the window): a retry lands once the source's
+    // lastHitAt has aged past the staleness interval, so touchLastHitAt must
+    // issue its UPDATE as usual.
+    it("writes the lastHitAt refresh when the source was touched outside the debounce window", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_dup_stale",
+        type: "charge.succeeded",
+      });
+      const staleLastHitAt = new Date(
+        Date.now() - (DEDUP_TOUCH_STALENESS_SECONDS + 5) * 1000,
+      );
+      stubSourceThenDelivery(
+        [{ ...stripeSource, lastHitAt: staleLastHitAt }],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      const { set: statsSet } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      // The claim attempt plus the follow-up lastHitAt refresh: two calls.
+      expect(statsSet).toHaveBeenCalledTimes(2);
       const lastCall = (
         statsSet.mock.calls.at(-1) as [Record<string, unknown>]
       )[0];

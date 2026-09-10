@@ -41,6 +41,12 @@ const RECORD_STATUS_ERROR = "error";
 const EVENT_KIND_OK = "ok";
 const EVENT_KIND_ERR = "err";
 
+// Debounce window for the best-effort dedup lastHitAt touch (see
+// touchLastHitAt below). A provider redelivery storm otherwise issues one
+// row-locking UPDATE per duplicate; gating on this staleness interval
+// collapses that to one write per window per source.
+export const DEDUP_TOUCH_STALENESS_SECONDS = 60;
+
 type SourceRow = {
   uuid: string;
   userId: string;
@@ -49,6 +55,7 @@ type SourceRow = {
   provider: string | null;
   providerSecret: string | null;
   fieldMapping: unknown;
+  lastHitAt: Date | null;
 };
 
 type UserSettingsRow = {
@@ -112,6 +119,7 @@ async function resolveSourceBySlug(slug: string): Promise<SourceRow | null> {
       provider: sources.provider,
       providerSecret: sources.providerSecret,
       fieldMapping: sources.fieldMapping,
+      lastHitAt: sources.lastHitAt,
     })
     .from(sources)
     .where(eq(sources.endpointSlug, slug))
@@ -210,10 +218,36 @@ async function incrementSourceStats(sourceId: string): Promise<void> {
     .where(eq(sources.uuid, sourceId));
 }
 
+// True once currentLastHitAt is missing or older than the debounce window —
+// i.e. this hit is the one allowed to write. Isolated from touchLastHitAt so
+// the boundary (just-inside vs just-outside the window) is unit-testable
+// without a database.
+function isLastHitStale(currentLastHitAt: Date | null): boolean {
+  if (!currentLastHitAt) {
+    return true;
+  }
+
+  const elapsedSeconds = (Date.now() - currentLastHitAt.getTime()) / 1000;
+  return elapsedSeconds >= DEDUP_TOUCH_STALENESS_SECONDS;
+}
+
 // Refresh only lastHitAt, leaving recordCount untouched. Used when the counter
 // bump was already claimed (an ordinary retry / race loser): the delivery
 // already counted, so the retry is a hit worth timestamping but must not bump.
-async function touchLastHitAt(sourceId: string): Promise<void> {
+//
+// Debounced against currentLastHitAt (the value read alongside the source at
+// the top of the request): a redelivery storm calls this once per duplicate,
+// but only the first one past the staleness window issues the UPDATE — the
+// rest return without touching the database, so the storm collapses to one
+// row-locking write per interval instead of one per duplicate.
+async function touchLastHitAt(
+  sourceId: string,
+  currentLastHitAt: Date | null,
+): Promise<void> {
+  if (!isLastHitStale(currentLastHitAt)) {
+    return;
+  }
+
   const db = getDb();
   await db
     .update(sources)
@@ -254,10 +288,12 @@ async function claimStatsBump(recordUuid: string): Promise<boolean> {
 async function applyStatsBump(
   sourceId: string,
   recordUuid: string,
+  currentLastHitAt: Date | null,
 ): Promise<void> {
-  // A rejected claim is treated as "not claimed" so lastHitAt still refreshes
-  // (touchLastHitAt never touches recordCount, so this is safe either way) — a
-  // served 202 should never leave the hit timestamp stale.
+  // A rejected claim is treated as "not claimed" so lastHitAt still refreshes,
+  // subject to the debounce in touchLastHitAt (touchLastHitAt never touches
+  // recordCount, so this is safe either way) — a served 202 should never leave
+  // the hit timestamp stale for longer than the debounce window.
   const claimed = await claimStatsBump(recordUuid).catch((claimError) => {
     logStatsError(claimError);
     return false;
@@ -268,7 +304,7 @@ async function applyStatsBump(
     return;
   }
 
-  await touchLastHitAt(sourceId);
+  await touchLastHitAt(sourceId, currentLastHitAt);
 }
 
 // Flag a confirmation failure on the record, but never regress a record that
@@ -651,7 +687,9 @@ async function writeIngestSideEffects(
   writeOkEvent: OkEventWriter,
 ): Promise<void> {
   await Promise.allSettled([
-    applyStatsBump(source.uuid, record.uuid).catch(logStatsError),
+    applyStatsBump(source.uuid, record.uuid, source.lastHitAt).catch(
+      logStatsError,
+    ),
     writeOkEvent(okEventInput(source, record)).catch((writeError) =>
       recordIngestEventFailure(source, record, writeError),
     ),
