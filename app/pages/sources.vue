@@ -92,6 +92,7 @@
             :source="source"
             @remove="onRemoveRequested"
             @rotate="onRotateRequested"
+            @configure-mapping="onConfigureMappingRequested"
           />
 
           <button
@@ -143,6 +144,15 @@
       @close="closeRotateModal"
       @rotate="rotateSource"
     />
+
+    <FieldMappingModal
+      v-if="fieldMappingState"
+      :field-mapping-state="fieldMappingState"
+      :submitting="isSavingFieldMapping"
+      :error="fieldMappingError"
+      @close="closeFieldMappingModal"
+      @save="saveFieldMapping"
+    />
   </TheAppShell>
 </template>
 
@@ -152,7 +162,9 @@ import {
   isManualSecretProviderId,
   isRotatableProvider,
 } from "#shared/utils/webhookSecrets";
+import type { FieldMappingConfig } from "#shared/utils/fieldMapping";
 import type { RotateState } from "~/types/rotateSecret";
+import type { FieldMappingState } from "~/types/fieldMapping";
 
 definePageMeta({ middleware: "auth" });
 
@@ -188,20 +200,26 @@ const {
   removeSource,
   addSource: addSourceToList,
   rotateSecret,
+  updateFieldMapping,
 } = useSources();
 
 const modalState = ref<ModalState | null>(null);
 const rotateState = ref<RotateState | null>(null);
+const fieldMappingState = ref<FieldMappingState | null>(null);
 const pendingRemoveUuid = ref<string | null>(null);
 const loadError = ref<string | null>(null);
 const addError = ref<string | null>(null);
 const removeError = ref<string | null>(null);
 const rotateError = ref<string | null>(null);
+const fieldMappingError = ref<string | null>(null);
 // Guards against a double-click on "add source" firing two create requests
 // (see AddSourceModal's `submitting` prop).
 const isAddingSource = ref(false);
 // Same guard for rotation (see RotateSecretModal's `submitting` prop).
 const isRotatingSecret = ref(false);
+// Same guard for saving a field mapping (see FieldMappingModal's `submitting`
+// prop).
+const isSavingFieldMapping = ref(false);
 
 // The transient add/remove failures share one dismissible-banner shape. Each is
 // cleared when its own action restarts, so both can be visible at once if the
@@ -405,6 +423,58 @@ function showRotateResult(
     revealSecret: expectsReveal ? (revealSecret ?? null) : null,
   };
 }
+
+const onConfigureMappingRequested = (uuid: string) => {
+  const source = sources.value.find(
+    (candidate) => candidate.attributes.uuid === uuid,
+  );
+  if (!source) {
+    return;
+  }
+
+  fieldMappingError.value = null;
+  fieldMappingState.value = {
+    source: {
+      uuid,
+      name: source.attributes.name,
+      fieldMapping: source.attributes.fieldMapping,
+    },
+  };
+};
+
+// Ignored while a save is in flight: the server may already have applied it,
+// so tearing the modal down here would just hide that from the user until the
+// next page load.
+const closeFieldMappingModal = () => {
+  if (isSavingFieldMapping.value) {
+    return;
+  }
+  fieldMappingState.value = null;
+  fieldMappingError.value = null;
+};
+
+const saveFieldMapping = async (fieldMapping: FieldMappingConfig | null) => {
+  if (!fieldMappingState.value || isSavingFieldMapping.value) {
+    return;
+  }
+
+  const { uuid } = fieldMappingState.value.source;
+  fieldMappingError.value = null;
+  isSavingFieldMapping.value = true;
+
+  try {
+    await updateFieldMapping(uuid, fieldMapping);
+    fieldMappingState.value = null;
+  } catch (updateError) {
+    console.error(
+      "[sources] saveFieldMapping error:",
+      toErrorMessage(updateError),
+    );
+    fieldMappingError.value = "Failed to save field mapping. Please try again.";
+  } finally {
+    isSavingFieldMapping.value = false;
+  }
+};
 
 const onRemoveRequested = (uuid: string) => {
   pendingRemoveUuid.value = uuid;

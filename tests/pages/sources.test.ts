@@ -9,6 +9,7 @@ const mockLoadSources = vi.fn();
 const mockAddSource = vi.fn();
 const mockRemoveSource = vi.fn();
 const mockRotateSecret = vi.fn();
+const mockUpdateFieldMapping = vi.fn();
 
 const sourcesRef = ref<object[]>([]);
 const isLoadingRef = ref(false);
@@ -21,6 +22,7 @@ vi.mock("../../app/composables/useSources", () => ({
     addSource: mockAddSource,
     removeSource: mockRemoveSource,
     rotateSecret: mockRotateSecret,
+    updateFieldMapping: mockUpdateFieldMapping,
   }),
   buildEndpointUrl: (type: string, slug: string) => {
     if (type === "email") {
@@ -49,9 +51,9 @@ const globalConfig = {
       AppIcon: { template: "<span />" },
       SourceCard: {
         template:
-          '<div class="source-card" @click="$emit(\'remove\', source.attributes.uuid)"><button class="rotate-trigger" @click.stop="$emit(\'rotate\', source.attributes.uuid)" /></div>',
+          '<div class="source-card" @click="$emit(\'remove\', source.attributes.uuid)"><button class="rotate-trigger" @click.stop="$emit(\'rotate\', source.attributes.uuid)" /><button class="mapping-trigger" @click.stop="$emit(\'configure-mapping\', source.attributes.uuid)" /></div>',
         props: ["source"],
-        emits: ["remove", "rotate"],
+        emits: ["remove", "rotate", "configure-mapping"],
       },
       AddSourceModal: {
         template: '<div class="add-source-modal" />',
@@ -69,6 +71,12 @@ const globalConfig = {
           '<div class="rotate-modal"><button class="rotate-confirm" @click="$emit(\'rotate\', undefined)" /><button class="rotate-confirm-secret" @click="$emit(\'rotate\', \'whsec_new\')" /><button class="rotate-close" @click="$emit(\'close\')" /></div>',
         props: ["rotateState", "submitting", "error"],
         emits: ["close", "rotate"],
+      },
+      FieldMappingModal: {
+        template:
+          '<div class="mapping-modal"><button class="mapping-save" @click="$emit(\'save\', { title: \'data.subject\' })" /><button class="mapping-save-null" @click="$emit(\'save\', null)" /><button class="mapping-close" @click="$emit(\'close\')" /></div>',
+        props: ["fieldMappingState", "submitting", "error"],
+        emits: ["close", "save"],
       },
     },
   },
@@ -104,6 +112,7 @@ describe("sources page", () => {
     mockAddSource.mockReset();
     mockRemoveSource.mockReset();
     mockRotateSecret.mockReset();
+    mockUpdateFieldMapping.mockReset();
   });
 
   it("calls loadSources on mount", () => {
@@ -360,6 +369,92 @@ describe("sources page", () => {
 
       await wrapper.find(".rotate-close").trigger("click");
       expect(wrapper.find(".rotate-modal").exists()).toBe(false);
+    });
+  });
+
+  describe("field mapping flow", () => {
+    it("opens the mapping modal when a card requests it", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      expect(wrapper.find(".mapping-modal").exists()).toBe(true);
+    });
+
+    it("calls updateFieldMapping with the source uuid and built mapping when saved", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockUpdateFieldMapping.mockResolvedValue(makeSource("uuid-1"));
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      await wrapper.find(".mapping-save").trigger("click");
+      await flushPromises();
+      expect(mockUpdateFieldMapping).toHaveBeenCalledWith("uuid-1", {
+        title: "data.subject",
+      });
+    });
+
+    it("calls updateFieldMapping with null when the mapping is cleared", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockUpdateFieldMapping.mockResolvedValue(makeSource("uuid-1"));
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      await wrapper.find(".mapping-save-null").trigger("click");
+      await flushPromises();
+      expect(mockUpdateFieldMapping).toHaveBeenCalledWith("uuid-1", null);
+    });
+
+    it("closes the modal after a successful save", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockUpdateFieldMapping.mockResolvedValue(makeSource("uuid-1"));
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      await wrapper.find(".mapping-save").trigger("click");
+      await flushPromises();
+      expect(wrapper.find(".mapping-modal").exists()).toBe(false);
+    });
+
+    it("keeps the modal open and routes a save failure into the modal's error prop", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockUpdateFieldMapping.mockRejectedValue(new Error("update failed"));
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      const modal = wrapper.findComponent(".mapping-modal");
+      await wrapper.find(".mapping-save").trigger("click");
+      await flushPromises();
+
+      expect(wrapper.find(".mapping-modal").exists()).toBe(true);
+      expect(modal.props("error")).toContain("Failed to save field mapping");
+    });
+
+    it("closes the modal on a close emitted when no save is in flight", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      expect(wrapper.find(".mapping-modal").exists()).toBe(true);
+      await wrapper.find(".mapping-close").trigger("click");
+      expect(wrapper.find(".mapping-modal").exists()).toBe(false);
+    });
+
+    it("ignores a close emitted while a save is in flight", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      let resolveSave: (
+        value: ReturnType<typeof makeSource>,
+      ) => void = () => {};
+      mockUpdateFieldMapping.mockReturnValue(
+        new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+      );
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      wrapper.find(".mapping-save").trigger("click");
+      await Promise.resolve();
+
+      await wrapper.find(".mapping-close").trigger("click");
+      expect(wrapper.find(".mapping-modal").exists()).toBe(true);
+
+      resolveSave(makeSource("uuid-1"));
+      await flushPromises();
+      expect(wrapper.find(".mapping-modal").exists()).toBe(false);
     });
   });
 

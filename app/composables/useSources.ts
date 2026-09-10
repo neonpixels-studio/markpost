@@ -188,6 +188,22 @@ async function deleteSource(uuid: string): Promise<void> {
 // secret exactly once; for manual-secret providers (stripe) the caller passes
 // the new value the provider issued. Mirrors createSource: the response is the
 // one and only place the revealed secret appears.
+async function patchSourceFieldMapping(
+  uuid: string,
+  fieldMapping: unknown,
+): Promise<SourceResource> {
+  const response = await $fetch<SourceResponse>(`/api/sources/${uuid}`, {
+    method: "PATCH",
+    body: { data: { type: "sources", attributes: { fieldMapping } } },
+  });
+
+  if (!response.data) {
+    throw new Error("Server returned no data for the updated source");
+  }
+
+  return response.data;
+}
+
 async function rotateSourceSecret(
   uuid: string,
   providerSecret?: string,
@@ -278,6 +294,27 @@ export function useSources() {
     return rotated;
   }
 
+  async function updateFieldMapping(
+    uuid: string,
+    fieldMapping: unknown,
+  ): Promise<SourceResource> {
+    const updated = await patchSourceFieldMapping(uuid, fieldMapping);
+    // Fail loud rather than reporting a save the list never reflected: if the
+    // entry vanished between opening the editor and the response (a parallel
+    // loadSources replacing the array, a delete in another tab), the caller
+    // would otherwise show a false success over stale state.
+    const index = sources.value.findIndex(
+      (source) => source.attributes.uuid === uuid,
+    );
+    if (index === -1) {
+      throw new Error(`Updated source ${uuid} is no longer in the list`);
+    }
+    sources.value = sources.value.map((source) =>
+      source.attributes.uuid === uuid ? updated : source,
+    );
+    return updated;
+  }
+
   return {
     sources,
     isLoading,
@@ -285,5 +322,6 @@ export function useSources() {
     addSource,
     removeSource,
     rotateSecret,
+    updateFieldMapping,
   };
 }

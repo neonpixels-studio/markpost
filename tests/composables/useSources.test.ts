@@ -484,4 +484,132 @@ describe("useSources", () => {
       );
     });
   });
+
+  describe("updateFieldMapping", () => {
+    it("PATCHes the source with the given fieldMapping", async () => {
+      const updated = makeSourceResource({
+        attributes: {
+          uuid: "attributes-uuid",
+          userId: "user-1",
+          createdAt: "2025-01-01T00:00:00Z",
+          type: "webhook",
+          name: "Webhook endpoint",
+          provider: null,
+          endpointSlug: "wh_abc12345",
+          routeFolder: "99-incoming/",
+          fieldMapping: { title: "data.subject" },
+          lastHitAt: null,
+          recordCount: 0,
+        },
+      });
+      mockFetch.mockResolvedValue({ data: updated });
+      const { sources, updateFieldMapping } = useSources();
+      sources.value = [makeSourceResource({ id: "attributes-uuid" })];
+
+      const result = await updateFieldMapping("attributes-uuid", {
+        title: "data.subject",
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith("/api/sources/attributes-uuid", {
+        method: "PATCH",
+        body: {
+          data: {
+            type: "sources",
+            attributes: { fieldMapping: { title: "data.subject" } },
+          },
+        },
+      });
+      expect(result.attributes.fieldMapping).toEqual({
+        title: "data.subject",
+      });
+    });
+
+    it("PATCHes with null to clear an existing mapping", async () => {
+      const updated = makeSourceResource({
+        attributes: {
+          uuid: "attributes-uuid",
+          userId: "user-1",
+          createdAt: "2025-01-01T00:00:00Z",
+          type: "webhook",
+          name: "Webhook endpoint",
+          provider: null,
+          endpointSlug: "wh_abc12345",
+          routeFolder: "99-incoming/",
+          fieldMapping: null,
+          lastHitAt: null,
+          recordCount: 0,
+        },
+      });
+      mockFetch.mockResolvedValue({ data: updated });
+      const { sources, updateFieldMapping } = useSources();
+      sources.value = [makeSourceResource({ id: "attributes-uuid" })];
+
+      await updateFieldMapping("attributes-uuid", null);
+
+      expect(mockFetch).toHaveBeenCalledWith("/api/sources/attributes-uuid", {
+        method: "PATCH",
+        body: {
+          data: { type: "sources", attributes: { fieldMapping: null } },
+        },
+      });
+    });
+
+    it("replaces the updated source in the reactive list", async () => {
+      const existing = makeSourceResource({
+        attributes: {
+          uuid: "attributes-uuid",
+          userId: "user-1",
+          createdAt: "2025-01-01T00:00:00Z",
+          type: "webhook",
+          name: "Webhook endpoint",
+          provider: null,
+          endpointSlug: "wh_abc12345",
+          routeFolder: "99-incoming/",
+          fieldMapping: null,
+          lastHitAt: null,
+          recordCount: 0,
+        },
+      });
+      const updated = {
+        ...existing,
+        attributes: { ...existing.attributes, fieldMapping: { title: "x" } },
+      };
+      mockFetch.mockResolvedValue({ data: updated });
+      const { sources, updateFieldMapping } = useSources();
+      sources.value = [existing];
+
+      await updateFieldMapping("attributes-uuid", { title: "x" });
+
+      expect(sources.value[0].attributes.fieldMapping).toEqual({
+        title: "x",
+      });
+    });
+
+    it("throws when the server returns no data", async () => {
+      mockFetch.mockResolvedValue({ data: null });
+      const { updateFieldMapping } = useSources();
+      await expect(updateFieldMapping("attributes-uuid", null)).rejects.toThrow(
+        "Server returned no data",
+      );
+    });
+
+    it("throws when the updated source is no longer in the list", async () => {
+      const updated = makeSourceResource({ id: "gone" });
+      updated.attributes.uuid = "gone";
+      mockFetch.mockResolvedValue({ data: updated });
+      const { sources, updateFieldMapping } = useSources();
+      sources.value = [];
+      await expect(updateFieldMapping("gone", null)).rejects.toThrow(
+        "no longer in the list",
+      );
+    });
+
+    it("propagates update errors to the caller", async () => {
+      mockFetch.mockRejectedValue(new Error("update failed"));
+      const { updateFieldMapping } = useSources();
+      await expect(updateFieldMapping("attributes-uuid", null)).rejects.toThrow(
+        "update failed",
+      );
+    });
+  });
 });

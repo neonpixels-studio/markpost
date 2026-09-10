@@ -54,6 +54,14 @@
           {{ activityStatus.label }}
         </AppBadge>
         <button
+          class="icon-btn"
+          title="Configure field mapping"
+          style="color: var(--ink-3)"
+          @click="emit('configure-mapping', source.attributes.uuid)"
+        >
+          <AppIcon name="sliders" :size="16" />
+        </button>
+        <button
           v-if="isRotatable"
           class="icon-btn"
           title="Rotate secret"
@@ -170,6 +178,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   remove: [uuid: string];
   rotate: [uuid: string];
+  "configure-mapping": [uuid: string];
 }>();
 
 // Only provider-backed sources have a rotatable secret; a plain webhook or

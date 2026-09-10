@@ -150,6 +150,31 @@ describe("SourceCard", () => {
     expect(wrapper.emitted("remove")?.[0]).toEqual(["test-uuid-1"]);
   });
 
+  it("emits configure-mapping with the source uuid when the mapping button is clicked", async () => {
+    const source = makeSource();
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source },
+    });
+    await wrapper
+      .find("button[title='Configure field mapping']")
+      .trigger("click");
+    expect(wrapper.emitted("configure-mapping")?.[0]).toEqual(["test-uuid-1"]);
+  });
+
+  it.each(["webhook", "email", "stripe"])(
+    "shows the configure-mapping button for every source type (%s)",
+    (type) => {
+      const wrapper = mount(SourceCard, {
+        ...globalConfig,
+        props: { source: makeSource({ type }) },
+      });
+      expect(
+        wrapper.find("button[title='Configure field mapping']").exists(),
+      ).toBe(true);
+    },
+  );
+
   it.each(["stripe", "github", "zapier", "shortcuts"])(
     "shows a rotate-secret button for provider-backed source %s",
     (provider) => {
