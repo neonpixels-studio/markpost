@@ -1,59 +1,19 @@
 <template>
-  <div
-    style="
-      position: relative;
-      height: 100vh;
-      background: var(--bg);
-      display: grid;
-      place-items: center;
-      overflow: hidden;
-      padding: 40px;
-    "
+  <AppErrorScreen
+    :seed="5"
+    :code="statusCode"
+    :stroke-color="strokeColor"
+    terminal-command="markpost sync"
+    :terminal-output="statusMessage"
+    :terminal-output-color="strokeColor"
+    :heading="heading"
+    :lead="lead"
   >
-    <AppTopo :seed="5" />
-    <NuxtLink to="/" style="position: absolute; top: 28px; left: 40px">
-      <AppLogo />
-    </NuxtLink>
-    <div style="position: relative; text-align: center; max-width: 540px">
-      <div
-        class="mono"
-        style="
-          font-size: clamp(80px, 14vw, 150px);
-          font-weight: 600;
-          letter-spacing: -0.04em;
-          line-height: 1;
-          color: transparent;
-          -webkit-text-stroke: 2px var(--err);
-        "
-      >
-        {{ statusCode }}
-      </div>
-      <div
-        class="code"
-        style="max-width: 440px; margin: 26px auto 0; text-align: left"
-      >
-        <div class="code-head">
-          <span class="lang">terminal</span>
-          <span class="mono faint" style="font-size: 11px">exit 1</span>
-        </div>
-        <div class="code-body mono" style="font-size: 13px">
-          <span :style="{ color: 'var(--accent)' }">$</span> markpost sync<br />
-          <span :style="{ color: 'var(--err)' }">{{ statusMessage }}</span>
-        </div>
-      </div>
-      <h1 class="h1" style="margin-top: 28px">Something went wrong.</h1>
-      <p class="lead" style="margin-top: 10px">
-        The sync hit a snag on our end. Try again, or head back home while we
-        look into it.
-      </p>
-      <div class="row gap-3" style="justify-content: center; margin-top: 26px">
-        <AppBtn variant="accent" icon="refresh" @click="handleRetry">
-          try again
-        </AppBtn>
-        <AppBtn icon="arrowR" href="/">back to home</AppBtn>
-      </div>
-    </div>
-  </div>
+    <AppBtn variant="accent" icon="refresh" @click="handleRetry">
+      try again
+    </AppBtn>
+    <AppBtn icon="arrowR" href="/">back to home</AppBtn>
+  </AppErrorScreen>
 </template>
 
 <script setup lang="ts">
@@ -67,15 +27,36 @@ useHead({ title: "Something went wrong" });
 
 const statusCode = computed(() => props.error.statusCode ?? 500);
 
+// 5xx bodies can carry internal detail (thrown from a DB call, an upstream
+// API, etc.) in `message`, so only surface it below 500 where it's routinely
+// a client-facing validation message. `statusMessage` is always safe to show.
+const isServerError = computed(() => statusCode.value >= 500);
+
+const strokeColor = computed(() =>
+  isServerError.value ? "var(--err)" : "var(--accent)",
+);
+
 const statusMessage = computed(() => {
-  const message = props.error.statusMessage || props.error.message;
-  if (!message) {
-    return "unhandled error";
+  if (isServerError.value) {
+    return props.error.statusMessage || "internal error";
   }
-  return message;
+  return props.error.statusMessage || props.error.message || "unhandled error";
 });
 
+const heading = computed(() =>
+  isServerError.value ? "Something went wrong." : "That request didn't work.",
+);
+
+const lead = computed(() =>
+  isServerError.value
+    ? "The sync hit a snag on our end. Try again, or head back home while we look into it."
+    : "Check the link and try again, or head back home.",
+);
+
+// A full reload re-requests the page that errored, so if the failure was
+// transient (a dropped connection, a stale deploy) the user lands back where
+// they were instead of being punted home.
 function handleRetry() {
-  clearError({ redirect: "/" });
+  window.location.reload();
 }
 </script>
