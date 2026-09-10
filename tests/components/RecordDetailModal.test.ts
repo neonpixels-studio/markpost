@@ -118,6 +118,56 @@ describe("RecordDetailModal", () => {
     expect(wrapper.text()).toContain("disk full");
   });
 
+  it("shows a fallback message when an error record has no errorMessage", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "error", errorMessage: null }),
+    });
+    expect(wrapper.text()).toContain("No error details available.");
+  });
+
+  it("does not show the sync error alert or retry button for a non-error record", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "synced", errorMessage: null }),
+    });
+    expect(wrapper.find(".app-alert[data-tone='err']").exists()).toBe(false);
+    expect(
+      wrapper
+        .findAll(".app-btn")
+        .some((button) => button.text() === "retry sync"),
+    ).toBe(false);
+  });
+
+  it("emits retry with the record's uuid when the retry button is clicked", async () => {
+    const wrapper = mountModal({
+      record: makeRecord({
+        uuid: "error-uuid",
+        status: "error",
+        errorMessage: "disk full",
+      }),
+    });
+
+    const retryButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "retry sync");
+    expect(retryButton).toBeDefined();
+    await retryButton?.trigger("click");
+
+    expect(wrapper.emitted("retry")).toEqual([["error-uuid"]]);
+  });
+
+  it("disables the retry button and shows a retrying label while isRetrying is true", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      isRetrying: true,
+    });
+
+    const retryButton = wrapper
+      .findAll(".app-btn")
+      .find((button) => button.text() === "retrying…");
+    expect(retryButton).toBeDefined();
+    expect(retryButton?.attributes("disabled")).toBeDefined();
+  });
+
   it("emits close when the close button is clicked", async () => {
     const wrapper = mountModal();
     await wrapper.find(".app-btn").trigger("click");
@@ -194,6 +244,20 @@ describe("RecordDetailModal", () => {
 
     try {
       const wrapper = mountModal();
+      expect(wrapper.html()).toMatchSnapshot();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("matches the snapshot for a record in error status", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FROZEN_NOW));
+
+    try {
+      const wrapper = mountModal({
+        record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      });
       expect(wrapper.html()).toMatchSnapshot();
     } finally {
       vi.useRealTimers();

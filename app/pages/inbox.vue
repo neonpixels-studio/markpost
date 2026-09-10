@@ -227,7 +227,9 @@
       :record="detailRecord"
       :is-loading="isDetailLoading"
       :load-error="detailError"
+      :is-retrying="isBulkActionInFlight"
       @close="closeRecordDetail"
+      @retry="retryRecord"
     />
 
     <ConfirmDialog
@@ -449,6 +451,7 @@ const {
   loadError: detailError,
   open: openDetail,
   close: closeDetail,
+  applyUpdate: applyDetailUpdate,
 } = useRecordDetail();
 
 const activeRecordUuid = computed(() => {
@@ -471,6 +474,23 @@ function closeRecordDetail(): void {
   delete query[RECORD_QUERY_KEY];
   // Replace so pressing Back after closing doesn't reopen the modal.
   void navigateTo({ path: INBOX_PATH, query }, { replace: true });
+}
+
+// Reuses the same bulk status-update path as the toolbar's "mark pending" so
+// a stuck error record moves out of the error bucket the next CLI sync picks
+// up — this both keeps the table row and stat cards in sync (via
+// updateRecordsStatus's own state) and lets the modal reflect the new status
+// immediately by pushing the server's response into useRecordDetail.
+async function retryRecord(uuid: string): Promise<void> {
+  if (isBulkActionInFlight.value) {
+    return;
+  }
+
+  const [updated] = await updateRecordsStatus([uuid], "pending");
+  if (updated) {
+    applyDetailUpdate(updated);
+  }
+  await refreshStats();
 }
 
 watch(

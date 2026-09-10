@@ -121,13 +121,26 @@
         </dl>
 
         <AppAlert
-          v-if="record.attributes.errorMessage"
+          v-if="record.attributes.status === 'error'"
           tone="err"
           title="Sync error"
           :closeable="false"
           style="margin-bottom: 18px"
         >
-          {{ record.attributes.errorMessage }}
+          <div class="col gap-2">
+            <span>{{
+              record.attributes.errorMessage ?? "No error details available."
+            }}</span>
+            <AppBtn
+              variant="ghost"
+              size="sm"
+              icon="refresh"
+              :disabled="isRetrying"
+              style="align-self: flex-start"
+              @click="emit('retry', record.attributes.uuid)"
+              >{{ isRetrying ? "retrying…" : "retry sync" }}</AppBtn
+            >
+          </div>
         </AppAlert>
 
         <span class="kicker">content</span>
@@ -148,14 +161,23 @@ import {
   type RecordResource,
 } from "~/composables/useRecords";
 
-defineProps<{
-  record: RecordResource | null;
-  isLoading: boolean;
-  loadError: string | null;
-}>();
+withDefaults(
+  defineProps<{
+    record: RecordResource | null;
+    isLoading: boolean;
+    loadError: string | null;
+    // Disables the retry button while a retry request for this record is in
+    // flight, mirroring the disabled pattern used elsewhere (e.g. delete).
+    isRetrying?: boolean;
+  }>(),
+  {
+    isRetrying: false,
+  },
+);
 
 const emit = defineEmits<{
   close: [];
+  retry: [uuid: string];
 }>();
 
 const cardElement = ref<HTMLElement | null>(null);

@@ -182,4 +182,39 @@ describe("useRecordDetail", () => {
     expect(detail.record.value).toBeNull();
     expect(detail.isLoading.value).toBe(false);
   });
+
+  describe("applyUpdate", () => {
+    it("replaces the open record when the uuid matches", async () => {
+      const record = makeRecord();
+      mockFetch.mockResolvedValue({ data: record });
+
+      const detail = useRecordDetail();
+      await detail.open("uuid-1");
+
+      const updated = makeRecord({ status: "pending", errorMessage: null });
+      detail.applyUpdate(updated);
+
+      expect(detail.record.value).toEqual(updated);
+    });
+
+    it("ignores an update for a different uuid than the one currently open", async () => {
+      const record = makeRecord();
+      mockFetch.mockResolvedValue({ data: record });
+
+      const detail = useRecordDetail();
+      await detail.open("uuid-1");
+
+      const otherRecord = makeRecord({ uuid: "uuid-2" });
+      detail.applyUpdate(otherRecord);
+
+      expect(detail.record.value).toEqual(record);
+    });
+
+    it("ignores an update when no record is open", () => {
+      const detail = useRecordDetail();
+      detail.applyUpdate(makeRecord());
+
+      expect(detail.record.value).toBeNull();
+    });
+  });
 });

@@ -108,6 +108,7 @@ const detailLoadingRef = ref(false);
 const detailErrorRef = ref<string | null>(null);
 const mockOpenDetail = vi.fn();
 const mockCloseDetail = vi.fn();
+const mockApplyDetailUpdate = vi.fn();
 
 vi.mock("../../app/composables/useRecordDetail", () => ({
   useRecordDetail: () => ({
@@ -116,6 +117,7 @@ vi.mock("../../app/composables/useRecordDetail", () => ({
     loadError: detailErrorRef,
     open: mockOpenDetail,
     close: mockCloseDetail,
+    applyUpdate: mockApplyDetailUpdate,
   }),
 }));
 
@@ -167,9 +169,9 @@ const globalConfig = {
       },
       RecordDetailModal: {
         template:
-          '<div class="record-detail-modal" @click="$emit(\'close\')" />',
-        props: ["record", "isLoading", "loadError"],
-        emits: ["close"],
+          '<div class="record-detail-modal" @click="$emit(\'close\')"><button class="detail-retry-btn" :disabled="isRetrying" @click.stop="$emit(\'retry\', record?.attributes?.uuid)">retry</button></div>',
+        props: ["record", "isLoading", "loadError", "isRetrying"],
+        emits: ["close", "retry"],
       },
       InputCheckbox: {
         template:
@@ -258,6 +260,7 @@ describe("inbox page", () => {
     routeQueryRef.value = {};
     mockOpenDetail.mockReset();
     mockCloseDetail.mockReset();
+    mockApplyDetailUpdate.mockReset();
     mockNavigateTo.mockReset();
   });
 
@@ -817,6 +820,130 @@ describe("inbox page", () => {
       await flushPromises();
 
       expect(mockFetchRecordStats).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("record retry", () => {
+    it("marks the record pending via updateRecordsStatus when the modal emits retry", async () => {
+      routeQueryRef.value = { record: "query-uuid" };
+      detailRecordRef.value = makeRecord({
+        uuid: "query-uuid",
+        status: "error",
+        errorMessage: "disk full",
+      });
+      mockUpdateRecordsStatus.mockResolvedValue([
+        makeRecord({
+          uuid: "query-uuid",
+          status: "pending",
+          errorMessage: null,
+        }),
+      ]);
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".detail-retry-btn").trigger("click");
+      await flushPromises();
+
+      expect(mockUpdateRecordsStatus).toHaveBeenCalledWith(
+        ["query-uuid"],
+        "pending",
+      );
+    });
+
+    it("pushes the updated record into the detail view after a successful retry", async () => {
+      routeQueryRef.value = { record: "query-uuid" };
+      detailRecordRef.value = makeRecord({
+        uuid: "query-uuid",
+        status: "error",
+        errorMessage: "disk full",
+      });
+      const updatedRecord = makeRecord({
+        uuid: "query-uuid",
+        status: "pending",
+        errorMessage: null,
+      });
+      mockUpdateRecordsStatus.mockResolvedValue([updatedRecord]);
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".detail-retry-btn").trigger("click");
+      await flushPromises();
+
+      expect(mockApplyDetailUpdate).toHaveBeenCalledWith(updatedRecord);
+    });
+
+    it("does not push a detail update when the server skips the record", async () => {
+      routeQueryRef.value = { record: "query-uuid" };
+      detailRecordRef.value = makeRecord({
+        uuid: "query-uuid",
+        status: "error",
+        errorMessage: "disk full",
+      });
+      mockUpdateRecordsStatus.mockResolvedValue([]);
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".detail-retry-btn").trigger("click");
+      await flushPromises();
+
+      expect(mockApplyDetailUpdate).not.toHaveBeenCalled();
+    });
+
+    it("refreshes stats after a retry, since it can change the stat cards", async () => {
+      routeQueryRef.value = { record: "query-uuid" };
+      detailRecordRef.value = makeRecord({
+        uuid: "query-uuid",
+        status: "error",
+        errorMessage: "disk full",
+      });
+      mockUpdateRecordsStatus.mockResolvedValue([
+        makeRecord({
+          uuid: "query-uuid",
+          status: "pending",
+          errorMessage: null,
+        }),
+      ]);
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      mockFetchRecordStats.mockClear();
+
+      await wrapper.find(".detail-retry-btn").trigger("click");
+      await flushPromises();
+
+      expect(mockFetchRecordStats).toHaveBeenCalledOnce();
+    });
+
+    it("ignores a retry while a bulk action is already in flight", async () => {
+      routeQueryRef.value = { record: "query-uuid" };
+      detailRecordRef.value = makeRecord({
+        uuid: "query-uuid",
+        status: "error",
+        errorMessage: "disk full",
+      });
+      isUpdatingStatusRef.value = true;
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".detail-retry-btn").trigger("click");
+      await flushPromises();
+
+      expect(mockUpdateRecordsStatus).not.toHaveBeenCalled();
+    });
+
+    it("passes isBulkActionInFlight through to the modal's isRetrying prop", async () => {
+      routeQueryRef.value = { record: "query-uuid" };
+      detailRecordRef.value = makeRecord({
+        uuid: "query-uuid",
+        status: "error",
+        errorMessage: "disk full",
+      });
+      isUpdatingStatusRef.value = true;
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      expect(
+        wrapper.find(".detail-retry-btn").attributes("disabled"),
+      ).toBeDefined();
     });
   });
 });
