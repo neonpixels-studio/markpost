@@ -223,15 +223,26 @@ function handleRetryClick(): void {
 const cardElement = ref<HTMLElement | null>(null);
 let previouslyFocused: HTMLElement | null = null;
 
-// A successful retry flips the record out of error status, which unmounts
-// the AppAlert holding the button the user just focused — dropping focus to
-// <body>, outside the dialog. Return it to the card (already tabindex="-1")
-// so keyboard users aren't dropped out of the modal.
-watch(isErrorRecord, (isError, wasError) => {
-  if (!isError && wasError) {
+// Two distinct browser behaviors can drop focus to <body>, outside the
+// dialog, while the retry button held it: a successful retry unmounts the
+// AppAlert (and the button inside it) once the record leaves error status,
+// and disabling a focused button (isRetryButtonDisabled going true, e.g.
+// while the request is in flight) triggers the browser's own focus-fixup —
+// which also fires on a *failed* retry, since the button was disabled and
+// re-enabled without ever being refocused. Re-checking
+// `document.activeElement` rather than reacting unconditionally means this
+// only reclaims focus that was actually lost here, not focus the user
+// deliberately moved elsewhere (e.g. tabbed to "close") in the meantime.
+watch(
+  [isErrorRecord, isRetryButtonDisabled],
+  () => {
+    if (document.activeElement !== document.body) {
+      return;
+    }
     cardElement.value?.focus();
-  }
-});
+  },
+  { flush: "post" },
+);
 
 // Only dismiss when both the press and the release land on the backdrop, so a
 // text selection dragged between the card and the overlay in either direction

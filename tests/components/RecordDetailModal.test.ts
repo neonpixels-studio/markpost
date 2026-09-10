@@ -37,6 +37,14 @@ function makeRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeErrorRecord(overrides: Record<string, unknown> = {}) {
+  return makeRecord({
+    status: "error",
+    errorMessage: "disk full",
+    ...overrides,
+  });
+}
+
 const stubs = {
   AppBtn: {
     template:
@@ -117,7 +125,7 @@ describe("RecordDetailModal", () => {
 
   it("shows the sync error alert when the record carries an errorMessage", () => {
     const wrapper = mountModal({
-      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      record: makeErrorRecord(),
     });
     expect(wrapper.text()).toContain("disk full");
   });
@@ -146,11 +154,7 @@ describe("RecordDetailModal", () => {
 
   it("emits retry with the record's uuid when the retry button is clicked", async () => {
     const wrapper = mountModal({
-      record: makeRecord({
-        uuid: "error-uuid",
-        status: "error",
-        errorMessage: "disk full",
-      }),
+      record: makeErrorRecord({ uuid: "error-uuid" }),
     });
 
     const retryButton = findButtonByText(wrapper, "retry sync");
@@ -162,7 +166,7 @@ describe("RecordDetailModal", () => {
 
   it("disables the retry button and shows a retrying label while isRetrying is true", () => {
     const wrapper = mountModal({
-      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      record: makeErrorRecord(),
       isRetrying: true,
     });
 
@@ -173,7 +177,7 @@ describe("RecordDetailModal", () => {
 
   it("disables the retry button without relabeling it when isRetryDisabled is true", () => {
     const wrapper = mountModal({
-      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      record: makeErrorRecord(),
       isRetryDisabled: true,
     });
 
@@ -184,7 +188,7 @@ describe("RecordDetailModal", () => {
 
   it("shows the retryError message inline when a previous retry attempt failed", () => {
     const wrapper = mountModal({
-      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      record: makeErrorRecord(),
       retryError: "Failed to update records. Please try again.",
     });
 
@@ -195,7 +199,7 @@ describe("RecordDetailModal", () => {
 
   it("shows no retryError element when the record has never failed a retry", () => {
     const wrapper = mountModal({
-      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      record: makeErrorRecord(),
     });
 
     expect(wrapper.find("[data-testid='retry-error']").exists()).toBe(false);
@@ -205,24 +209,78 @@ describe("RecordDetailModal", () => {
     const wrapper = mount(RecordDetailModal, {
       attachTo: document.body,
       props: {
-        record: makeRecord({ status: "error", errorMessage: "disk full" }),
+        record: makeErrorRecord(),
         isLoading: false,
         loadError: null,
       },
       global: { stubs },
     });
 
-    const retryButton = findButtonByText(wrapper, "retry sync");
-    await retryButton?.element.focus();
-    expect(document.activeElement).toBe(retryButton?.element);
+    try {
+      const retryButton = findButtonByText(wrapper, "retry sync");
+      await retryButton?.element.focus();
+      expect(document.activeElement).toBe(retryButton?.element);
 
-    await wrapper.setProps({
-      record: makeRecord({ status: "pending", errorMessage: null }),
+      await wrapper.setProps({
+        record: makeRecord({ status: "pending", errorMessage: null }),
+      });
+
+      expect(document.activeElement).toBe(wrapper.find(".card").element);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("returns focus to the card when a retry fails and the button re-enables without ever refocusing", async () => {
+    const wrapper = mount(RecordDetailModal, {
+      attachTo: document.body,
+      props: {
+        record: makeErrorRecord(),
+        isLoading: false,
+        loadError: null,
+        isRetrying: true,
+      },
+      global: { stubs },
     });
 
-    expect(document.activeElement).toBe(wrapper.find(".card").element);
+    try {
+      // A disabled element can't hold focus, so simulate the browser's own
+      // focus-fixup (Chrome/Firefox move focus to <body> when a focused
+      // control is disabled) — jsdom doesn't do this automatically.
+      (document.activeElement as HTMLElement | null)?.blur();
 
-    wrapper.unmount();
+      await wrapper.setProps({ isRetrying: false });
+
+      expect(document.activeElement).toBe(wrapper.find(".card").element);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("does not steal focus the user has already moved elsewhere", async () => {
+    const wrapper = mount(RecordDetailModal, {
+      attachTo: document.body,
+      props: {
+        record: makeErrorRecord(),
+        isLoading: false,
+        loadError: null,
+      },
+      global: { stubs },
+    });
+
+    try {
+      const closeButton = findButtonByText(wrapper, "close");
+      await closeButton?.element.focus();
+      expect(document.activeElement).toBe(closeButton?.element);
+
+      await wrapper.setProps({
+        record: makeRecord({ status: "pending", errorMessage: null }),
+      });
+
+      expect(document.activeElement).toBe(closeButton?.element);
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("emits close when the close button is clicked", async () => {
@@ -313,7 +371,7 @@ describe("RecordDetailModal", () => {
 
     try {
       const wrapper = mountModal({
-        record: makeRecord({ status: "error", errorMessage: "disk full" }),
+        record: makeErrorRecord(),
       });
       expect(wrapper.html()).toMatchSnapshot();
     } finally {

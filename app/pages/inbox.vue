@@ -501,6 +501,14 @@ const RETRY_FAILED_MESSAGE = "Failed to retry record. Please try again.";
 async function markRecordPendingForRetry(uuid: string): Promise<void> {
   const [updated] = await updateRecordsStatus([uuid], "pending");
 
+  // A success always refreshes the stat cards, even if the user has since
+  // navigated away from this record — the table row (updated by
+  // updateRecordsStatus itself) and the stat cards belong to the page, not
+  // to whichever record happens to be open in the modal right now.
+  if (updated) {
+    await refreshStats();
+  }
+
   // The user may have navigated to a different record while this request was
   // in flight — only the still-open record's uuid should be allowed to set
   // retryError or push a detail update; a stale response for a record that's
@@ -515,7 +523,6 @@ async function markRecordPendingForRetry(uuid: string): Promise<void> {
   }
 
   applyDetailUpdate(updated);
-  await refreshStats();
 }
 
 // Reuses the same bulk status-update path as the toolbar's "mark pending" so
@@ -534,7 +541,12 @@ async function retryRecord(uuid: string): Promise<void> {
   try {
     await markRecordPendingForRetry(uuid);
   } finally {
-    retryingUuid.value = null;
+    // Only this call's own retry owns the flag — a slower retry for a
+    // different record (started after this one's isBulkActionInFlight guard
+    // window closed) must not have its in-flight state clobbered here.
+    if (retryingUuid.value === uuid) {
+      retryingUuid.value = null;
+    }
   }
 }
 
