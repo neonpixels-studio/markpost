@@ -30,6 +30,8 @@ vi.mock("../../../../server/db", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ column, value }),
   and: (...conditions: unknown[]) => ({ op: "and", conditions }),
+  or: (...conditions: unknown[]) => ({ op: "or", conditions }),
+  lt: (column: unknown, value: unknown) => ({ op: "lt", column, value }),
   isNull: (column: unknown) => ({ op: "isNull", column }),
   isNotNull: (column: unknown) => ({ op: "isNotNull", column }),
   inArray: (column: unknown, values: unknown) => ({
@@ -89,7 +91,7 @@ vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
 
 const handlerModule = await import("../../../../server/api/hooks/[slug].post");
 const handler = handlerModule.default;
-const { DEDUP_TOUCH_STALENESS_SECONDS } = handlerModule;
+const { DEDUP_TOUCH_STALENESS_SECONDS, isLastHitStale } = handlerModule;
 
 const SOURCE_UUID = "550e8400-e29b-41d4-a716-446655440001";
 const USER_ID = "user_abc123";
@@ -317,6 +319,42 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+// Pure unit coverage for the debounce predicate, independent of the handler
+// and its mocked db — pins the clock so the exact boundary (staleness cutoff
+// vs. 1ms inside it) is asserted precisely rather than approximated with a
+// real-time offset.
+describe("isLastHitStale", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("treats a null lastHitAt (never touched) as stale", () => {
+    expect(isLastHitStale(null)).toBe(true);
+  });
+
+  it("treats a lastHitAt exactly at the staleness window as stale", () => {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const lastHitAt = new Date(
+      now.getTime() - DEDUP_TOUCH_STALENESS_SECONDS * 1000,
+    );
+
+    expect(isLastHitStale(lastHitAt)).toBe(true);
+  });
+
+  it("treats a lastHitAt 1ms inside the staleness window as not stale", () => {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const lastHitAt = new Date(
+      now.getTime() - DEDUP_TOUCH_STALENESS_SECONDS * 1000 + 1,
+    );
+
+    expect(isLastHitStale(lastHitAt)).toBe(false);
+  });
 });
 
 describe("POST /api/hooks/[slug]", () => {
@@ -1694,11 +1732,13 @@ describe("POST /api/hooks/[slug]", () => {
       expect(lastCall).toHaveProperty("lastHitAt");
     });
 
-    // Debounce boundary (inside the window): a retry lands while the source's
-    // lastHitAt is still fresh, so touchLastHitAt must skip its UPDATE
-    // entirely — the only db.update call left is the losing claim attempt.
-    // This is what collapses a redelivery storm to one write per interval
-    // instead of one row-locking UPDATE per duplicate.
+    // Debounce boundary (inside the window), in-memory fast path: a retry
+    // lands while the source's lastHitAt (as read at the top of this request)
+    // is still fresh, so touchLastHitAt must skip its UPDATE entirely without
+    // a round trip — the only db.update call left is the losing claim
+    // attempt. (The DB-level guard that protects same-instant duplicates
+    // racing on a stale snapshot is covered separately, by asserting the
+    // WHERE clause shape in the "outside the window" test below.)
     it("skips the lastHitAt write when the source was touched inside the debounce window", async () => {
       const rawBody = JSON.stringify({
         id: "evt_dup_fresh",
@@ -1730,8 +1770,13 @@ describe("POST /api/hooks/[slug]", () => {
 
     // Debounce boundary (outside the window): a retry lands once the source's
     // lastHitAt has aged past the staleness interval, so touchLastHitAt must
-    // issue its UPDATE as usual.
-    it("writes the lastHitAt refresh when the source was touched outside the debounce window", async () => {
+    // issue its UPDATE as usual — and that UPDATE's WHERE clause must itself
+    // re-check staleness (not just filter by source id). That re-check is the
+    // actual concurrency guard: it's what stops several same-instant
+    // duplicates, which all read the same stale in-memory snapshot before any
+    // of them writes, from all mutating the row — only the first to reach
+    // Postgres still matches once the row is fresh.
+    it("writes the lastHitAt refresh, guarded by a re-checked staleness WHERE, when the source was touched outside the debounce window", async () => {
       const rawBody = JSON.stringify({
         id: "evt_dup_stale",
         type: "charge.succeeded",
@@ -1743,7 +1788,7 @@ describe("POST /api/hooks/[slug]", () => {
         [{ ...stripeSource, lastHitAt: staleLastHitAt }],
         [{ uuid: sampleRecord.uuid, title: "Charge" }],
       );
-      const { set: statsSet } = stubUpdateStats(false);
+      const { set: statsSet, where: statsWhere } = stubUpdateStats(false);
       mockReadRawBody.mockResolvedValue(rawBody);
       stubStripeHeader(rawBody);
 
@@ -1756,6 +1801,36 @@ describe("POST /api/hooks/[slug]", () => {
         statsSet.mock.calls.at(-1) as [Record<string, unknown>]
       )[0];
       expect(lastCall).toHaveProperty("lastHitAt");
+
+      // The touch's WHERE is `and(eq(sourceId), or(isNull, lt(staleBefore)))`
+      // — assert both the source scoping AND the re-checked staleness guard,
+      // so a future edit that drops the guard (reverting to unconditional
+      // debounce-only-in-memory) fails this test.
+      const touchWhereCondition = statsWhere.mock.calls.at(-1)?.[0] as {
+        op: string;
+        conditions: Array<{
+          op: string;
+          column?: unknown;
+          value?: unknown;
+          conditions?: Array<{ op: string; column?: unknown; value?: unknown }>;
+        }>;
+      };
+      expect(touchWhereCondition.op).toBe("and");
+      expect(touchWhereCondition.conditions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ column: sources.uuid, value: SOURCE_UUID }),
+        ]),
+      );
+      const staleGuard = touchWhereCondition.conditions.find(
+        (condition) => condition.op === "or",
+      );
+      expect(staleGuard).toBeDefined();
+      expect(staleGuard?.conditions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ op: "isNull", column: sources.lastHitAt }),
+          expect.objectContaining({ op: "lt", column: sources.lastHitAt }),
+        ]),
+      );
     });
 
     // Regression guard for the heal path: a retry can land against a record an
@@ -1857,6 +1932,46 @@ describe("POST /api/hooks/[slug]", () => {
         ),
         expect.any(Error),
       );
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    // Claim failure combined with a fresh lastHitAt: the claim's own catch
+    // logs once and reports claimed=false, then applyStatsBump falls through
+    // to touchLastHitAt — which must debounce away with NO further db call
+    // (and so no second failure/log) because this source's lastHitAt is
+    // still inside the window. Without the in-memory fast path this would
+    // hit the same failing update stub a second time and double-log.
+    it("does not attempt (or fail) a second stats write when the claim fails but lastHitAt is already fresh", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_stats_fail_fresh",
+        type: "charge.succeeded",
+      });
+      const freshLastHitAt = new Date(
+        Date.now() - (DEDUP_TOUCH_STALENESS_SECONDS - 5) * 1000,
+      );
+      stubSourceThenDelivery(
+        [{ ...stripeSource, lastHitAt: freshLastHitAt }],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      const { where: statsWhere } = stubFailingStatsUpdate();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      const consoleErrorSpy = spyConsoleError();
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      // Only the claim attempt reached the database; the debounced touch
+      // never called .where() a second time.
+      expect(statsWhere).toHaveBeenCalledOnce();
+      // Exactly one stats failure logged (the claim's), not two.
+      const statsFailureLogs = consoleErrorSpy.mock.calls.filter(
+        ([message]) =>
+          typeof message === "string" &&
+          message.includes("[hooks/ingest] failed to update source stats:"),
+      );
+      expect(statsFailureLogs).toHaveLength(1);
 
       consoleErrorSpy.mockRestore();
     });

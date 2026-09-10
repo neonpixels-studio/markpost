@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { H3Event } from "h3";
 import { getDb } from "../../db";
 import { records, sources, userSettings } from "../../db/schema";
@@ -219,10 +219,10 @@ async function incrementSourceStats(sourceId: string): Promise<void> {
 }
 
 // True once currentLastHitAt is missing or older than the debounce window —
-// i.e. this hit is the one allowed to write. Isolated from touchLastHitAt so
-// the boundary (just-inside vs just-outside the window) is unit-testable
-// without a database.
-function isLastHitStale(currentLastHitAt: Date | null): boolean {
+// i.e. this hit is the one allowed to write. Exported and isolated from
+// touchLastHitAt so the boundary (just-inside vs just-outside the window) is
+// directly unit-testable without a database.
+export function isLastHitStale(currentLastHitAt: Date | null): boolean {
   if (!currentLastHitAt) {
     return true;
   }
@@ -235,11 +235,19 @@ function isLastHitStale(currentLastHitAt: Date | null): boolean {
 // bump was already claimed (an ordinary retry / race loser): the delivery
 // already counted, so the retry is a hit worth timestamping but must not bump.
 //
-// Debounced against currentLastHitAt (the value read alongside the source at
-// the top of the request): a redelivery storm calls this once per duplicate,
-// but only the first one past the staleness window issues the UPDATE — the
-// rest return without touching the database, so the storm collapses to one
-// row-locking write per interval instead of one per duplicate.
+// Debounced two ways, for two different races:
+// - In-memory fast path: currentLastHitAt is the value read alongside the
+//   source at the top of THIS request. If it's already fresh, skip the round
+//   trip entirely — cheap, and correct for a retry arriving well after an
+//   earlier one already committed its write.
+// - Database guard: currentLastHitAt can't see duplicates racing within the
+//   same instant — several requests can all read the same stale snapshot
+//   before any of them writes, so the in-memory check alone would let all of
+//   them through. The UPDATE's WHERE re-checks staleness against the row's
+//   live value, so only the first writer among simultaneous duplicates
+//   actually mutates the row; the rest match zero rows. This (not the
+//   in-memory check) is what guarantees a redelivery storm collapses to one
+//   row-locking write per interval instead of one per duplicate.
 async function touchLastHitAt(
   sourceId: string,
   currentLastHitAt: Date | null,
@@ -248,11 +256,19 @@ async function touchLastHitAt(
     return;
   }
 
+  const staleBefore = new Date(
+    Date.now() - DEDUP_TOUCH_STALENESS_SECONDS * 1000,
+  );
   const db = getDb();
   await db
     .update(sources)
     .set({ lastHitAt: new Date() })
-    .where(eq(sources.uuid, sourceId));
+    .where(
+      and(
+        eq(sources.uuid, sourceId),
+        or(isNull(sources.lastHitAt), lt(sources.lastHitAt, staleBefore)),
+      ),
+    );
 }
 
 // Atomically claim this record's one-time counter bump. `records.counted_at` is
