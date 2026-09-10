@@ -228,6 +228,7 @@
       :is-loading="isDetailLoading"
       :load-error="detailError"
       :is-retrying="isRetryingActiveRecord"
+      :is-retry-disabled="isBulkActionInFlight"
       :retry-error="retryError"
       @close="closeRecordDetail"
       @retry="retryRecord"
@@ -486,11 +487,35 @@ function openRecord(uuid: string): void {
 }
 
 function closeRecordDetail(): void {
-  retryError.value = null;
   const query = { ...route.query };
   delete query[RECORD_QUERY_KEY];
   // Replace so pressing Back after closing doesn't reopen the modal.
   void navigateTo({ path: INBOX_PATH, query }, { replace: true });
+}
+
+const RETRY_FAILED_MESSAGE = "Failed to retry record. Please try again.";
+
+// Isolates the request + its follow-up from retryRecord's flag bookkeeping
+// below, and keeps retryRecord itself from mixing three concerns (guard,
+// in-flight state, request handling) in one function.
+async function markRecordPendingForRetry(uuid: string): Promise<void> {
+  const [updated] = await updateRecordsStatus([uuid], "pending");
+
+  // The user may have navigated to a different record while this request was
+  // in flight — only the still-open record's uuid should be allowed to set
+  // retryError or push a detail update; a stale response for a record that's
+  // no longer open must not surface on whatever is open now.
+  if (activeRecordUuid.value !== uuid) {
+    return;
+  }
+
+  if (!updated) {
+    retryError.value = actionError.value ?? RETRY_FAILED_MESSAGE;
+    return;
+  }
+
+  applyDetailUpdate(updated);
+  await refreshStats();
 }
 
 // Reuses the same bulk status-update path as the toolbar's "mark pending" so
@@ -507,14 +532,7 @@ async function retryRecord(uuid: string): Promise<void> {
   retryingUuid.value = uuid;
 
   try {
-    const [updated] = await updateRecordsStatus([uuid], "pending");
-    if (!updated) {
-      retryError.value =
-        actionError.value ?? "Failed to retry record. Please try again.";
-      return;
-    }
-    applyDetailUpdate(updated);
-    await refreshStats();
+    await markRecordPendingForRetry(uuid);
   } finally {
     retryingUuid.value = null;
   }

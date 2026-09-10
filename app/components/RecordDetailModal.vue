@@ -131,6 +131,7 @@
             <span>{{ errorMessageDisplay }}</span>
             <span
               v-if="retryError"
+              data-testid="retry-error"
               class="mono"
               style="font-size: 12px; color: var(--err)"
               >{{ retryError }}</span
@@ -139,7 +140,7 @@
               variant="ghost"
               size="sm"
               icon="refresh"
-              :disabled="isRetrying"
+              :disabled="isRetryButtonDisabled"
               style="align-self: flex-start"
               @click="handleRetryClick"
               >{{ retryButtonLabel }}</AppBtn
@@ -170,10 +171,13 @@ const props = withDefaults(
     record: RecordResource | null;
     isLoading: boolean;
     loadError: string | null;
-    // Disables the retry button and swaps its label while a retry request for
-    // this specific record is in flight, mirroring the disabled pattern used
-    // elsewhere (e.g. delete).
+    // Swaps the button's label to "retrying…" while a retry request for this
+    // specific record is in flight.
     isRetrying?: boolean;
+    // Disables the retry button for a reason unrelated to isRetrying — the
+    // caller sets this while some other bulk action is in flight, since
+    // firing a second status-changing request concurrently would race it.
+    isRetryDisabled?: boolean;
     // Set by the caller when the most recent retry attempt for this record
     // failed, so the modal can show it inline instead of relying on a
     // page-level alert hidden behind the modal's own backdrop.
@@ -181,6 +185,7 @@ const props = withDefaults(
   }>(),
   {
     isRetrying: false,
+    isRetryDisabled: false,
     retryError: null,
   },
 );
@@ -197,11 +202,15 @@ const isErrorRecord = computed(
 );
 
 const errorMessageDisplay = computed(
-  () => props.record?.attributes.errorMessage ?? NO_ERROR_DETAILS_MESSAGE,
+  () => props.record?.attributes.errorMessage || NO_ERROR_DETAILS_MESSAGE,
 );
 
 const retryButtonLabel = computed(() =>
   props.isRetrying ? "retrying…" : "retry sync",
+);
+
+const isRetryButtonDisabled = computed(
+  () => props.isRetrying || props.isRetryDisabled,
 );
 
 function handleRetryClick(): void {
@@ -213,6 +222,16 @@ function handleRetryClick(): void {
 
 const cardElement = ref<HTMLElement | null>(null);
 let previouslyFocused: HTMLElement | null = null;
+
+// A successful retry flips the record out of error status, which unmounts
+// the AppAlert holding the button the user just focused — dropping focus to
+// <body>, outside the dialog. Return it to the card (already tabindex="-1")
+// so keyboard users aren't dropped out of the modal.
+watch(isErrorRecord, (isError, wasError) => {
+  if (!isError && wasError) {
+    cardElement.value?.focus();
+  }
+});
 
 // Only dismiss when both the press and the release land on the backdrop, so a
 // text selection dragged between the card and the overlay in either direction

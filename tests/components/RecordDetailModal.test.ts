@@ -129,6 +129,13 @@ describe("RecordDetailModal", () => {
     expect(wrapper.text()).toContain("No error details available.");
   });
 
+  it("shows the fallback message when errorMessage is an empty string", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "error", errorMessage: "" }),
+    });
+    expect(wrapper.text()).toContain("No error details available.");
+  });
+
   it("does not show the sync error alert or retry button for a non-error record", () => {
     const wrapper = mountModal({
       record: makeRecord({ status: "synced", errorMessage: null }),
@@ -164,23 +171,58 @@ describe("RecordDetailModal", () => {
     expect(retryButton?.attributes("disabled")).toBeDefined();
   });
 
+  it("disables the retry button without relabeling it when isRetryDisabled is true", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      isRetryDisabled: true,
+    });
+
+    const retryButton = findButtonByText(wrapper, "retry sync");
+    expect(retryButton).toBeDefined();
+    expect(retryButton?.attributes("disabled")).toBeDefined();
+  });
+
   it("shows the retryError message inline when a previous retry attempt failed", () => {
     const wrapper = mountModal({
       record: makeRecord({ status: "error", errorMessage: "disk full" }),
       retryError: "Failed to update records. Please try again.",
     });
 
-    expect(wrapper.text()).toContain(
+    expect(wrapper.find("[data-testid='retry-error']").text()).toBe(
       "Failed to update records. Please try again.",
     );
   });
 
-  it("shows no retryError message when the record has never failed a retry", () => {
+  it("shows no retryError element when the record has never failed a retry", () => {
     const wrapper = mountModal({
       record: makeRecord({ status: "error", errorMessage: "disk full" }),
     });
 
-    expect(wrapper.text()).not.toContain("Please try again.");
+    expect(wrapper.find("[data-testid='retry-error']").exists()).toBe(false);
+  });
+
+  it("returns focus to the card when a retry moves the record out of error status", async () => {
+    const wrapper = mount(RecordDetailModal, {
+      attachTo: document.body,
+      props: {
+        record: makeRecord({ status: "error", errorMessage: "disk full" }),
+        isLoading: false,
+        loadError: null,
+      },
+      global: { stubs },
+    });
+
+    const retryButton = findButtonByText(wrapper, "retry sync");
+    await retryButton?.element.focus();
+    expect(document.activeElement).toBe(retryButton?.element);
+
+    await wrapper.setProps({
+      record: makeRecord({ status: "pending", errorMessage: null }),
+    });
+
+    expect(document.activeElement).toBe(wrapper.find(".card").element);
+
+    wrapper.unmount();
   });
 
   it("emits close when the close button is clicked", async () => {
