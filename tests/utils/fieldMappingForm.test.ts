@@ -4,7 +4,6 @@ import {
   fieldMappingToFormValues,
   formValuesToFieldMapping,
   invalidFieldMappingFields,
-  isValidDotPath,
 } from "../../app/utils/fieldMappingForm";
 
 describe("FIELD_MAPPING_FIELDS", () => {
@@ -117,22 +116,6 @@ describe("formValuesToFieldMapping", () => {
   });
 });
 
-describe("isValidDotPath", () => {
-  it.each(["title", "data.subject", "a.b.c", "data_1.sub-field"])(
-    "accepts %s",
-    (path) => {
-      expect(isValidDotPath(path)).toBe(true);
-    },
-  );
-
-  it.each(["", ".", ".data", "data.", "data..subject", ".."])(
-    "rejects %s",
-    (path) => {
-      expect(isValidDotPath(path)).toBe(false);
-    },
-  );
-});
-
 describe("invalidFieldMappingFields", () => {
   const blankValues = {
     title: "",
@@ -166,5 +149,21 @@ describe("invalidFieldMappingFields", () => {
     expect(invalidFieldMappingFields({ ...blankValues, title: "   " })).toEqual(
       [],
     );
+  });
+
+  it("flags a path containing a forbidden segment (e.g. __proto__)", () => {
+    const invalid = invalidFieldMappingFields({
+      ...blankValues,
+      title: "data.__proto__.polluted",
+    });
+    expect(invalid.map((field) => field.key)).toEqual(["title"]);
+  });
+
+  it("flags a path exceeding the shared max length", () => {
+    const invalid = invalidFieldMappingFields({
+      ...blankValues,
+      title: "a".repeat(201),
+    });
+    expect(invalid.map((field) => field.key)).toEqual(["title"]);
   });
 });

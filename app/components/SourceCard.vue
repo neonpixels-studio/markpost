@@ -131,6 +131,7 @@ import {
   isRotatableProvider,
   SHARED_SECRET_PROVIDER_IDS,
 } from "#shared/utils/webhookSecrets";
+import { isSourceMappable } from "#shared/utils/fieldMapping";
 
 const ICON_BY_TYPE: Record<string, string> = {
   webhook: "zap",
@@ -172,13 +173,6 @@ const PRESET_TYPES = new Set([
   "shortcuts",
 ]);
 
-// applyFieldMapping (server/utils/fieldMapper.ts) has exactly one caller —
-// the JSON webhook ingest handler (server/api/hooks/[slug].post.ts). Email
-// deliveries take a completely different path (parseEmailPayload, via the
-// direct record-create API) that never reads a source's fieldMapping, so
-// configuring one for an email source would silently do nothing.
-const EMAIL_SOURCE_TYPE = "email";
-
 const props = defineProps<{
   source: SourceResource;
 }>();
@@ -195,8 +189,11 @@ const isRotatable = computed(() =>
   isRotatableProvider(props.source.attributes.provider ?? ""),
 );
 
-const isMappable = computed(
-  () => props.source.attributes.type !== EMAIL_SOURCE_TYPE,
+const isMappable = computed(() =>
+  isSourceMappable(
+    props.source.attributes.type,
+    props.source.attributes.fieldMapping,
+  ),
 );
 
 const sourceType = computed(() => props.source.attributes.type);

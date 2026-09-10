@@ -20,6 +20,14 @@ export const SOURCE_TYPES = [
 
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
+// applyFieldMapping (server/utils/fieldMapper.ts) has exactly one caller —
+// the JSON webhook ingest handler (server/api/hooks/[slug].post.ts). Email
+// deliveries take a different path (parseEmailPayload, via the direct
+// record-create API) that never reads a source's fieldMapping. Shared so the
+// sources UI's card (app/components/SourceCard.vue) and page
+// (app/pages/sources.vue) agree on which type that carve-out applies to.
+export const EMAIL_SOURCE_TYPE: SourceType = "email";
+
 export function isSourceType(value: string): value is SourceType {
   return (SOURCE_TYPES as readonly string[]).includes(value);
 }

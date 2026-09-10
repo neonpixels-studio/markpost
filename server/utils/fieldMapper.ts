@@ -1,7 +1,8 @@
 import type { WebhookPayload } from "./markdown";
-import { isFieldMappingConfig } from "#shared/utils/fieldMapping";
-
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+import {
+  FIELD_MAPPING_FORBIDDEN_SEGMENTS as FORBIDDEN_KEYS,
+  isFieldMappingConfig,
+} from "#shared/utils/fieldMapping";
 
 function getNestedValue(
   payload: Record<string, unknown>,

@@ -162,7 +162,10 @@ import {
   isManualSecretProviderId,
   isRotatableProvider,
 } from "#shared/utils/webhookSecrets";
-import type { FieldMappingConfig } from "#shared/utils/fieldMapping";
+import {
+  isSourceMappable,
+  type FieldMappingConfig,
+} from "#shared/utils/fieldMapping";
 import type { RotateState } from "~/types/rotateSecret";
 import type { FieldMappingState } from "~/types/fieldMapping";
 
@@ -428,7 +431,12 @@ const onConfigureMappingRequested = (uuid: string) => {
   const source = sources.value.find(
     (candidate) => candidate.attributes.uuid === uuid,
   );
-  if (!source) {
+  // Mirrors SourceCard's own gate (isSourceMappable): a source the card
+  // wouldn't have shown the button for can't open the modal here either.
+  if (
+    !source ||
+    !isSourceMappable(source.attributes.type, source.attributes.fieldMapping)
+  ) {
     return;
   }
 

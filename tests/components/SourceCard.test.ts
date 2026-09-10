@@ -175,14 +175,29 @@ describe("SourceCard", () => {
     },
   );
 
-  it("hides the configure-mapping button for an email source (fieldMapping is never applied to email deliveries)", () => {
+  it("hides the configure-mapping button for an email source with no existing mapping (fieldMapping is never applied to email deliveries)", () => {
     const wrapper = mount(SourceCard, {
       ...globalConfig,
-      props: { source: makeSource({ type: "email" }) },
+      props: { source: makeSource({ type: "email", fieldMapping: null }) },
     });
     expect(
       wrapper.find("button[title='Configure field mapping']").exists(),
     ).toBe(false);
+  });
+
+  it("still shows the configure-mapping button for an email source that already has a stored mapping (stays inspectable/clearable)", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: {
+        source: makeSource({
+          type: "email",
+          fieldMapping: { title: "subject" },
+        }),
+      },
+    });
+    expect(
+      wrapper.find("button[title='Configure field mapping']").exists(),
+    ).toBe(true);
   });
 
   it.each(["stripe", "github", "zapier", "shortcuts"])(

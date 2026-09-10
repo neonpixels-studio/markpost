@@ -391,6 +391,26 @@ describe("sources page", () => {
       expect(wrapper.find(".mapping-modal").exists()).toBe(false);
     });
 
+    it("does not open the mapping modal for an email source with no existing mapping (mirrors SourceCard's own gate)", async () => {
+      const emailSource = makeSource("uuid-email");
+      emailSource.attributes.type = "email";
+      emailSource.attributes.fieldMapping = null;
+      sourcesRef.value = [emailSource];
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      expect(wrapper.find(".mapping-modal").exists()).toBe(false);
+    });
+
+    it("still opens the mapping modal for an email source that already has a stored mapping", async () => {
+      const emailSource = makeSource("uuid-email");
+      emailSource.attributes.type = "email";
+      emailSource.attributes.fieldMapping = { title: "subject" };
+      sourcesRef.value = [emailSource];
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".mapping-trigger").trigger("click");
+      expect(wrapper.find(".mapping-modal").exists()).toBe(true);
+    });
+
     it("calls updateFieldMapping with the source uuid and built mapping when saved", async () => {
       sourcesRef.value = [makeSource("uuid-1")];
       mockUpdateFieldMapping.mockResolvedValue(makeSource("uuid-1"));
