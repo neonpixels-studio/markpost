@@ -1,0 +1,25 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`AppErrorScreen > renders the code, terminal line, heading, lead, and a home link 1`] = `
+"<div style="position: relative; min-height: 100vh; background: var(--bg); display: grid; place-items: center; overflow-y: auto; padding: 40px;">
+  <div class="topo" aria-hidden="true"><svg width="100%" height="100%" viewBox="0 0 1440 520" preserveAspectRatio="xMidYMid slice" fill="none">
+      <path d="M -50 43 C 220 -27, 480 113, 760 13 S 1300 103, 1600 23" stroke="var(--accent)" stroke-width="1" opacity="0.1"></path>
+      <path d="M -50 101 C 220 31, 480 171, 760 71 S 1300 161, 1600 81" stroke="var(--accent)" stroke-width="1" opacity="0.15000000000000002"></path>
+      <path d="M -50 159 C 220 89, 480 229, 760 129 S 1300 219, 1600 139" stroke="var(--accent)" stroke-width="1" opacity="0.2"></path>
+      <path d="M -50 217 C 220 147, 480 287, 760 187 S 1300 277, 1600 197" stroke="var(--accent)" stroke-width="1" opacity="0.1"></path>
+      <path d="M -50 275 C 220 205, 480 345, 760 245 S 1300 335, 1600 255" stroke="var(--accent)" stroke-width="1" opacity="0.15000000000000002"></path>
+      <path d="M -50 333 C 220 263, 480 403, 760 303 S 1300 393, 1600 313" stroke="var(--accent)" stroke-width="1" opacity="0.2"></path>
+      <path d="M -50 391 C 220 321, 480 461, 760 361 S 1300 451, 1600 371" stroke="var(--accent)" stroke-width="1" opacity="0.1"></path>
+    </svg></div><a href="/" data-external="false" style="position: absolute; top: 28px; left: 40px;"><span class="row gap-2" style="align-items: center;"><span style="width: 22px; height: 22px; border-radius: 6px; background: var(--accent); display: grid; place-items: center; box-shadow: 0 2px 8px -2px var(--accent-tint-2); flex-grow: 0; flex-shrink: 0; flex-basis: auto;"><svg class="ico" width="14.08" height="14.08" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="color: var(--on-accent);"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line></svg></span><span style="font-weight: 600; font-size: 18.04px; letter-spacing: -0.03em;">markpost</span></span></a>
+  <div style="position: relative; text-align: center; max-width: 540px;">
+    <div class="mono err-glyph" style="--stroke-color: var(--accent);">404</div>
+    <div class="code" style="max-width: 440px; margin: 26px auto 0px; text-align: left;">
+      <div class="code-head"><span class="lang">terminal</span><span class="mono faint" style="font-size: 11px;">exit 1</span></div>
+      <div class="code-body mono" style="font-size: 13px; overflow-wrap: anywhere;"><span style="color: var(--accent);">$</span> cat /vault/missing.md<br><span style="color: var(--err);">cat: no such file or directory</span></div>
+    </div>
+    <h1 class="h1" style="margin-top: 28px;">This page never synced.</h1>
+    <p class="lead" style="margin-top: 10px;">The record you're looking for isn't in the vault.</p>
+    <div class="row gap-3" style="justify-content: center; margin-top: 26px;"></div>
+  </div>
+</div>"
+`;
