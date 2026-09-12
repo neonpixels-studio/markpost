@@ -80,11 +80,23 @@ export function useRecordDetail() {
     isLoading.value = false;
   }
 
+  // Lets a caller that already fetched a fresher copy of the currently open
+  // record (e.g. after a status-changing PATCH elsewhere) push it into the
+  // modal without a redundant re-fetch. Guarded by uuid so a response for a
+  // record that's no longer the open one can't clobber the modal.
+  function applyUpdate(updated: RecordResource): void {
+    if (record.value?.attributes.uuid !== updated.attributes.uuid) {
+      return;
+    }
+    record.value = updated;
+  }
+
   return {
     record,
     isLoading,
     loadError,
     open,
     close,
+    applyUpdate,
   };
 }

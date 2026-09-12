@@ -227,7 +227,11 @@
       :record="detailRecord"
       :is-loading="isDetailLoading"
       :load-error="detailError"
+      :is-retrying="isRetryingActiveRecord"
+      :is-retry-disabled="isBulkActionInFlight"
+      :retry-error="retryError"
       @close="closeRecordDetail"
+      @retry="retryRecord"
     />
 
     <ConfirmDialog
@@ -449,6 +453,7 @@ const {
   loadError: detailError,
   open: openDetail,
   close: closeDetail,
+  applyUpdate: applyDetailUpdate,
 } = useRecordDetail();
 
 const activeRecordUuid = computed(() => {
@@ -458,6 +463,21 @@ const activeRecordUuid = computed(() => {
   }
   return value;
 });
+
+// The modal's retry button needs its own "in flight" and "failed" state
+// rather than reusing isBulkActionInFlight/actionError directly: the modal
+// covers the whole viewport while open, but a bulk action started just
+// before it opened (e.g. select rows, click "mark synced", then open a
+// different record before that resolves) can still be in flight, and would
+// otherwise mislabel the button "retrying…" for a retry that never started.
+const retryingUuid = ref<string | null>(null);
+const retryError = ref<string | null>(null);
+
+const isRetryingActiveRecord = computed(
+  () =>
+    retryingUuid.value !== null &&
+    retryingUuid.value === activeRecordUuid.value,
+);
 
 function openRecord(uuid: string): void {
   void navigateTo({
@@ -473,9 +493,67 @@ function closeRecordDetail(): void {
   void navigateTo({ path: INBOX_PATH, query }, { replace: true });
 }
 
+const RETRY_FAILED_MESSAGE = "Failed to retry record. Please try again.";
+
+// Isolates the request + its follow-up from retryRecord's flag bookkeeping
+// below, and keeps retryRecord itself from mixing three concerns (guard,
+// in-flight state, request handling) in one function.
+async function markRecordPendingForRetry(uuid: string): Promise<void> {
+  const [updated] = await updateRecordsStatus([uuid], "pending");
+
+  // A success always refreshes the stat cards, even if the user has since
+  // navigated away from this record — the table row (updated by
+  // updateRecordsStatus itself) and the stat cards belong to the page, not
+  // to whichever record happens to be open in the modal right now.
+  if (updated) {
+    await refreshStats();
+  }
+
+  // The user may have navigated to a different record while this request was
+  // in flight — only the still-open record's uuid should be allowed to set
+  // retryError or push a detail update; a stale response for a record that's
+  // no longer open must not surface on whatever is open now.
+  if (activeRecordUuid.value !== uuid) {
+    return;
+  }
+
+  if (!updated) {
+    retryError.value = actionError.value ?? RETRY_FAILED_MESSAGE;
+    return;
+  }
+
+  applyDetailUpdate(updated);
+}
+
+// Reuses the same bulk status-update path as the toolbar's "mark pending" so
+// a stuck error record moves out of the error bucket the next CLI sync
+// retries it: updateRecordsStatus updates the table row, applyDetailUpdate
+// pushes the fresh record into the modal, and refreshStats updates the stat
+// cards.
+async function retryRecord(uuid: string): Promise<void> {
+  if (isBulkActionInFlight.value) {
+    return;
+  }
+
+  retryError.value = null;
+  retryingUuid.value = uuid;
+
+  try {
+    await markRecordPendingForRetry(uuid);
+  } finally {
+    // Only this call's own retry owns the flag — a slower retry for a
+    // different record (started after this one's isBulkActionInFlight guard
+    // window closed) must not have its in-flight state clobbered here.
+    if (retryingUuid.value === uuid) {
+      retryingUuid.value = null;
+    }
+  }
+}
+
 watch(
   activeRecordUuid,
   (uuid) => {
+    retryError.value = null;
     if (!uuid) {
       closeDetail();
       return;

@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, type VueWrapper } from "@vue/test-utils";
 
 import RecordDetailModal from "../../app/components/RecordDetailModal.vue";
+
+function findButtonByText(wrapper: VueWrapper, label: string) {
+  return wrapper.findAll(".app-btn").find((button) => button.text() === label);
+}
 
 // makeRecord() stamps createdAt at 2026-06-27T10:00:00Z; freezing "now" here
 // keeps formatRelativeTime()'s output ("35d ago") deterministic so the snapshot
@@ -31,6 +35,14 @@ function makeRecord(overrides: Record<string, unknown> = {}) {
     },
     links: { self: "/api/records/uuid-1" },
   };
+}
+
+function makeErrorRecord(overrides: Record<string, unknown> = {}) {
+  return makeRecord({
+    status: "error",
+    errorMessage: "disk full",
+    ...overrides,
+  });
 }
 
 const stubs = {
@@ -113,9 +125,162 @@ describe("RecordDetailModal", () => {
 
   it("shows the sync error alert when the record carries an errorMessage", () => {
     const wrapper = mountModal({
-      record: makeRecord({ status: "error", errorMessage: "disk full" }),
+      record: makeErrorRecord(),
     });
     expect(wrapper.text()).toContain("disk full");
+  });
+
+  it("shows a fallback message when an error record has no errorMessage", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "error", errorMessage: null }),
+    });
+    expect(wrapper.text()).toContain("No error details available.");
+  });
+
+  it("shows the fallback message when errorMessage is an empty string", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "error", errorMessage: "" }),
+    });
+    expect(wrapper.text()).toContain("No error details available.");
+  });
+
+  it("does not show the sync error alert or retry button for a non-error record", () => {
+    const wrapper = mountModal({
+      record: makeRecord({ status: "synced", errorMessage: null }),
+    });
+    expect(wrapper.find(".app-alert[data-tone='err']").exists()).toBe(false);
+    expect(findButtonByText(wrapper, "retry sync")).toBeUndefined();
+  });
+
+  it("emits retry with the record's uuid when the retry button is clicked", async () => {
+    const wrapper = mountModal({
+      record: makeErrorRecord({ uuid: "error-uuid" }),
+    });
+
+    const retryButton = findButtonByText(wrapper, "retry sync");
+    expect(retryButton).toBeDefined();
+    await retryButton?.trigger("click");
+
+    expect(wrapper.emitted("retry")).toEqual([["error-uuid"]]);
+  });
+
+  it("disables the retry button and shows a retrying label while isRetrying is true", () => {
+    const wrapper = mountModal({
+      record: makeErrorRecord(),
+      isRetrying: true,
+    });
+
+    const retryButton = findButtonByText(wrapper, "retrying…");
+    expect(retryButton).toBeDefined();
+    expect(retryButton?.attributes("disabled")).toBeDefined();
+  });
+
+  it("disables the retry button without relabeling it when isRetryDisabled is true", () => {
+    const wrapper = mountModal({
+      record: makeErrorRecord(),
+      isRetryDisabled: true,
+    });
+
+    const retryButton = findButtonByText(wrapper, "retry sync");
+    expect(retryButton).toBeDefined();
+    expect(retryButton?.attributes("disabled")).toBeDefined();
+  });
+
+  it("shows the retryError message inline when a previous retry attempt failed", () => {
+    const wrapper = mountModal({
+      record: makeErrorRecord(),
+      retryError: "Failed to update records. Please try again.",
+    });
+
+    expect(wrapper.find("[data-testid='retry-error']").text()).toBe(
+      "Failed to update records. Please try again.",
+    );
+  });
+
+  it("shows no retryError element when the record has never failed a retry", () => {
+    const wrapper = mountModal({
+      record: makeErrorRecord(),
+    });
+
+    expect(wrapper.find("[data-testid='retry-error']").exists()).toBe(false);
+  });
+
+  it("returns focus to the card when a retry moves the record out of error status", async () => {
+    const wrapper = mount(RecordDetailModal, {
+      attachTo: document.body,
+      props: {
+        record: makeErrorRecord(),
+        isLoading: false,
+        loadError: null,
+      },
+      global: { stubs },
+    });
+
+    try {
+      const retryButton = findButtonByText(wrapper, "retry sync");
+      await retryButton?.element.focus();
+      expect(document.activeElement).toBe(retryButton?.element);
+
+      await wrapper.setProps({
+        record: makeRecord({ status: "pending", errorMessage: null }),
+      });
+
+      expect(document.activeElement).toBe(wrapper.find(".card").element);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("returns focus to the card when a retry fails and the button re-enables without ever refocusing", async () => {
+    const wrapper = mount(RecordDetailModal, {
+      attachTo: document.body,
+      props: {
+        record: makeErrorRecord(),
+        isLoading: false,
+        loadError: null,
+        isRetrying: true,
+      },
+      global: { stubs },
+    });
+
+    try {
+      // A disabled element can't hold focus, so simulate the browser's own
+      // focus-fixup (Chrome/Firefox move focus to <body> when a focused
+      // control is disabled) — jsdom doesn't do this automatically.
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      await wrapper.setProps({ isRetrying: false });
+
+      expect(document.activeElement).toBe(wrapper.find(".card").element);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("does not steal focus the user has already moved elsewhere", async () => {
+    const wrapper = mount(RecordDetailModal, {
+      attachTo: document.body,
+      props: {
+        record: makeErrorRecord(),
+        isLoading: false,
+        loadError: null,
+      },
+      global: { stubs },
+    });
+
+    try {
+      const closeButton = findButtonByText(wrapper, "close");
+      await closeButton?.element.focus();
+      expect(document.activeElement).toBe(closeButton?.element);
+
+      await wrapper.setProps({
+        record: makeRecord({ status: "pending", errorMessage: null }),
+      });
+
+      expect(document.activeElement).toBe(closeButton?.element);
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("emits close when the close button is clicked", async () => {
@@ -194,6 +359,20 @@ describe("RecordDetailModal", () => {
 
     try {
       const wrapper = mountModal();
+      expect(wrapper.html()).toMatchSnapshot();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("matches the snapshot for a record in error status", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FROZEN_NOW));
+
+    try {
+      const wrapper = mountModal({
+        record: makeErrorRecord(),
+      });
       expect(wrapper.html()).toMatchSnapshot();
     } finally {
       vi.useRealTimers();
