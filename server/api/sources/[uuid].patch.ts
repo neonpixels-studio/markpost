@@ -5,6 +5,7 @@ import type { ApiRequest } from "../../types/api.types";
 import { requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import { sourceSerializer, type SourceApiResponse } from "../../utils/response";
+import { assertValidFieldMapping } from "../../utils/fieldMappingValidation";
 import { assertValidRouteFolder } from "../../utils/routeFolder";
 import { sourceNotFoundError } from "../../utils/sourceErrors";
 import { invalidUuidError, isValidUuid } from "../../utils/uuid";
@@ -85,6 +86,12 @@ export default defineEventHandler(async (event): Promise<SourceApiResponse> => {
 
     if (attributes.routeFolder !== undefined) {
       attributes.routeFolder = assertValidRouteFolder(attributes.routeFolder);
+    }
+
+    if (attributes.fieldMapping !== undefined) {
+      attributes.fieldMapping = assertValidFieldMapping(
+        attributes.fieldMapping,
+      );
     }
 
     const payload = buildUpdatePayload(attributes);

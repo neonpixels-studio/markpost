@@ -150,6 +150,56 @@ describe("SourceCard", () => {
     expect(wrapper.emitted("remove")?.[0]).toEqual(["test-uuid-1"]);
   });
 
+  it("emits configure-mapping with the source uuid when the mapping button is clicked", async () => {
+    const source = makeSource();
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source },
+    });
+    await wrapper
+      .find("button[title='Configure field mapping']")
+      .trigger("click");
+    expect(wrapper.emitted("configure-mapping")?.[0]).toEqual(["test-uuid-1"]);
+  });
+
+  it.each(["webhook", "stripe", "github", "zapier", "shortcuts"])(
+    "shows the configure-mapping button for source types that ingest via the JSON webhook path (%s)",
+    (type) => {
+      const wrapper = mount(SourceCard, {
+        ...globalConfig,
+        props: { source: makeSource({ type }) },
+      });
+      expect(
+        wrapper.find("button[title='Configure field mapping']").exists(),
+      ).toBe(true);
+    },
+  );
+
+  it("hides the configure-mapping button for an email source with no existing mapping (fieldMapping is never applied to email deliveries)", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource({ type: "email", fieldMapping: null }) },
+    });
+    expect(
+      wrapper.find("button[title='Configure field mapping']").exists(),
+    ).toBe(false);
+  });
+
+  it("still shows the configure-mapping button for an email source that already has a stored mapping (stays inspectable/clearable)", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: {
+        source: makeSource({
+          type: "email",
+          fieldMapping: { title: "subject" },
+        }),
+      },
+    });
+    expect(
+      wrapper.find("button[title='Configure field mapping']").exists(),
+    ).toBe(true);
+  });
+
   it.each(["stripe", "github", "zapier", "shortcuts"])(
     "shows a rotate-secret button for provider-backed source %s",
     (provider) => {

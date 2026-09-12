@@ -54,6 +54,15 @@
           {{ activityStatus.label }}
         </AppBadge>
         <button
+          v-if="isMappable"
+          class="icon-btn"
+          title="Configure field mapping"
+          style="color: var(--ink-3)"
+          @click="emit('configure-mapping', source.attributes.uuid)"
+        >
+          <AppIcon name="sliders" :size="16" />
+        </button>
+        <button
           v-if="isRotatable"
           class="icon-btn"
           title="Rotate secret"
@@ -122,6 +131,7 @@ import {
   isRotatableProvider,
   SHARED_SECRET_PROVIDER_IDS,
 } from "#shared/utils/webhookSecrets";
+import { isSourceMappable } from "#shared/utils/fieldMapping";
 
 const ICON_BY_TYPE: Record<string, string> = {
   webhook: "zap",
@@ -170,12 +180,20 @@ const props = defineProps<{
 const emit = defineEmits<{
   remove: [uuid: string];
   rotate: [uuid: string];
+  "configure-mapping": [uuid: string];
 }>();
 
 // Only provider-backed sources have a rotatable secret; a plain webhook or
 // email-in source has none, so the action is hidden for them.
 const isRotatable = computed(() =>
   isRotatableProvider(props.source.attributes.provider ?? ""),
+);
+
+const isMappable = computed(() =>
+  isSourceMappable(
+    props.source.attributes.type,
+    props.source.attributes.fieldMapping,
+  ),
 );
 
 const sourceType = computed(() => props.source.attributes.type);

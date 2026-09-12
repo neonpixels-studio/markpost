@@ -182,14 +182,16 @@ describe("PATCH /api/sources/:uuid", () => {
   it("updates only fieldMapping without touching routeFolder", async () => {
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(
-      buildBody({ fieldMapping: { event: "$.type" } }),
+      buildBody({ fieldMapping: { title: "data.subject" } }),
     );
     const updatedSource = { ...sampleSource };
     const { set } = stubUpdateResult([updatedSource]);
 
     await handler(buildEvent(userId));
 
-    expect(set).toHaveBeenCalledWith({ fieldMapping: { event: "$.type" } });
+    expect(set).toHaveBeenCalledWith({
+      fieldMapping: { title: "data.subject" },
+    });
   });
 
   it("throws 422 when no updatable fields are provided", async () => {
@@ -283,6 +285,57 @@ describe("PATCH /api/sources/:uuid", () => {
     await handler(buildEvent(userId));
 
     expect(set).toHaveBeenCalledWith({ routeFolder: "notes/work" });
+  });
+
+  it("throws 422 when fieldMapping has a non-string value for a recognized key", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ fieldMapping: { title: 42 } }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          expect.objectContaining({
+            source: { pointer: "/data/attributes/fieldMapping" },
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws 422 when fieldMapping is an array", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ fieldMapping: ["title"] }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+  });
+
+  it("accepts null fieldMapping (clears the mapping)", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ fieldMapping: null }));
+    const { set } = stubUpdateResult([{ ...sampleSource, fieldMapping: null }]);
+
+    await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ fieldMapping: null });
+  });
+
+  it("normalizes an empty-object fieldMapping to null instead of storing a no-op mapping", async () => {
+    // A stored {} would make every future delivery's payload silently
+    // discarded (see assertValidFieldMapping's doc comment) — this pins that
+    // the endpoint never persists that trap.
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ fieldMapping: {} }));
+    const { set } = stubUpdateResult([{ ...sampleSource, fieldMapping: null }]);
+
+    await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ fieldMapping: null });
   });
 
   it("throws 404 when the source does not exist for the user", async () => {

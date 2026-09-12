@@ -1,4 +1,5 @@
 import { computeElapsedBuckets } from "../utils/timeBuckets";
+import type { FieldMappingConfig } from "#shared/utils/fieldMapping";
 
 const WEBHOOK_INGEST_BASE = "https://ingest.markpost.io/v1/hooks";
 const EMAIL_DOMAIN = "in.markpost.io";
@@ -209,6 +210,26 @@ async function rotateSourceSecret(
   return response.data;
 }
 
+// Patches a source's fieldMapping (its only editable attribute from the
+// sources UI today — routeFolder editing has no UI yet). Unlike rotateSecret,
+// there's nothing one-time or unrecoverable in the response, so this carries
+// no reveal-once concerns.
+async function patchSourceFieldMapping(
+  uuid: string,
+  fieldMapping: FieldMappingConfig | null,
+): Promise<SourceResource> {
+  const response = await $fetch<SourceResponse>(`/api/sources/${uuid}`, {
+    method: "PATCH",
+    body: { data: { type: "sources", attributes: { fieldMapping } } },
+  });
+
+  if (!response.data) {
+    throw new Error("Server returned no data for the updated source");
+  }
+
+  return response.data;
+}
+
 export function useSources() {
   const sources = ref<SourceResource[]>([]);
   const isLoading = ref(false);
@@ -278,6 +299,23 @@ export function useSources() {
     return rotated;
   }
 
+  async function updateFieldMapping(
+    uuid: string,
+    fieldMapping: FieldMappingConfig | null,
+  ): Promise<SourceResource> {
+    const updated = await patchSourceFieldMapping(uuid, fieldMapping);
+    // Unlike rotateSecret, a missing list entry here isn't a reason to fail:
+    // there's no one-time secret at risk, so a save that already succeeded on
+    // the server (a parallel loadSources replacing the array, a delete in
+    // another tab) should still report success rather than a false failure
+    // the user can't do anything about. `.map` over an array that no longer
+    // contains this uuid is simply a no-op.
+    sources.value = sources.value.map((source) =>
+      source.attributes.uuid === uuid ? updated : source,
+    );
+    return updated;
+  }
+
   return {
     sources,
     isLoading,
@@ -285,5 +323,6 @@ export function useSources() {
     addSource,
     removeSource,
     rotateSecret,
+    updateFieldMapping,
   };
 }

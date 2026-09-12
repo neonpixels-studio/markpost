@@ -1,39 +1,8 @@
 import type { WebhookPayload } from "./markdown";
-
-export type FieldMappingConfig = {
-  title?: string;
-  content?: string;
-  html?: string;
-  source?: string;
-  tags?: string;
-  created?: string;
-};
-
-function isFieldMappingConfig(value: unknown): value is FieldMappingConfig {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  const validKeys: Array<keyof FieldMappingConfig> = [
-    "title",
-    "content",
-    "html",
-    "source",
-    "tags",
-    "created",
-  ];
-
-  for (const key of validKeys) {
-    if (key in candidate && typeof candidate[key] !== "string") {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+import {
+  FIELD_MAPPING_FORBIDDEN_SEGMENTS as FORBIDDEN_KEYS,
+  isFieldMappingConfig,
+} from "#shared/utils/fieldMapping";
 
 function getNestedValue(
   payload: Record<string, unknown>,
