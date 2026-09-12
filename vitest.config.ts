@@ -6,8 +6,8 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      "~": resolve(__dirname, "app"),
-      "#shared": resolve(__dirname, "shared"),
+      "~": resolve(import.meta.dirname, "app"),
+      "#shared": resolve(import.meta.dirname, "shared"),
     },
   },
   test: {
