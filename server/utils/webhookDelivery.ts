@@ -20,6 +20,61 @@ import {
 // before this guard; documented so the asymmetry with Stripe is explicit.
 export const GITHUB_DELIVERY_HEADER = "x-github-delivery";
 
+// GitHub stamps every delivery with the event type it represents (push, issues,
+// ping, ...). The hooks endpoint only needs to recognize one value here: `ping`,
+// the automatic delivery GitHub fires the moment a webhook is created to confirm
+// the endpoint is reachable. Its body carries no user content (just a `zen`
+// string and hook/repository metadata) — a delivery recognized as a ping is
+// routed away from parseWebhookPayload before it can fall back to an empty
+// "Untitled" record.
+//
+// Security note: like x-github-delivery above, this header sits outside
+// X-Hub-Signature-256 — GitHub's HMAC covers the raw body only, not headers —
+// so it must never be trusted alone to *discard* a delivery (as opposed to
+// x-github-delivery's dedup use, where an unsigned header only risks an extra
+// record). A correctly signed real delivery with this header rewritten to
+// `ping` by anything between GitHub and this app (a misconfigured proxy, a
+// compromised edge) would otherwise be silently dropped with a 200 GitHub
+// never retries. isGithubPingEvent below closes that by additionally requiring
+// the body to actually look like GitHub's ping payload (`zen` + `hook_id`),
+// which a header rewrite alone can't forge.
+export const GITHUB_EVENT_HEADER = "x-github-event";
+const GITHUB_PING_EVENT_NAME = "ping";
+const GITHUB_PING_ZEN_FIELD = "zen";
+const GITHUB_PING_HOOK_ID_FIELD = "hook_id";
+
+function hasGithubPingShape(payload: Record<string, unknown>): boolean {
+  return (
+    typeof payload[GITHUB_PING_ZEN_FIELD] === "string" &&
+    payload[GITHUB_PING_HOOK_ID_FIELD] !== undefined
+  );
+}
+
+// True only for a GitHub source's ping delivery: the provider must be GitHub
+// (not just the header — a non-GitHub source forwarding an `x-github-event:
+// ping` header isn't affected, pings are a GitHub-specific concept), the
+// event header must say `ping`, AND the body must have the shape only GitHub's
+// own ping payload carries. All three gates must agree — see the security note
+// above for why the body-shape check exists alongside the header.
+export function isGithubPingEvent(
+  provider: string | null,
+  headers: Record<string, string | undefined>,
+  payload: Record<string, unknown>,
+): boolean {
+  if (normalizeProvider(provider) !== GITHUB_PROVIDER) {
+    return false;
+  }
+
+  if (
+    headers[GITHUB_EVENT_HEADER]?.trim().toLowerCase() !==
+    GITHUB_PING_EVENT_NAME
+  ) {
+    return false;
+  }
+
+  return hasGithubPingShape(payload);
+}
+
 // Cap the extracted id well under Postgres' btree row-size limit (~2704 bytes):
 // a pathologically long id (e.g. a hostile multi-KB Stripe `id`) would otherwise
 // throw "index row size exceeds btree maximum" on insert, 500, and drive an

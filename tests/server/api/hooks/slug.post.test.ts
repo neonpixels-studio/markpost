@@ -977,6 +977,144 @@ describe("POST /api/hooks/[slug]", () => {
     });
   });
 
+  describe("github ping event", () => {
+    const GITHUB_SECRET = "github_test_secret";
+    const githubSource = {
+      ...sampleSource,
+      provider: "github",
+      providerSecret: GITHUB_SECRET,
+    };
+
+    // A real ping body: no user content, just a `zen` string and hook metadata.
+    const PING_BODY = JSON.stringify({
+      zen: "Design for failure.",
+      hook_id: 12345,
+      hook: { type: "Repository", events: ["push"] },
+      repository: { full_name: "octocat/hello-world" },
+    });
+
+    function stubGithubHeaders(
+      rawBody: string,
+      secret: string,
+      githubEvent: string | undefined,
+      deliveryId?: string,
+    ): void {
+      mockGetHeader.mockImplementation((_event: unknown, name: string) => {
+        if (name === "x-hub-signature-256") {
+          return buildValidGithubHeader(rawBody, secret);
+        }
+        if (name === "x-github-event") {
+          return githubEvent;
+        }
+        if (name === "x-github-delivery") {
+          return deliveryId;
+        }
+        return undefined;
+      });
+    }
+
+    it("discards a signed GitHub ping delivery without creating a record", async () => {
+      stubSourceOnly([githubSource]);
+      const { set } = stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(PING_BODY);
+      stubGithubHeaders(PING_BODY, GITHUB_SECRET, "ping");
+
+      const response = await handler(buildEvent());
+
+      expect(response).toMatchObject({ data: { received: true } });
+      expect(insertMock).not.toHaveBeenCalled();
+      // The throttle is an abuse control on the signed endpoint (not a budget),
+      // and a captured signed ping can be replayed indefinitely, so it must
+      // still be metered even though the ping goes on to be discarded.
+      expect(mockRecordWebhookHit).toHaveBeenCalledWith(githubSource.uuid);
+      expect(mockAssertWithinRecordLimit).not.toHaveBeenCalled();
+      expect(mockSetResponseStatus).not.toHaveBeenCalled();
+      // Still counts as a hit (lastHitAt) so a correctly wired source doesn't
+      // read as undelivered, without touching recordCount.
+      expect(set).toHaveBeenCalledWith(
+        expect.objectContaining({ lastHitAt: expect.any(Date) }),
+      );
+      expect(set).not.toHaveBeenCalledWith(
+        expect.objectContaining({ recordCount: expect.anything() }),
+      );
+      expect(mockWriteEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: USER_ID,
+          kind: "dim",
+          sourceId: SOURCE_UUID,
+        }),
+      );
+      const writtenEvent = mockWriteEvent.mock.calls[0]?.[0] as {
+        recordUuid?: string;
+      };
+      expect(writtenEvent.recordUuid).toBeUndefined();
+    });
+
+    it("discards a ping delivery that carries a delivery id before any dedup lookup", async () => {
+      stubSourceOnly([githubSource]);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(PING_BODY);
+      stubGithubHeaders(PING_BODY, GITHUB_SECRET, "ping", "gh-delivery-ping-1");
+
+      const response = await handler(buildEvent());
+
+      expect(response).toMatchObject({ data: { received: true } });
+      expect(insertMock).not.toHaveBeenCalled();
+      // stubSourceOnly queues exactly one select resolution (the source
+      // lookup); a second select (e.g. findAlreadyIngested's dedup lookup)
+      // would throw on an unconfigured mock, so reaching this line proves the
+      // ping short-circuit runs before any delivery-id dedup lookup.
+      expect(selectMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("still requires a valid signature for a ping delivery", async () => {
+      stubSourceOnly([githubSource]);
+      mockReadRawBody.mockResolvedValue(PING_BODY);
+      stubGithubHeaders(PING_BODY, "wrong_secret", "ping");
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 401,
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(mockRecordWebhookHit).not.toHaveBeenCalled();
+    });
+
+    it("still ingests a normal (non-ping) GitHub delivery", async () => {
+      const rawBody = JSON.stringify({ ref: "main" });
+
+      stubSourceAndSettings([githubSource]);
+      stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubGithubHeaders(rawBody, GITHUB_SECRET, "push");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+    });
+
+    // Security-critical: X-Hub-Signature-256 covers only the raw body, not
+    // headers, so x-github-event is unsigned. A real, correctly signed
+    // delivery whose x-github-event header gets rewritten to "ping" in
+    // transit (misconfigured proxy, compromised edge) must still be ingested
+    // — the ping discard also requires the body to look like GitHub's actual
+    // ping payload (`zen` + `hook_id`), which a header rewrite alone can't
+    // forge.
+    it("ingests a signed delivery even if x-github-event is rewritten to ping, when the body isn't ping-shaped", async () => {
+      const rawBody = JSON.stringify({ ref: "main" });
+
+      stubSourceAndSettings([githubSource]);
+      stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubGithubHeaders(rawBody, GITHUB_SECRET, "ping");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+    });
+  });
+
   describe("zapier / shortcuts shared-secret verification", () => {
     const SHARED_SECRET = "shared_test_secret";
     // Only the hash is ever stored (see hashSharedSecret / isHashedStorageProvider);
