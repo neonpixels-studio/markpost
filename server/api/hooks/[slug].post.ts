@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { H3Event } from "h3";
 import { getDb } from "../../db";
 import { records, sources, userSettings } from "../../db/schema";
@@ -46,6 +46,13 @@ const EVENT_KIND_DIM = "dim";
 const PING_DISCARDED_MESSAGE =
   "GitHub ping received (connectivity check, not stored)";
 
+// Debounce window for the best-effort dedup lastHitAt touch (see
+// touchLastHitAt below). A provider redelivery storm otherwise issues one
+// row-locking UPDATE per duplicate; gating on this staleness interval
+// collapses that to one write per window per source.
+export const DEDUP_TOUCH_STALENESS_SECONDS = 60;
+export const MILLISECONDS_PER_SECOND = 1000;
+
 type SourceRow = {
   uuid: string;
   userId: string;
@@ -54,6 +61,7 @@ type SourceRow = {
   provider: string | null;
   providerSecret: string | null;
   fieldMapping: unknown;
+  lastHitAt: Date | null;
 };
 
 type UserSettingsRow = {
@@ -117,6 +125,7 @@ async function resolveSourceBySlug(slug: string): Promise<SourceRow | null> {
       provider: sources.provider,
       providerSecret: sources.providerSecret,
       fieldMapping: sources.fieldMapping,
+      lastHitAt: sources.lastHitAt,
     })
     .from(sources)
     .where(eq(sources.endpointSlug, slug))
@@ -215,15 +224,70 @@ async function incrementSourceStats(sourceId: string): Promise<void> {
     .where(eq(sources.uuid, sourceId));
 }
 
+// The single staleness cutoff shared by the in-memory fast path and the
+// database WHERE clause, computed once per touchLastHitAt call so the two
+// checks always agree at the boundary.
+function dedupTouchStaleBefore(referenceTime: Date): Date {
+  return new Date(
+    referenceTime.getTime() -
+      DEDUP_TOUCH_STALENESS_SECONDS * MILLISECONDS_PER_SECOND,
+  );
+}
+
+// True once currentLastHitAt is missing or at/before staleBefore — i.e. this
+// hit is the one allowed to write. Exported and isolated from touchLastHitAt
+// so the boundary (just-inside vs just-outside the window) is directly
+// unit-testable without a database. Takes the exact cutoff touchLastHitAt's
+// WHERE clause will use (see dedupTouchStaleBefore) rather than recomputing
+// its own, so the fast path and the database guard always agree.
+export function isLastHitStale(
+  currentLastHitAt: Date | null,
+  staleBefore: Date,
+): boolean {
+  if (!currentLastHitAt) {
+    return true;
+  }
+
+  return currentLastHitAt.getTime() <= staleBefore.getTime();
+}
+
 // Refresh only lastHitAt, leaving recordCount untouched. Used when the counter
 // bump was already claimed (an ordinary retry / race loser): the delivery
 // already counted, so the retry is a hit worth timestamping but must not bump.
-async function touchLastHitAt(sourceId: string): Promise<void> {
+//
+// Debounced two ways, for two different races:
+// - In-memory fast path: currentLastHitAt is the value read alongside the
+//   source at the top of THIS request. If it's already fresh, skip the round
+//   trip entirely — cheap, and correct for a retry arriving well after an
+//   earlier one already committed its write.
+// - Database guard: currentLastHitAt can't see duplicates racing within the
+//   same instant — several requests can all read the same stale snapshot
+//   before any of them writes, so the in-memory check alone would let all of
+//   them through. The UPDATE's WHERE re-checks staleness against the row's
+//   live value, so only the first writer among simultaneous duplicates
+//   actually mutates the row; the rest match zero rows. This (not the
+//   in-memory check) is what guarantees a redelivery storm collapses to one
+//   row-locking write per interval instead of one per duplicate.
+async function touchLastHitAt(
+  sourceId: string,
+  currentLastHitAt: Date | null,
+): Promise<void> {
+  const staleBefore = dedupTouchStaleBefore(new Date());
+
+  if (!isLastHitStale(currentLastHitAt, staleBefore)) {
+    return;
+  }
+
   const db = getDb();
   await db
     .update(sources)
     .set({ lastHitAt: new Date() })
-    .where(eq(sources.uuid, sourceId));
+    .where(
+      and(
+        eq(sources.uuid, sourceId),
+        or(isNull(sources.lastHitAt), lte(sources.lastHitAt, staleBefore)),
+      ),
+    );
 }
 
 // Atomically claim this record's one-time counter bump. `records.counted_at` is
@@ -259,10 +323,12 @@ async function claimStatsBump(recordUuid: string): Promise<boolean> {
 async function applyStatsBump(
   sourceId: string,
   recordUuid: string,
+  currentLastHitAt: Date | null,
 ): Promise<void> {
-  // A rejected claim is treated as "not claimed" so lastHitAt still refreshes
-  // (touchLastHitAt never touches recordCount, so this is safe either way) — a
-  // served 202 should never leave the hit timestamp stale.
+  // A rejected claim is treated as "not claimed" so lastHitAt still refreshes,
+  // subject to the debounce in touchLastHitAt (touchLastHitAt never touches
+  // recordCount, so this is safe either way) — a served 202 should never leave
+  // the hit timestamp stale for longer than the debounce window.
   const claimed = await claimStatsBump(recordUuid).catch((claimError) => {
     logStatsError(claimError);
     return false;
@@ -273,7 +339,7 @@ async function applyStatsBump(
     return;
   }
 
-  await touchLastHitAt(sourceId);
+  await touchLastHitAt(sourceId, currentLastHitAt);
 }
 
 // Flag a confirmation failure on the record, but never regress a record that
@@ -684,7 +750,9 @@ async function writeIngestSideEffects(
   writeOkEvent: OkEventWriter,
 ): Promise<void> {
   await Promise.allSettled([
-    applyStatsBump(source.uuid, record.uuid).catch(logStatsError),
+    applyStatsBump(source.uuid, record.uuid, source.lastHitAt).catch(
+      logStatsError,
+    ),
     writeOkEvent(okEventInput(source, record)).catch((writeError) =>
       recordIngestEventFailure(source, record, writeError),
     ),
