@@ -310,7 +310,10 @@ async function resolveNoOpSyncedUuids(
 
   return new Set(
     rows
-      .filter((row) => row.status === SYNCED_STATUS && row.syncedAt !== null)
+      // Loose null check: a nullable column with no value should come back
+      // as `null`, but this only needs to trust "is there a real value?",
+      // not the driver's exact absent-value representation.
+      .filter((row) => row.status === SYNCED_STATUS && row.syncedAt != null)
       .map((row) => row.uuid),
   );
 }

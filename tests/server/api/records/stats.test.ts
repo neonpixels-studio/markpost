@@ -53,6 +53,22 @@ function stubSelectResult(row: Record<string, unknown>) {
   return { from, where };
 }
 
+// The syncedToday CASE expression's params include both an ISO boundary and
+// a plain status literal ("synced") — found by content (looks like an ISO
+// timestamp), not by array position, so adding/reordering conditions in that
+// CASE expression doesn't silently break this assertion.
+function findIsoBoundaryValue(values: { value?: unknown }[]): string {
+  const isoValue = values.find(
+    (entry) => typeof entry.value === "string" && entry.value.includes("T"),
+  )?.value;
+
+  if (typeof isoValue !== "string") {
+    throw new Error("Expected an ISO date value in the CASE expression");
+  }
+
+  return isoValue;
+}
+
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
   vi.stubGlobal("getQuery", (event: { query?: Record<string, unknown> }) => {
@@ -154,7 +170,9 @@ describe("GET /api/records/stats", () => {
       syncedToday: { count: { values: { value: string }[] } };
       thisMonth: { count: { values: { value: string }[] } };
     };
-    const todayBoundary = selectColumns.syncedToday.count.values[2].value;
+    const todayBoundary = findIsoBoundaryValue(
+      selectColumns.syncedToday.count.values,
+    );
     const monthBoundary = selectColumns.thisMonth.count.values[0].value;
 
     expect(todayBoundary).toBe(startOfTodayIso(timeZone));
@@ -173,7 +191,9 @@ describe("GET /api/records/stats", () => {
     const selectColumns = selectMock.mock.calls[0][0] as {
       syncedToday: { count: { values: { value: string }[] } };
     };
-    const todayBoundary = selectColumns.syncedToday.count.values[2].value;
+    const todayBoundary = findIsoBoundaryValue(
+      selectColumns.syncedToday.count.values,
+    );
 
     expect(todayBoundary).toBe(startOfTodayIso("UTC"));
   });
