@@ -75,14 +75,19 @@ async function recordHitAndFetchCounter(
 // A "not-found" outcome deliberately does NOT reuse webhookThrottle's "no row
 // -> allowed" fallback: there, a deleted source's own 404 handling takes over
 // downstream, so letting that one request through unthrottled is harmless.
-// Here nothing downstream catches it — a missing `users` row for an
-// already-authenticated request only happens if the account was deleted
-// after auth succeeded (a still-valid Clerk JWT is never re-checked against
-// the users table) — and silently allowing it would hand that request an
-// unbounded budget, so this fails closed instead. An "error" outcome (the
-// write itself failed) is the opposite case: that's the limiter breaking, not
-// the caller being invalid, so it fails open rather than turning a database
-// hiccup into an outage for every authenticated endpoint.
+// Here nothing downstream catches it. In practice this branch should be
+// unreachable: the auth middleware's ensureUserRegistered already
+// re-inserts the row on the Clerk path before this runs, and an API token's
+// FK cascade means a deleted user has no tokens left to authenticate with in
+// the first place — so this is a belt-and-braces guard against the
+// microsecond-wide race between that insert and this UPDATE (or a future
+// caller of recordAuthedApiHit that skips ensureUserRegistered), not a path
+// exercised in normal operation. Failing closed rather than allowed keeps
+// that guard meaningful: silently allowing it would hand an edge-case
+// request an unbounded budget instead. An "error" outcome (the write itself
+// failed) is the opposite case: that's the limiter breaking, not the caller
+// being invalid, so it fails open rather than turning a database hiccup into
+// an outage for every authenticated endpoint.
 export async function recordAuthedApiHit(
   userId: string,
 ): Promise<ThrottleResult> {
