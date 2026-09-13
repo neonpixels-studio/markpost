@@ -145,7 +145,6 @@ describe("PATCH /api/records (bulk)", () => {
           {
             uuid: uuidOne,
             status: "synced",
-            syncedAt: "2024-01-16T10:00:00.000Z",
             filePath: "05-stripe/a.md",
           },
           { uuid: uuidTwo, status: "error", errorMessage: "boom" },
@@ -239,7 +238,7 @@ describe("PATCH /api/records (bulk)", () => {
       consoleErrorSpy.mockRestore();
     });
 
-    it("parses filePath alongside status, and passes a standalone syncedAt through untouched when status isn't changing", async () => {
+    it("parses filePath alongside a status change that doesn't move to synced", async () => {
       mockReadBody.mockResolvedValue(
         buildBody([
           {
@@ -247,25 +246,16 @@ describe("PATCH /api/records (bulk)", () => {
             status: "error",
             filePath: "a.md",
           },
-          { uuid: uuidTwo, syncedAt: null },
         ]),
       );
-      stubSelects([[currentStatusRow(uuidOne, "pending")], []]);
-      stubUpdates([
-        [{ ...baseRecord(uuidOne), status: "error" }],
-        [{ ...baseRecord(uuidTwo) }],
-      ]);
+      stubSelects([[currentStatusRow(uuidOne, "pending")]]);
+      stubUpdates([[{ ...baseRecord(uuidOne), status: "error" }]]);
 
       await handler(buildEvent(userId));
 
-      // uuidOne changes status (to "error"), so syncedAt is server-derived
-      // (never touched for a non-"synced" target) rather than taken from the
-      // client — there's no syncedAt key here at all.
+      // syncedAt is never touched for a non-"synced" target status, so
+      // there's no syncedAt key in the payload at all.
       expect(setCalls[0]).toEqual({ status: "error", filePath: "a.md" });
-      // uuidTwo has no status change, so the standalone syncedAt update still
-      // passes the client's value straight through — this endpoint also
-      // serves single-field syncedAt updates with no status involved.
-      expect(setCalls[1]).toEqual({ syncedAt: null });
     });
 
     it("counts only records that matched the owner, dropping foreign uuids", async () => {
@@ -302,18 +292,13 @@ describe("PATCH /api/records (bulk)", () => {
   // outright — re-stamping rows that were already synced (inflating the
   // "synced today" stat) and nulling a real prior syncedAt on any row moved
   // to pending/error, with no way to recover it. The server now derives
-  // syncedAt itself from each record's *current* status, ignoring whatever
-  // the client sent whenever the update also changes status.
+  // syncedAt itself from each record's *current* status; the client can no
+  // longer supply syncedAt at all (see "rejects any client-supplied syncedAt"
+  // below), so these tests only exercise the server-side derivation.
   describe("syncedAt trust boundary on status changes", () => {
-    it("does not re-stamp syncedAt when the record is already synced, even if the client sends a fresh value", async () => {
+    it("does not re-stamp syncedAt when the record is already synced", async () => {
       mockReadBody.mockResolvedValue(
-        buildBody([
-          {
-            uuid: uuidOne,
-            status: "synced",
-            syncedAt: "2099-01-01T00:00:00.000Z",
-          },
-        ]),
+        buildBody([{ uuid: uuidOne, status: "synced" }]),
       );
       stubSelects([[currentStatusRow(uuidOne, "synced")]]);
       stubUpdates([[{ ...baseRecord(uuidOne), status: "synced" }]]);
@@ -356,9 +341,9 @@ describe("PATCH /api/records (bulk)", () => {
       expect((setCalls[0] as { syncedAt: Date }).syncedAt).toBeInstanceOf(Date);
     });
 
-    it("never nulls syncedAt when moving a previously-synced record to pending, even if the client sends null", async () => {
+    it("never nulls syncedAt when moving a previously-synced record to pending", async () => {
       mockReadBody.mockResolvedValue(
-        buildBody([{ uuid: uuidOne, status: "pending", syncedAt: null }]),
+        buildBody([{ uuid: uuidOne, status: "pending" }]),
       );
       stubSelects([[currentStatusRow(uuidOne, "synced")]]);
       stubUpdates([[{ ...baseRecord(uuidOne), status: "pending" }]]);
@@ -368,13 +353,12 @@ describe("PATCH /api/records (bulk)", () => {
       expect(setCalls[0]).toEqual({ status: "pending" });
     });
 
-    it("never nulls syncedAt when moving a previously-synced record to error, even if the client sends null", async () => {
+    it("never nulls syncedAt when moving a previously-synced record to error", async () => {
       mockReadBody.mockResolvedValue(
         buildBody([
           {
             uuid: uuidOne,
             status: "error",
-            syncedAt: null,
             errorMessage: "boom",
           },
         ]),
@@ -413,6 +397,26 @@ describe("PATCH /api/records (bulk)", () => {
       expect(selectMock).toHaveBeenCalledTimes(1);
       expect(setCalls[0]).toHaveProperty("syncedAt");
       expect(setCalls[1]).toEqual({ status: "pending" });
+    });
+
+    it("aborts the whole batch, writing nothing, when resolving current statuses fails", async () => {
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      mockReadBody.mockResolvedValue(
+        buildBody([{ uuid: uuidOne, status: "synced" }]),
+      );
+      // Unlike the sourceType lookup (display-only enrichment, degrades
+      // gracefully), a failed current-status lookup must not fall back to a
+      // guess — guessing "not yet synced" would re-stamp every row and
+      // reintroduce the exact stat inflation this fix closes.
+      stubSelects([() => Promise.reject(new Error("connection reset"))]);
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 500,
+      });
+      expect(updateMock).not.toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
     });
   });
 
@@ -538,9 +542,23 @@ describe("PATCH /api/records (bulk)", () => {
       });
     });
 
-    it("throws 422 when syncedAt is the wrong type", async () => {
+    // Bug: markpost#265. syncedAt is no longer a client-settable field on this
+    // endpoint at all (the server derives it from status transitions — see
+    // "syncedAt trust boundary on status changes" above), so any item that
+    // includes the key is rejected outright, regardless of its value and
+    // regardless of whether the item also changes status. A prior version of
+    // this endpoint only guarded syncedAt when paired with a status change,
+    // leaving a standalone `{ uuid, syncedAt }` update as an unguarded
+    // backdoor around the fix.
+    it("throws 422 when a client sends syncedAt alongside a status change", async () => {
       mockReadBody.mockResolvedValue(
-        buildBody([{ uuid: uuidOne, syncedAt: 1234 }]),
+        buildBody([
+          {
+            uuid: uuidOne,
+            status: "synced",
+            syncedAt: "2099-01-01T00:00:00.000Z",
+          },
+        ]),
       );
 
       await expect(handler(buildEvent(userId))).rejects.toMatchObject({
@@ -551,16 +569,19 @@ describe("PATCH /api/records (bulk)", () => {
         data: {
           errors: [
             expect.objectContaining({
-              detail: "SyncedAt must be a date string or null",
+              detail:
+                "SyncedAt is derived by the server from status changes and cannot be set directly.",
+              source: { pointer: "/data/attributes/records/0/syncedAt" },
             }),
           ],
         },
       });
+      expect(updateMock).not.toHaveBeenCalled();
     });
 
-    it("throws 422 when syncedAt is an unparseable date string", async () => {
+    it("throws 422 when a client sends a standalone syncedAt with no status change", async () => {
       mockReadBody.mockResolvedValue(
-        buildBody([{ uuid: uuidOne, syncedAt: "not-a-date" }]),
+        buildBody([{ uuid: uuidOne, syncedAt: null }]),
       );
 
       await expect(handler(buildEvent(userId))).rejects.toMatchObject({
@@ -571,11 +592,13 @@ describe("PATCH /api/records (bulk)", () => {
         data: {
           errors: [
             expect.objectContaining({
-              detail: "SyncedAt must be a valid date string",
+              detail:
+                "SyncedAt is derived by the server from status changes and cannot be set directly.",
             }),
           ],
         },
       });
+      expect(updateMock).not.toHaveBeenCalled();
     });
 
     it("throws 422 when filePath is the wrong type", async () => {
