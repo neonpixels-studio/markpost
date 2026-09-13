@@ -163,8 +163,8 @@ const globalConfig = {
       },
       InputSegmented: {
         template:
-          '<div class="seg" role="radiogroup"><button v-for="option in options" :key="option.value" class="seg-option" :class="{ on: modelValue === option.value }" role="radio" :aria-checked="modelValue === option.value" @click="$emit(\'update:modelValue\', option.value)">{{ option.label }}</button></div>',
-        props: ["modelValue", "options"],
+          '<div class="seg" role="radiogroup"><button v-for="option in options" :key="option.value" class="seg-option" :class="{ on: modelValue === option.value }" role="radio" :aria-checked="modelValue === option.value" :disabled="disabled" @click="$emit(\'update:modelValue\', option.value)">{{ option.label }}</button></div>',
+        props: ["modelValue", "options", "disabled"],
         emits: ["update:modelValue"],
       },
       RecordDetailModal: {
@@ -298,6 +298,17 @@ describe("inbox page", () => {
       expect(filterRef.value).toBe(sourceType);
     },
   );
+
+  it("locks out the filter control while a bulk action is in flight, since switching filters mid-reconcile could load into the wrong page", async () => {
+    isUpdatingStatusRef.value = true;
+    const wrapper = mount(InboxPage, globalConfig);
+    await flushPromises();
+    const errorsButton = wrapper
+      .findAll(".seg-option")
+      .find((each) => each.text() === "errors");
+    await errorsButton?.trigger("click");
+    expect(filterRef.value).toBe("all");
+  });
 
   it("calls loadRecords on mount", async () => {
     mount(InboxPage, globalConfig);

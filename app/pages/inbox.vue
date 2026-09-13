@@ -105,7 +105,11 @@
 
       <!-- filters -->
       <div class="row between wrap gap-3" style="margin-bottom: 14px">
-        <InputSegmented v-model="filter" :options="RECORD_FILTER_OPTIONS" />
+        <InputSegmented
+          v-model="filter"
+          :options="RECORD_FILTER_OPTIONS"
+          :disabled="isBulkActionInFlight"
+        />
         <span class="mono faint" style="font-size: 12px"
           >{{ records.length }} records</span
         >

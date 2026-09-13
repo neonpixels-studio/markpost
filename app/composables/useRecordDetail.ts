@@ -1,23 +1,12 @@
 import type { RecordResource } from "./useRecords";
+import { isNotFoundError } from "../utils/apiError";
 
-const NOT_FOUND_STATUS = 404;
 const RECORD_MISSING_MESSAGE = "Record not found. It may have been removed.";
 const RECORD_LOAD_FAILED_MESSAGE = "Failed to load record. Please try again.";
 
 type RecordDetailResponse = {
   data: RecordResource | null;
 };
-
-function isNotFoundError(error: unknown): boolean {
-  const candidate = error as {
-    statusCode?: number;
-    status?: number;
-    response?: { status?: number };
-  };
-  const status =
-    candidate?.statusCode ?? candidate?.status ?? candidate?.response?.status;
-  return status === NOT_FOUND_STATUS;
-}
 
 export async function fetchRecord(
   uuid: string,
