@@ -197,11 +197,14 @@ async function deleteRecordsRequest(uuids: string[]): Promise<number> {
   return response.meta.deleted;
 }
 
+// No syncedAt field: the server derives it from the record's current status
+// (see server/api/records/index.patch.ts) rather than trusting a client-
+// supplied value — the client has no reliable view of which selected rows
+// are already synced, so it can neither re-stamp nor null that timestamp.
 type BulkStatusUpdate = {
   uuid: string;
   status: RecordStatus;
   errorMessage?: null;
-  syncedAt?: string | null;
 };
 
 async function updateRecordsStatusRequest(
@@ -617,18 +620,15 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       // would leave a stale failure reason on a record the UI now shows as
       // healthy or not-yet-attempted. Only "error" itself should keep it.
       //
-      // syncedAt gets the same treatment for the opposite reason: the
-      // "synced today" stat card (server/api/records/stats.get.ts) reads
-      // syncedAt, not status, so marking a record synced without stamping it
-      // would leave that card silently unmoved, and marking a previously
-      // synced record pending/error without clearing it would leave the
-      // record counted as synced today even though it no longer is.
-      const syncedAtForStatus =
-        status === "synced" ? new Date().toISOString() : null;
+      // syncedAt is intentionally omitted here: the client only knows the
+      // *target* status for this batch, not which selected rows are already
+      // synced, so it cannot compute syncedAt without either re-stamping an
+      // already-synced row (inflating the "synced today" stat card) or
+      // nulling a real prior sync time on a row moved to pending/error. The
+      // server derives syncedAt itself from each record's current status.
       const updates: BulkStatusUpdate[] = uuids.map((uuid) => ({
         uuid,
         status,
-        syncedAt: syncedAtForStatus,
         ...(status === "error" ? {} : { errorMessage: null }),
       }));
       const updatedRecords = await updateRecordsStatusRequest(updates);

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records, RECORD_STATUSES, type RecordStatus } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
@@ -12,6 +12,8 @@ import { isValidUuid } from "../../utils/uuid";
 import { writeEvent } from "../../utils/eventWriter";
 import { MAX_UPDATE_BATCH_SIZE } from "#shared/utils/records";
 import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
+
+const [SYNCED_STATUS] = RECORD_STATUSES;
 
 type RecordUpdateAttributes = {
   uuid?: unknown;
@@ -303,6 +305,71 @@ function prepareUpdates(body: BulkPatchBody): PreparedUpdate[] {
   return updates;
 }
 
+type Database = ReturnType<typeof getDb>;
+
+// Bulk status changes come from the client, but the client's view of "what
+// was this record's status a moment ago" can't be trusted for syncedAt:
+// a batch mixing already-synced and not-yet-synced rows would otherwise let
+// the client re-stamp every row to "now" (inflating the "synced today" stat
+// in server/api/records/stats.get.ts) or null out a real prior sync time on
+// every row moved to pending/error, with no way to recover it. The database's
+// own current status is the only trustworthy source, so it's read in one
+// batched lookup (mirrors resolveSourceTypes above) before any row is
+// updated, scoped to the owning user like every other read in this endpoint.
+async function resolveCurrentStatuses(
+  db: Database,
+  userId: string,
+  uuids: string[],
+): Promise<Map<string, string>> {
+  if (uuids.length === 0) {
+    return new Map();
+  }
+
+  const rows = await db
+    .select({ uuid: records.uuid, status: records.status })
+    .from(records)
+    .where(and(eq(records.userId, userId), inArray(records.uuid, uuids)));
+
+  return new Map(rows.map((row) => [row.uuid, row.status]));
+}
+
+// Ignores any client-supplied syncedAt whenever the update also changes
+// status — status transitions own syncedAt, not the client. A record already
+// synced never gets re-stamped by a further "mark synced" action, and moving
+// a record to pending/error never touches syncedAt at all, preserving
+// whatever real sync time was already recorded. A uuid the server has no
+// record of yet (unknown to the caller, or a race with a delete) is treated
+// as not-yet-synced, so it still gets stamped the first time it lands here.
+function applyTrustedSyncedAt(
+  update: PreparedUpdate,
+  currentStatusByUuid: Map<string, string>,
+): PreparedUpdate {
+  if (update.payload.status === undefined) {
+    return update;
+  }
+
+  const currentStatus = currentStatusByUuid.get(update.uuid);
+  const isAlreadySynced = currentStatus === SYNCED_STATUS;
+  const isMovingToSynced = update.payload.status === SYNCED_STATUS;
+
+  if (!isMovingToSynced || isAlreadySynced) {
+    delete update.payload.syncedAt;
+    return update;
+  }
+
+  update.payload.syncedAt = new Date();
+  return update;
+}
+
+function applyTrustedSyncedAtToAll(
+  updates: PreparedUpdate[],
+  currentStatusByUuid: Map<string, string>,
+): PreparedUpdate[] {
+  return updates.map((update) =>
+    applyTrustedSyncedAt(update, currentStatusByUuid),
+  );
+}
+
 async function applyUpdate(userId: string, update: PreparedUpdate) {
   const db = getDb();
 
@@ -343,7 +410,19 @@ export default defineEventHandler(
       const body = (await readBody(event)) as BulkPatchBody;
 
       const updates = prepareUpdates(body);
-      const updatedRecords = await applyUpdates(userId, updates);
+      const statusChangeUuids = updates
+        .filter((update) => update.payload.status !== undefined)
+        .map((update) => update.uuid);
+      const currentStatusByUuid = await resolveCurrentStatuses(
+        getDb(),
+        userId,
+        statusChangeUuids,
+      );
+      const trustedUpdates = applyTrustedSyncedAtToAll(
+        updates,
+        currentStatusByUuid,
+      );
+      const updatedRecords = await applyUpdates(userId, trustedUpdates);
 
       if (updatedRecords.length > 0) {
         logBulkUpdate(userId, updatedRecords.length);
