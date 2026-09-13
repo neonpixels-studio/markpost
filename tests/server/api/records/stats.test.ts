@@ -154,7 +154,7 @@ describe("GET /api/records/stats", () => {
       syncedToday: { count: { values: { value: string }[] } };
       thisMonth: { count: { values: { value: string }[] } };
     };
-    const todayBoundary = selectColumns.syncedToday.count.values[1].value;
+    const todayBoundary = selectColumns.syncedToday.count.values[2].value;
     const monthBoundary = selectColumns.thisMonth.count.values[0].value;
 
     expect(todayBoundary).toBe(startOfTodayIso(timeZone));
@@ -173,9 +173,32 @@ describe("GET /api/records/stats", () => {
     const selectColumns = selectMock.mock.calls[0][0] as {
       syncedToday: { count: { values: { value: string }[] } };
     };
-    const todayBoundary = selectColumns.syncedToday.count.values[1].value;
+    const todayBoundary = selectColumns.syncedToday.count.values[2].value;
 
     expect(todayBoundary).toBe(startOfTodayIso("UTC"));
+  });
+
+  // Bug: markpost#265 follow-through. server/api/records/index.patch.ts now
+  // preserves syncedAt when a record moves away from "synced" (pending/error)
+  // instead of nulling it, so a record synced earlier today and since moved
+  // to error would still carry today's syncedAt — the CASE expression must
+  // also require status = "synced" or that record gets double-counted here.
+  it("requires status = synced (not just a recent syncedAt) in the syncedToday CASE expression", async () => {
+    stubSelectResult({ syncedToday: 0, pending: 0, errors: 0, thisMonth: 0 });
+
+    await handler(buildEvent(userId));
+
+    const selectColumns = selectMock.mock.calls[0][0] as {
+      syncedToday: {
+        count: { values: { column?: unknown; value?: unknown }[] };
+      };
+    };
+    const statusCondition = selectColumns.syncedToday.count.values[0];
+
+    expect(statusCondition).toEqual({
+      column: expect.anything(),
+      value: "synced",
+    });
   });
 
   it("coerces string counts from the database to numbers", async () => {

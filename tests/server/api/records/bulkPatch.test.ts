@@ -78,10 +78,10 @@ function stubUpdates(rowsPerCall: unknown[][]) {
 }
 
 // The handler issues up to two db.select() calls in a fixed order: first
-// resolveCurrentStatuses (skipped entirely when no item in the batch changes
-// status), then resolveSourceTypes. Queue-based like stubUpdates so a test
-// can give each call its own result instead of one static return shared by
-// both — `results[N]` may be a plain row array or a thunk (for rejection).
+// resolveAlreadySyncedUuids (skipped entirely when no item in the batch
+// changes status), then resolveSourceTypes. Queue-based like stubUpdates so a
+// test can give each call its own result instead of one static return shared
+// by both — `results[N]` may be a plain row array or a thunk (for rejection).
 function stubSelects(results: (unknown[] | (() => Promise<unknown[]>))[]) {
   let call = 0;
   selectMock.mockImplementation(() => {
@@ -99,14 +99,15 @@ function stubSelects(results: (unknown[] | (() => Promise<unknown[]>))[]) {
 }
 
 // Convenience for tests that only care about the sourceType lookup: the
-// current-statuses call (if any) resolves empty (unknown uuids are treated
-// as not-yet-synced, which doesn't affect these sourceType-focused tests).
+// already-synced-uuids call (if any) resolves empty (unknown uuids are
+// treated as not-yet-synced, which doesn't affect these sourceType-focused
+// tests).
 function stubSourceTypeResult(rows: unknown[]) {
   stubSelects([[], rows]);
 }
 
-function currentStatusRow(uuid: string, status: string) {
-  return { uuid, status };
+function syncedAtRow(uuid: string, syncedAt: Date | null) {
+  return { uuid, syncedAt };
 }
 
 beforeEach(() => {
@@ -248,7 +249,7 @@ describe("PATCH /api/records (bulk)", () => {
           },
         ]),
       );
-      stubSelects([[currentStatusRow(uuidOne, "pending")]]);
+      stubSelects([[syncedAtRow(uuidOne, null)]]);
       stubUpdates([[{ ...baseRecord(uuidOne), status: "error" }]]);
 
       await handler(buildEvent(userId));
@@ -294,13 +295,16 @@ describe("PATCH /api/records (bulk)", () => {
   // to pending/error, with no way to recover it. The server now derives
   // syncedAt itself from each record's *current* status; the client can no
   // longer supply syncedAt at all (see "rejects any client-supplied syncedAt"
-  // below), so these tests only exercise the server-side derivation.
+  // below), so these tests only exercise the server-side derivation, which is
+  // keyed off whether syncedAt is already set on the row — not off status,
+  // since a record can be status "synced" with no syncedAt yet (created that
+  // way via POST /api/records).
   describe("syncedAt trust boundary on status changes", () => {
-    it("does not re-stamp syncedAt when the record is already synced", async () => {
+    it("does not re-stamp syncedAt when the record already has one", async () => {
       mockReadBody.mockResolvedValue(
         buildBody([{ uuid: uuidOne, status: "synced" }]),
       );
-      stubSelects([[currentStatusRow(uuidOne, "synced")]]);
+      stubSelects([[syncedAtRow(uuidOne, new Date("2024-01-01T00:00:00Z"))]]);
       stubUpdates([[{ ...baseRecord(uuidOne), status: "synced" }]]);
 
       await handler(buildEvent(userId));
@@ -308,14 +312,14 @@ describe("PATCH /api/records (bulk)", () => {
       expect(setCalls[0]).toEqual({ status: "synced" });
     });
 
-    it("stamps syncedAt with the current time when a record transitions into synced for the first time", async () => {
+    it("stamps syncedAt with the current time when a record has never been synced", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-06-27T12:00:00.000Z"));
 
       mockReadBody.mockResolvedValue(
         buildBody([{ uuid: uuidOne, status: "synced" }]),
       );
-      stubSelects([[currentStatusRow(uuidOne, "pending")]]);
+      stubSelects([[syncedAtRow(uuidOne, null)]]);
       stubUpdates([[{ ...baseRecord(uuidOne), status: "synced" }]]);
 
       await handler(buildEvent(userId));
@@ -328,7 +332,24 @@ describe("PATCH /api/records (bulk)", () => {
       vi.useRealTimers();
     });
 
-    it("stamps syncedAt when the server has no prior record of the uuid, treating it as not-yet-synced", async () => {
+    // Regression case: status alone can't answer "has this ever been
+    // synced?" — POST /api/records lets a client create a record already
+    // marked "synced" with no syncedAt. Keying the guard off status instead
+    // of syncedAt would make such a record permanently unstampable here.
+    it("stamps syncedAt even when the record's current status is already synced, as long as syncedAt is null", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody([{ uuid: uuidOne, status: "synced" }]),
+      );
+      stubSelects([[syncedAtRow(uuidOne, null)]]);
+      stubUpdates([[{ ...baseRecord(uuidOne), status: "synced" }]]);
+
+      await handler(buildEvent(userId));
+
+      expect(setCalls[0]).toHaveProperty("syncedAt");
+      expect((setCalls[0] as { syncedAt: Date }).syncedAt).toBeInstanceOf(Date);
+    });
+
+    it("stamps syncedAt when the server has no prior record of the uuid at all", async () => {
       mockReadBody.mockResolvedValue(
         buildBody([{ uuid: uuidOne, status: "synced" }]),
       );
@@ -345,7 +366,7 @@ describe("PATCH /api/records (bulk)", () => {
       mockReadBody.mockResolvedValue(
         buildBody([{ uuid: uuidOne, status: "pending" }]),
       );
-      stubSelects([[currentStatusRow(uuidOne, "synced")]]);
+      stubSelects([[syncedAtRow(uuidOne, new Date("2024-01-01T00:00:00Z"))]]);
       stubUpdates([[{ ...baseRecord(uuidOne), status: "pending" }]]);
 
       await handler(buildEvent(userId));
@@ -363,7 +384,7 @@ describe("PATCH /api/records (bulk)", () => {
           },
         ]),
       );
-      stubSelects([[currentStatusRow(uuidOne, "synced")]]);
+      stubSelects([[syncedAtRow(uuidOne, new Date("2024-01-01T00:00:00Z"))]]);
       stubUpdates([[{ ...baseRecord(uuidOne), status: "error" }]]);
 
       await handler(buildEvent(userId));
@@ -374,7 +395,7 @@ describe("PATCH /api/records (bulk)", () => {
       });
     });
 
-    it("resolves current statuses in a single batched lookup for a mixed batch", async () => {
+    it("resolves already-synced uuids in a single batched lookup for a mixed batch", async () => {
       mockReadBody.mockResolvedValue(
         buildBody([
           { uuid: uuidOne, status: "synced" },
@@ -383,8 +404,8 @@ describe("PATCH /api/records (bulk)", () => {
       );
       stubSelects([
         [
-          currentStatusRow(uuidOne, "pending"),
-          currentStatusRow(uuidTwo, "synced"),
+          syncedAtRow(uuidOne, null),
+          syncedAtRow(uuidTwo, new Date("2024-01-01T00:00:00Z")),
         ],
       ]);
       stubUpdates([
@@ -399,7 +420,7 @@ describe("PATCH /api/records (bulk)", () => {
       expect(setCalls[1]).toEqual({ status: "pending" });
     });
 
-    it("aborts the whole batch, writing nothing, when resolving current statuses fails", async () => {
+    it("aborts the whole batch, writing nothing, when resolving already-synced uuids fails", async () => {
       const consoleErrorSpy = vi
         .spyOn(console, "error")
         .mockImplementation(() => undefined);
@@ -407,9 +428,9 @@ describe("PATCH /api/records (bulk)", () => {
         buildBody([{ uuid: uuidOne, status: "synced" }]),
       );
       // Unlike the sourceType lookup (display-only enrichment, degrades
-      // gracefully), a failed current-status lookup must not fall back to a
-      // guess — guessing "not yet synced" would re-stamp every row and
-      // reintroduce the exact stat inflation this fix closes.
+      // gracefully), a failed lookup here must not fall back to a guess —
+      // guessing "not yet synced" would re-stamp every row and reintroduce
+      // the exact stat inflation this fix closes.
       stubSelects([() => Promise.reject(new Error("connection reset"))]);
 
       await expect(handler(buildEvent(userId))).rejects.toMatchObject({

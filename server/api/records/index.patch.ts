@@ -13,10 +13,8 @@ import { writeEvent } from "../../utils/eventWriter";
 import { MAX_UPDATE_BATCH_SIZE } from "#shared/utils/records";
 import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
 
-// Annotated (not destructured from RECORD_STATUSES by position) so a reorder
-// of that shared array can never silently flip which status this endpoint
-// treats as "already synced" — a typo or removed literal fails to compile
-// instead of failing silently at runtime.
+// Annotated rather than destructured from RECORD_STATUSES by position, so a
+// reorder of that array can't silently change which status this means.
 const SYNCED_STATUS: RecordStatus = "synced";
 
 type RecordUpdateAttributes = {
@@ -37,9 +35,6 @@ type BulkPatchBody = ApiRequest & {
 
 type RecordUpdatePayload = {
   status?: string;
-  // Never null: syncedAt is only ever added by withServerDerivedSyncedAt
-  // below, and only to stamp the current time on a first sync — it's never
-  // cleared, so there's no code path that would assign it null.
   syncedAt?: Date;
   filePath?: string | null;
   errorMessage?: string | null;
@@ -122,14 +117,9 @@ function statusInvalidError(index: number): ApiError {
   );
 }
 
-// syncedAt used to be a client-settable field here, which is exactly how
-// markpost#265 happened: a bulk status change could re-stamp an
-// already-synced row to "now" (inflating the "synced today" stat) or null a
-// real prior sync time on a row moved to pending/error, with no recovery.
-// The server now derives syncedAt itself from each record's current status
-// (see resolveCurrentStatuses/withServerDerivedSyncedAt below), so the field
-// is rejected outright rather than silently ignored — a client that still
-// sends it gets a clear 422 instead of a value that quietly does nothing.
+// syncedAt is server-derived (see withServerDerivedSyncedAt below); a client
+// that still sends it gets a clear 422 rather than a value that's silently
+// ignored (markpost#265 — client-trusted syncedAt corrupted stats).
 function syncedAtNotSettableError(index: number): ApiError {
   return invalidAttributeError(
     "SyncedAt is derived by the server from status changes and cannot be set directly.",
@@ -295,71 +285,50 @@ function prepareUpdates(body: BulkPatchBody): PreparedUpdate[] {
 
 type Database = ReturnType<typeof getDb>;
 
-// Bulk status changes come from the client, but the client's view of "what
-// was this record's status a moment ago" can't be trusted for syncedAt:
-// a batch mixing already-synced and not-yet-synced rows would otherwise let
-// the client re-stamp every row to "now" (inflating the "synced today" stat
-// in server/api/records/stats.get.ts) or null out a real prior sync time on
-// every row moved to pending/error, with no way to recover it. The database's
-// own current status is the only trustworthy source, so it's read in one
-// batched lookup (mirrors resolveSourceTypes above) before any row is
-// updated, scoped to the owning user like every other read in this endpoint.
-async function resolveCurrentStatuses(
+// The client's syncedAt is never trusted (see rejectClientSyncedAt above);
+// the server derives it instead from whether each record has *ever* actually
+// been synced, read in one batched lookup (mirrors resolveSourceTypes above)
+// before any row is updated. Keyed off the real syncedAt column, not status —
+// a record can be status "synced" with no syncedAt yet (e.g. created that way
+// via POST /api/records, which allows setting status and syncedAt
+// independently), and that record must still be stampable here.
+async function resolveAlreadySyncedUuids(
   db: Database,
   userId: string,
   uuids: string[],
-): Promise<Map<string, string>> {
+): Promise<Set<string>> {
   if (uuids.length === 0) {
-    return new Map();
+    return new Set();
   }
 
   const rows = await db
-    .select({ uuid: records.uuid, status: records.status })
+    .select({ uuid: records.uuid, syncedAt: records.syncedAt })
     .from(records)
     .where(and(eq(records.userId, userId), inArray(records.uuid, uuids)));
 
-  return new Map(rows.map((row) => [row.uuid, row.status]));
+  return new Set(
+    rows.filter((row) => row.syncedAt !== null).map((row) => row.uuid),
+  );
 }
 
-// A bulk status change is a manual correction made from the inbox UI (see
-// updateRecordsStatus in app/composables/useRecords.ts) — not the record's
-// real sync pipeline — so "mark synced" only stamps syncedAt the first time a
-// row transitions out of not-synced. A row that's already synced (the batch
-// can mix already-synced and not-yet-synced uuids) is left alone rather than
-// re-stamped, and moving to pending/error never touches syncedAt at all,
-// preserving whatever real sync time was already recorded. A uuid the server
-// has no record of yet (unknown to the caller, or a race with a delete) is
-// treated as not-yet-synced, so it still gets stamped the first time it lands
-// here. Returns a new PreparedUpdate rather than mutating the one it's given,
-// since prepareUpdates' result may still be read elsewhere (e.g. by a future
-// caller logging the original request).
+// A bulk status change is a manual correction from the inbox UI, not the
+// record's real sync pipeline, so "mark synced" only stamps syncedAt the
+// first time a record is actually synced; already-synced records and any
+// move to pending/error leave syncedAt untouched. Returns a new
+// PreparedUpdate rather than mutating the one it's given.
 function withServerDerivedSyncedAt(
   update: PreparedUpdate,
-  currentStatusByUuid: Map<string, string>,
+  alreadySyncedUuids: Set<string>,
 ): PreparedUpdate {
-  if (update.payload.status === undefined) {
-    return update;
-  }
-
-  const currentStatus = currentStatusByUuid.get(update.uuid);
-  const isAlreadySynced = currentStatus === SYNCED_STATUS;
   const isMovingToSynced = update.payload.status === SYNCED_STATUS;
-  const shouldStampNow = isMovingToSynced && !isAlreadySynced;
+  const shouldStampNow =
+    isMovingToSynced && !alreadySyncedUuids.has(update.uuid);
 
   if (!shouldStampNow) {
     return update;
   }
 
   return { ...update, payload: { ...update.payload, syncedAt: new Date() } };
-}
-
-function withServerDerivedSyncedAtForAll(
-  updates: PreparedUpdate[],
-  currentStatusByUuid: Map<string, string>,
-): PreparedUpdate[] {
-  return updates.map((update) =>
-    withServerDerivedSyncedAt(update, currentStatusByUuid),
-  );
 }
 
 async function applyUpdate(userId: string, update: PreparedUpdate) {
@@ -409,14 +378,13 @@ export default defineEventHandler(
       // degrades to "unknown" on failure), this lookup feeds what actually
       // gets written — a failure here is left uncaught so it aborts the whole
       // batch via apiErrorHandler rather than risk writing under a guess.
-      const currentStatusByUuid = await resolveCurrentStatuses(
+      const alreadySyncedUuids = await resolveAlreadySyncedUuids(
         getDb(),
         userId,
         statusChangeUuids,
       );
-      const updatesWithDerivedSyncedAt = withServerDerivedSyncedAtForAll(
-        updates,
-        currentStatusByUuid,
+      const updatesWithDerivedSyncedAt = updates.map((update) =>
+        withServerDerivedSyncedAt(update, alreadySyncedUuids),
       );
       const updatedRecords = await applyUpdates(
         userId,
