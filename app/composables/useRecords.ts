@@ -197,10 +197,8 @@ async function deleteRecordsRequest(uuids: string[]): Promise<number> {
   return response.meta.deleted;
 }
 
-// No syncedAt field: the server derives it from the record's current status
-// (see server/api/records/index.patch.ts) rather than trusting a client-
-// supplied value — the client has no reliable view of which selected rows
-// are already synced, so it can neither re-stamp nor null that timestamp.
+// No syncedAt field: the server derives it (see server/api/records/index.patch.ts)
+// rather than trusting a client-supplied value.
 type BulkStatusUpdate = {
   uuid: string;
   status: RecordStatus;
@@ -619,13 +617,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       // record to "synced" or "pending" without also clearing errorMessage
       // would leave a stale failure reason on a record the UI now shows as
       // healthy or not-yet-attempted. Only "error" itself should keep it.
-      //
-      // syncedAt is intentionally omitted here: the client only knows the
-      // *target* status for this batch, not which selected rows are already
-      // synced, so it cannot compute syncedAt without either re-stamping an
-      // already-synced row (inflating the "synced today" stat card) or
-      // nulling a real prior sync time on a row moved to pending/error. The
-      // server derives syncedAt itself from each record's current status.
+      // syncedAt is omitted; see the BulkStatusUpdate comment above.
       const updates: BulkStatusUpdate[] = uuids.map((uuid) => ({
         uuid,
         status,

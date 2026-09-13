@@ -285,14 +285,12 @@ function prepareUpdates(body: BulkPatchBody): PreparedUpdate[] {
 
 type Database = ReturnType<typeof getDb>;
 
-// The client's syncedAt is never trusted (see rejectClientSyncedAt above);
-// the server derives it instead from whether each record has *ever* actually
-// been synced, read in one batched lookup (mirrors resolveSourceTypes above)
-// before any row is updated. Keyed off the real syncedAt column, not status —
-// a record can be status "synced" with no syncedAt yet (e.g. created that way
-// via POST /api/records, which allows setting status and syncedAt
-// independently), and that record must still be stampable here.
-async function resolveAlreadySyncedUuids(
+// A uuid belongs in this set only when marking it "synced" would be a true
+// no-op: status is already "synced" *and* it already has a real syncedAt.
+// Status alone would wrongly skip a POST-created record that's "synced" with
+// no syncedAt yet; syncedAt alone would wrongly skip a genuine pending/error
+// -> synced re-sync that still has a syncedAt left over from before.
+async function resolveNoOpSyncedUuids(
   db: Database,
   userId: string,
   uuids: string[],
@@ -302,27 +300,30 @@ async function resolveAlreadySyncedUuids(
   }
 
   const rows = await db
-    .select({ uuid: records.uuid, syncedAt: records.syncedAt })
+    .select({
+      uuid: records.uuid,
+      status: records.status,
+      syncedAt: records.syncedAt,
+    })
     .from(records)
     .where(and(eq(records.userId, userId), inArray(records.uuid, uuids)));
 
   return new Set(
-    rows.filter((row) => row.syncedAt !== null).map((row) => row.uuid),
+    rows
+      .filter((row) => row.status === SYNCED_STATUS && row.syncedAt !== null)
+      .map((row) => row.uuid),
   );
 }
 
-// A bulk status change is a manual correction from the inbox UI, not the
-// record's real sync pipeline, so "mark synced" only stamps syncedAt the
-// first time a record is actually synced; already-synced records and any
-// move to pending/error leave syncedAt untouched. Returns a new
-// PreparedUpdate rather than mutating the one it's given.
+// Stamps syncedAt with the current time unless resolveNoOpSyncedUuids says
+// it'd be a no-op; a move to pending/error never touches syncedAt. Returns a
+// new PreparedUpdate rather than mutating the one it's given.
 function withServerDerivedSyncedAt(
   update: PreparedUpdate,
-  alreadySyncedUuids: Set<string>,
+  noOpSyncedUuids: Set<string>,
 ): PreparedUpdate {
   const isMovingToSynced = update.payload.status === SYNCED_STATUS;
-  const shouldStampNow =
-    isMovingToSynced && !alreadySyncedUuids.has(update.uuid);
+  const shouldStampNow = isMovingToSynced && !noOpSyncedUuids.has(update.uuid);
 
   if (!shouldStampNow) {
     return update;
@@ -371,20 +372,23 @@ export default defineEventHandler(
       const body = (await readBody(event)) as BulkPatchBody;
 
       const updates = prepareUpdates(body);
-      const statusChangeUuids = updates
-        .filter((update) => update.payload.status !== undefined)
+      // Only items moving to "synced" can ever consult the lookup below, so
+      // that's what it's scoped to — a batch that only moves records to
+      // pending/error skips the query entirely.
+      const movingToSyncedUuids = updates
+        .filter((update) => update.payload.status === SYNCED_STATUS)
         .map((update) => update.uuid);
       // Unlike resolveSourceTypes below (a display-only enrichment that
       // degrades to "unknown" on failure), this lookup feeds what actually
       // gets written — a failure here is left uncaught so it aborts the whole
       // batch via apiErrorHandler rather than risk writing under a guess.
-      const alreadySyncedUuids = await resolveAlreadySyncedUuids(
+      const noOpSyncedUuids = await resolveNoOpSyncedUuids(
         getDb(),
         userId,
-        statusChangeUuids,
+        movingToSyncedUuids,
       );
       const updatesWithDerivedSyncedAt = updates.map((update) =>
-        withServerDerivedSyncedAt(update, alreadySyncedUuids),
+        withServerDerivedSyncedAt(update, noOpSyncedUuids),
       );
       const updatedRecords = await applyUpdates(
         userId,
