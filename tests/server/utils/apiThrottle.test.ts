@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockCreateError } from "../helpers";
+import { createMockCreateError, spyConsoleError } from "../helpers";
 
 const updateMock = vi.fn();
 const mockCreateError = createMockCreateError();
@@ -47,6 +47,13 @@ function stubUpdateReturning(rows: unknown[]) {
   const set = vi.fn(() => ({ where }));
   updateMock.mockReturnValue({ set });
   return { set, where, returning };
+}
+
+function stubUpdateFailure(error: Error) {
+  const returning = vi.fn(() => Promise.reject(error));
+  const where = vi.fn(() => ({ returning }));
+  const set = vi.fn(() => ({ where }));
+  updateMock.mockReturnValue({ set });
 }
 
 beforeEach(() => {
@@ -196,5 +203,21 @@ describe("recordAuthedApiHit", () => {
     expect(mockCreateError).toHaveBeenCalledWith(
       expect.objectContaining({ statusCode: 401 }),
     );
+  });
+
+  it("fails open and logs when the counter write itself rejects", async () => {
+    // A DB error is the limiter breaking, not the caller being invalid — it
+    // must not turn a transient infrastructure hiccup into an outage for
+    // every authenticated endpoint. Distinct from the "not-found" case above:
+    // that's a real (if rare) signal about the row, this is a plumbing
+    // failure. See the comment on recordAuthedApiHit.
+    stubUpdateFailure(new Error("connection reset"));
+    const consoleErrorSpy = spyConsoleError();
+
+    const result = await recordAuthedApiHit(USER_ID);
+
+    expect(result).toEqual({ allowed: true });
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });

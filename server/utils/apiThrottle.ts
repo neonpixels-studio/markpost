@@ -25,55 +25,81 @@ type ThrottleCounterRow = {
   apiThrottleWindowStart: Date;
 };
 
+// Distinguishes "the update ran and found no row" (a real, if rare, signal —
+// see the comment on recordAuthedApiHit) from "the update itself failed" (an
+// infrastructure hiccup unrelated to who the caller is). Collapsing those two
+// into a single `null` would make a transient DB error 401 every authenticated
+// request in flight, instead of the fail-open behavior a rate limiter's own
+// failure should get.
+type CounterOutcome =
+  | { status: "ok"; counter: ThrottleCounterRow }
+  | { status: "not-found" }
+  | { status: "error" };
+
 async function recordHitAndFetchCounter(
   userId: string,
-): Promise<ThrottleCounterRow | null> {
+): Promise<CounterOutcome> {
   const database = getDb();
   const windowExpired = windowExpiredCondition(
     users.apiThrottleWindowStart,
     API_THROTTLE_WINDOW_SECONDS,
   );
 
-  const [row] = await database
-    .update(users)
-    .set({
-      apiThrottleWindowStart: sql`CASE WHEN ${windowExpired} THEN now() ELSE ${users.apiThrottleWindowStart} END`,
-      apiThrottleCount: sql`CASE WHEN ${windowExpired} THEN 1 ELSE ${users.apiThrottleCount} + 1 END`,
-    })
-    .where(eq(users.userId, userId))
-    .returning({
-      apiThrottleCount: users.apiThrottleCount,
-      apiThrottleWindowStart: users.apiThrottleWindowStart,
-    });
+  try {
+    const [row] = await database
+      .update(users)
+      .set({
+        apiThrottleWindowStart: sql`CASE WHEN ${windowExpired} THEN now() ELSE ${users.apiThrottleWindowStart} END`,
+        apiThrottleCount: sql`CASE WHEN ${windowExpired} THEN 1 ELSE ${users.apiThrottleCount} + 1 END`,
+      })
+      .where(eq(users.userId, userId))
+      .returning({
+        apiThrottleCount: users.apiThrottleCount,
+        apiThrottleWindowStart: users.apiThrottleWindowStart,
+      });
 
-  return row ?? null;
+    return row ? { status: "ok", counter: row } : { status: "not-found" };
+  } catch (error) {
+    console.error(
+      "[apiThrottle] failed to record authenticated API hit",
+      error,
+    );
+    return { status: "error" };
+  }
 }
 
 // Records this hit against the user's fixed window and reports whether it is
 // within the allowed rate. Isolated from the middleware so it can be
 // unit-tested against a mocked db independently of auth/session handling.
 //
-// Deliberately does NOT reuse webhookThrottle's "no row found -> allowed"
-// fallback: there, a deleted source's own 404 handling takes over downstream,
-// so letting that one request through unthrottled is harmless. Here nothing
-// downstream catches it — a missing `users` row for an already-authenticated
-// request only happens if the account was deleted after auth succeeded (a
-// still-valid Clerk JWT is never re-checked against the users table), and
-// silently allowing it would hand that request an unbounded budget. Fail
-// closed instead.
+// A "not-found" outcome deliberately does NOT reuse webhookThrottle's "no row
+// -> allowed" fallback: there, a deleted source's own 404 handling takes over
+// downstream, so letting that one request through unthrottled is harmless.
+// Here nothing downstream catches it — a missing `users` row for an
+// already-authenticated request only happens if the account was deleted
+// after auth succeeded (a still-valid Clerk JWT is never re-checked against
+// the users table) — and silently allowing it would hand that request an
+// unbounded budget, so this fails closed instead. An "error" outcome (the
+// write itself failed) is the opposite case: that's the limiter breaking, not
+// the caller being invalid, so it fails open rather than turning a database
+// hiccup into an outage for every authenticated endpoint.
 export async function recordAuthedApiHit(
   userId: string,
 ): Promise<ThrottleResult> {
-  const counter = await recordHitAndFetchCounter(userId);
+  const outcome = await recordHitAndFetchCounter(userId);
 
-  if (!counter) {
+  if (outcome.status === "error") {
+    return { allowed: true };
+  }
+
+  if (outcome.status === "not-found") {
     throwUnauthorized();
   }
 
   return evaluateThrottleCounter(
     {
-      count: counter.apiThrottleCount,
-      windowStart: counter.apiThrottleWindowStart,
+      count: outcome.counter.apiThrottleCount,
+      windowStart: outcome.counter.apiThrottleWindowStart,
     },
     API_THROTTLE_MAX_HITS,
     API_THROTTLE_WINDOW_SECONDS,

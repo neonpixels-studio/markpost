@@ -1,11 +1,42 @@
-import { describe, expect, it } from "vitest";
-import {
+import { describe, expect, it, vi } from "vitest";
+
+type SqlFragment = { strings: readonly string[]; values: unknown[] };
+
+vi.mock("drizzle-orm", () => ({
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    strings,
+    values,
+  }),
+}));
+
+const {
   evaluateThrottleCounter,
   secondsRemainingInWindow,
-} from "../../../server/utils/fixedWindowThrottle";
+  windowExpiredCondition,
+} = await import("../../../server/utils/fixedWindowThrottle");
 
 const WINDOW_SECONDS = 60;
 const MAX_HITS = 30;
+
+describe("windowExpiredCondition", () => {
+  it("compares elapsed time against the window with >=, not a flipped or hardcoded comparison", () => {
+    // A fake column reference is enough: this asserts the condition's shape
+    // (which column, which operator, which bound), not real SQL execution.
+    // Getting the operator direction wrong here would silently never expire a
+    // window, letting the counter climb forever without ever resetting.
+    const windowStartColumn = { name: "fake_window_start" };
+
+    const condition = windowExpiredCondition(
+      windowStartColumn as never,
+      WINDOW_SECONDS,
+    ) as unknown as SqlFragment;
+
+    expect(condition.strings.join("<expr>")).toBe(
+      "(now() - <expr>) >= (<expr> * interval '1 second')",
+    );
+    expect(condition.values).toEqual([windowStartColumn, WINDOW_SECONDS]);
+  });
+});
 
 describe("evaluateThrottleCounter", () => {
   it("allows when there is no counter row (nothing to throttle)", () => {
