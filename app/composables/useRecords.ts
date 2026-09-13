@@ -69,6 +69,10 @@ type StatsResponse = {
   data: RecordStats;
 };
 
+type RecordDetailResponse = {
+  data: RecordResource;
+};
+
 const RECORDS_EXPORT_URL = "/api/records/export";
 
 export function triggerRecordExportDownload(): Promise<ExportOutcome> {
@@ -212,6 +216,37 @@ async function updateRecordsStatusRequest(
     body: { data: { attributes: { records: updates } } },
   });
   return response.data ?? [];
+}
+
+// The bulk PATCH endpoint applies each update with its own Promise.all (no
+// transaction) — a mid-batch rejection can leave earlier rows already
+// committed server-side even though the request as a whole throws. Returns
+// null (never throws) for a uuid that's gone (deleted concurrently) or
+// unreachable, so a caller reconciling a failed batch can tell "confirmed
+// unchanged" apart from "no longer exists" without the whole reconciliation
+// aborting on the first miss.
+async function fetchRecordByUuid(uuid: string): Promise<RecordResource | null> {
+  try {
+    const response = await $fetch<RecordDetailResponse>(`/api/records/${uuid}`);
+    return response.data;
+  } catch (fetchError) {
+    console.error("[useRecords] fetchRecordByUuid error:", fetchError);
+    return null;
+  }
+}
+
+async function fetchRecordsByUuid(
+  uuids: string[],
+): Promise<Map<string, RecordResource>> {
+  const fetchedRecords = await Promise.all(
+    uuids.map((uuid) => fetchRecordByUuid(uuid)),
+  );
+
+  return new Map(
+    fetchedRecords
+      .filter((record): record is RecordResource => record !== null)
+      .map((record) => [record.attributes.uuid, record]),
+  );
 }
 
 // The browser's IANA time zone, so the server can bucket "synced today" and
@@ -592,6 +627,41 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       .filter((record) => matchesActiveFilter(record, filter.value));
   }
 
+  // A rejected bulk PATCH can still have committed some rows server-side (see
+  // fetchRecordByUuid above), so the local list can't simply be left as-is —
+  // it may now disagree with the server for some or all of the requested
+  // uuids. Re-fetches exactly the rows this batch touched (not a full
+  // loadRecords(), which would also discard any pages loaded via loadMore)
+  // and merges in whatever the server actually holds: a uuid the server no
+  // longer has (deleted concurrently) is dropped from the list entirely; a
+  // uuid whose refetched status matches what we asked for is deselected,
+  // since it did apply despite the batch erroring; everything else stays
+  // selected for a retry.
+  async function reconcileAfterFailedUpdate(
+    uuids: string[],
+    requestedStatus: RecordStatus,
+  ): Promise<void> {
+    const refreshedByUuid = await fetchRecordsByUuid(uuids);
+
+    applyStatusUpdates([...refreshedByUuid.values()]);
+
+    const missingUuids = uuids.filter((uuid) => !refreshedByUuid.has(uuid));
+    if (missingUuids.length > 0) {
+      const missingSet = new Set(missingUuids);
+      records.value = records.value.filter(
+        (record) => !missingSet.has(record.attributes.uuid),
+      );
+    }
+
+    pruneSelection();
+
+    const confirmedUuids = uuids.filter(
+      (uuid) =>
+        refreshedByUuid.get(uuid)?.attributes.status === requestedStatus,
+    );
+    deselectUuids(confirmedUuids);
+  }
+
   async function updateRecordsStatus(
     uuids: string[],
     status: RecordStatus,
@@ -655,6 +725,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
         updateRequestError,
       );
       actionError.value = "Failed to update records. Please try again.";
+      await reconcileAfterFailedUpdate(uuids, status);
       return [];
     } finally {
       isUpdatingStatus.value = false;

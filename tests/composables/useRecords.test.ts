@@ -1039,6 +1039,85 @@ describe("useRecords updateRecordsStatus", () => {
     );
   });
 
+  it("reconciles affected rows with the server after a failed bulk PATCH, since Promise.all on the server can commit some rows before rejecting", async () => {
+    const pendingRecordOne: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "pending",
+      },
+    };
+    const pendingRecordTwo: RecordResource = {
+      ...makeRecordResource("uuid-2"),
+      attributes: {
+        ...makeRecordResource("uuid-2").attributes,
+        status: "pending",
+      },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [pendingRecordOne, pendingRecordTwo],
+        meta: { hasMore: false },
+      })
+      // The bulk PATCH itself rejects (e.g. the server errored mid-batch).
+      .mockRejectedValueOnce(new Error("mid-batch failure"))
+      // uuid-1's row had already committed server-side before the rejection.
+      .mockResolvedValueOnce({
+        data: {
+          ...pendingRecordOne,
+          attributes: { ...pendingRecordOne.attributes, status: "synced" },
+        },
+      })
+      // uuid-2 never committed — still reflects its prior state.
+      .mockResolvedValueOnce({ data: pendingRecordTwo });
+
+    const {
+      loadRecords,
+      toggleSelection,
+      isSelected,
+      records,
+      updateRecordsStatus,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+    toggleSelection("uuid-2");
+
+    await updateRecordsStatus(["uuid-1", "uuid-2"], "synced");
+
+    // The UI must reflect the server's true state for the committed row
+    // instead of staying stuck on the pre-request "pending" snapshot.
+    expect(
+      records.value.find((record) => record.id === "uuid-1")?.attributes.status,
+    ).toBe("synced");
+    expect(
+      records.value.find((record) => record.id === "uuid-2")?.attributes.status,
+    ).toBe("pending");
+
+    // uuid-1 actually applied, so it's cleared for the user; uuid-2 didn't,
+    // so it stays selected for a retry.
+    expect(isSelected("uuid-1")).toBe(false);
+    expect(isSelected("uuid-2")).toBe(true);
+  });
+
+  it("drops a uuid from the list entirely when it no longer exists after a failed bulk PATCH", async () => {
+    const recordOne = makeRecordResource("uuid-1");
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [recordOne],
+        meta: { hasMore: false },
+      })
+      .mockRejectedValueOnce(new Error("mid-batch failure"))
+      // The row was deleted concurrently, so the reconcile fetch 404s.
+      .mockRejectedValueOnce(new Error("Not Found"));
+
+    const { loadRecords, records, updateRecordsStatus } = useRecords("all");
+    await loadRecords();
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(records.value).toHaveLength(0);
+  });
+
   it("tracks isUpdatingStatus while the request is in flight", async () => {
     let resolvePatch!: (value: { data: RecordResource[] }) => void;
     mockFetch.mockReturnValue(
