@@ -18,6 +18,21 @@ const expectedUnauthorizedEnvelope = {
   },
 };
 
+// Hand-written (not derived from tooManyRequestsError()) for the same reason.
+const expectedTooManyRequestsEnvelope = {
+  statusCode: 429,
+  data: {
+    errors: [
+      {
+        status: "429",
+        title: "Too Many Requests",
+        detail:
+          "You have made too many requests. Slow down and try again shortly.",
+      },
+    ],
+  },
+};
+
 const selectMock = vi.fn();
 const updateMock = vi.fn();
 
@@ -37,6 +52,12 @@ vi.mock("../../../server/utils/auth", () => ({
   ensureUserRegistered: mockEnsureUserRegistered,
 }));
 
+const mockRecordAuthedApiHit = vi.fn();
+
+vi.mock("../../../server/utils/apiThrottle", () => ({
+  recordAuthedApiHit: mockRecordAuthedApiHit,
+}));
+
 const mockCreateError = vi.fn((options: object) => {
   const error = new Error("createError");
   Object.assign(error, options);
@@ -44,6 +65,7 @@ const mockCreateError = vi.fn((options: object) => {
 });
 
 const mockGetHeader = vi.fn();
+const mockSetHeader = vi.fn();
 
 vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
 
@@ -77,12 +99,20 @@ function stubUpdateSuccess() {
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
   vi.stubGlobal("getHeader", mockGetHeader);
+  vi.stubGlobal("setHeader", mockSetHeader);
   mockCreateError.mockClear();
   mockGetHeader.mockClear();
+  mockSetHeader.mockClear();
   selectMock.mockReset();
   updateMock.mockReset();
   mockVerifyToken.mockReset();
   mockEnsureUserRegistered.mockReset();
+  mockRecordAuthedApiHit.mockReset();
+  // Every existing test in this file predates the throttle and asserts on
+  // authentication behavior only; default to "allowed" so none of them have
+  // to know about it, and let the "authenticated API throttle" describe block
+  // below override this per-test.
+  mockRecordAuthedApiHit.mockResolvedValue({ allowed: true });
   process.env.NUXT_CLERK_SECRET_KEY = "test_secret";
 });
 
@@ -119,6 +149,7 @@ describe("auth middleware", () => {
         expect(mockGetHeader).not.toHaveBeenCalled();
         expect(mockVerifyToken).not.toHaveBeenCalled();
         expect(selectMock).not.toHaveBeenCalled();
+        expect(mockRecordAuthedApiHit).not.toHaveBeenCalled();
       },
     );
   });
@@ -131,6 +162,14 @@ describe("auth middleware", () => {
       expect(mockCreateError).toHaveBeenCalledWith(
         expectedUnauthorizedEnvelope,
       );
+    });
+
+    it("does not spend throttle budget when authentication fails", async () => {
+      mockGetHeader.mockReturnValue(undefined);
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockRecordAuthedApiHit).not.toHaveBeenCalled();
     });
   });
 
@@ -386,6 +425,65 @@ describe("auth middleware", () => {
 
       const event = buildEvent();
       await expect(handler(event)).rejects.toMatchObject({ statusCode: 403 });
+      expect(event.context.userId).toBeUndefined();
+      expect(mockRecordAuthedApiHit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("authenticated API throttle", () => {
+    it("spends throttle budget against the resolved userId for a Clerk session", async () => {
+      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
+      mockGetHeader.mockReturnValue(`Bearer ${clerkToken}`);
+      mockVerifyToken.mockResolvedValue({ sub: userId });
+
+      await handler(buildEvent());
+
+      expect(mockRecordAuthedApiHit).toHaveBeenCalledWith(userId);
+    });
+
+    it("spends throttle budget against the resolved userId for an API token", async () => {
+      const rawToken = generateRawToken();
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId }]);
+      stubUpdateSuccess();
+
+      await handler(buildEvent());
+
+      expect(mockRecordAuthedApiHit).toHaveBeenCalledWith(userId);
+    });
+
+    it("throws 429 with a Retry-After header once the user is over the limit", async () => {
+      const rawToken = generateRawToken();
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId }]);
+      stubUpdateSuccess();
+      mockRecordAuthedApiHit.mockResolvedValue({
+        allowed: false,
+        retryAfterSeconds: 17,
+      });
+
+      const event = buildEvent();
+      await expect(handler(event)).rejects.toThrow();
+
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedTooManyRequestsEnvelope,
+      );
+      expect(mockSetHeader).toHaveBeenCalledWith(event, "Retry-After", "17");
+    });
+
+    it("does not set userId when the request is throttled", async () => {
+      const rawToken = generateRawToken();
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId }]);
+      stubUpdateSuccess();
+      mockRecordAuthedApiHit.mockResolvedValue({
+        allowed: false,
+        retryAfterSeconds: 5,
+      });
+
+      const event = buildEvent();
+      await expect(handler(event)).rejects.toThrow();
+
       expect(event.context.userId).toBeUndefined();
     });
   });
