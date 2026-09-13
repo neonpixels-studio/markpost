@@ -219,15 +219,13 @@ async function updateRecordsStatusRequest(
 }
 
 // The bulk PATCH endpoint applies each update with its own Promise.all (no
-// transaction) — a mid-batch rejection can leave earlier rows already
-// committed server-side even though the request as a whole throws. A caller
-// reconciling a failed batch needs to tell three outcomes apart per uuid:
-// the row still exists and reflects the server's current state ("found"),
-// the row is genuinely gone ("missing", a real 404 — safe to drop locally),
-// or the re-check itself failed for some other reason ("unknown", e.g. the
-// same outage that likely felled the original PATCH — must NOT be treated
-// as "missing", or a transient failure would silently delete rows the
-// server still has).
+// transaction), so a mid-batch rejection can leave earlier rows already
+// committed even though the request as a whole throws. Reconciling a failed
+// batch needs "missing" (a real 404 — safe to drop locally) kept separate
+// from "unknown" (the re-check itself failed some other way, e.g. the same
+// outage that likely felled the PATCH) — collapsing the latter into the
+// former would let a transient failure silently delete rows the server
+// still has.
 type RecordFetchOutcome =
   | { kind: "found"; record: RecordResource }
   | { kind: "missing" }
@@ -235,14 +233,14 @@ type RecordFetchOutcome =
 
 async function fetchRecordOutcome(uuid: string): Promise<RecordFetchOutcome> {
   try {
-    // Reuses useRecordDetail's fetchRecord rather than a second copy of the
-    // same GET /api/records/:uuid call — that one already guards against a
-    // 200 with a null body (the server's contract allows it even though a
-    // 404 is the common "gone" signal), which a fresh copy here would need
-    // to re-derive.
+    // fetchRecord (useRecordDetail.ts) can resolve `null` on a 200 with no
+    // body; the real endpoint doesn't do this today (it 404s instead), but
+    // that's not a guarantee to lean on here — treat it as unknown, not as
+    // confirmation the row is gone.
     const record = await fetchRecord(uuid);
     if (!record) {
-      return { kind: "missing" };
+      console.error("[useRecords] unexpected empty record body:", uuid);
+      return { kind: "unknown" };
     }
 
     return { kind: "found", record };
@@ -286,30 +284,73 @@ async function fetchRecordsByUuid(
   return outcomesByUuid;
 }
 
-// Confirms a refetched record's state is consistent with the requested
-// write having landed — status alone can't tell "just applied" apart from
-// "already matched before the batch ran" (both look identical and both are
-// equally fine to deselect), so the real job here is catching the case that
-// status alone would miss: a record whose status happens to match but whose
-// syncedAt/errorMessage prove the write did NOT actually land, which must
-// stay selected for a retry rather than being waved through as done. The
-// server always writes syncedAt and errorMessage together with status (see
-// updateRecordsStatus below), so all three moving together is what "landed"
-// looks like.
+type OutcomePartition = {
+  foundRecords: RecordResource[];
+  missingUuids: string[];
+  uncheckedCount: number;
+};
+
+function partitionOutcomes(
+  uuids: string[],
+  outcomesByUuid: Map<string, RecordFetchOutcome>,
+): OutcomePartition {
+  const foundRecords: RecordResource[] = [];
+  const missingUuids: string[] = [];
+  let uncheckedCount = 0;
+
+  uuids.forEach((uuid) => {
+    const outcome = outcomesByUuid.get(uuid);
+
+    if (outcome?.kind === "found") {
+      foundRecords.push(outcome.record);
+      return;
+    }
+
+    if (outcome?.kind === "missing") {
+      missingUuids.push(uuid);
+      return;
+    }
+
+    uncheckedCount += 1;
+  });
+
+  return { foundRecords, missingUuids, uncheckedCount };
+}
+
+function buildPartialUpdateMessage(
+  appliedCount: number,
+  totalCount: number,
+): string {
+  return `Updated ${appliedCount} of ${totalCount} records. Please try again for the rest.`;
+}
+
+// Confirms a refetched record's state proves the requested write actually
+// landed, not just that it happens to already look like the target state —
+// those aren't the same thing. A record already "synced" from a prior sync
+// has a non-null syncedAt too; only comparing against this request's own
+// timestamp (which the server stores verbatim — see parseSyncedAt in
+// server/api/records/index.patch.ts) can tell "just synced by this batch"
+// apart from "was already synced from before, this batch never landed" —
+// which matters because the stats card keys off *when* syncedAt was set.
 function matchesRequestedUpdate(
   record: RecordResource,
   requestedStatus: RecordStatus,
+  requestedSyncedAt: string | null,
 ): boolean {
   if (record.attributes.status !== requestedStatus) {
     return false;
   }
 
-  const syncedAtMatches =
-    requestedStatus === "synced"
-      ? record.attributes.syncedAt !== null
-      : record.attributes.syncedAt === null;
+  if (requestedStatus === "synced") {
+    return (
+      record.attributes.syncedAt !== null &&
+      requestedSyncedAt !== null &&
+      new Date(record.attributes.syncedAt).getTime() >=
+        new Date(requestedSyncedAt).getTime()
+    );
+  }
 
-  if (!syncedAtMatches) {
+  if (record.attributes.syncedAt !== null) {
     return false;
   }
 
@@ -695,45 +736,23 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       .filter((record) => matchesActiveFilter(record, filter.value));
   }
 
-  // A rejected bulk PATCH can still have committed some rows server-side (see
-  // fetchRecordOutcome above), so the local list can't simply be left as-is —
-  // it may now disagree with the server for some or all of the requested
-  // uuids. Re-fetches exactly the rows this batch touched (not a full
-  // loadRecords(), which would also discard any pages loaded via loadMore)
-  // and merges in whatever the server actually holds: a uuid the server no
-  // longer has is dropped from the list entirely; a uuid whose refetched
-  // state actually reflects the requested write is deselected, since it did
-  // apply despite the batch erroring; everything else — including anything
-  // the re-check itself couldn't confirm — stays selected for a retry.
-  // Returns the records confirmed to have actually landed, so a caller (e.g.
-  // a single-record retry) can tell "the batch errored but this row still
-  // committed" apart from "nothing happened" instead of always seeing an
-  // empty result on a thrown request.
+  // A rejected bulk PATCH can still have committed rows server-side (see
+  // fetchRecordOutcome above). Re-fetches exactly the uuids this batch
+  // touched (not a full loadRecords(), which would drop any pages loaded via
+  // loadMore) and reconciles the local list, selection, and actionError
+  // against what the server actually confirms — returning the confirmed
+  // records so a caller (e.g. a single-record retry) can tell "this uuid did
+  // land despite the batch throwing" apart from "nothing happened".
   async function reconcileAfterFailedUpdate(
     uuids: string[],
     requestedStatus: RecordStatus,
+    requestedSyncedAt: string | null,
   ): Promise<RecordResource[]> {
     const outcomesByUuid = await fetchRecordsByUuid(uuids);
-
-    const foundRecords: RecordResource[] = [];
-    const missingUuids: string[] = [];
-    let uncheckedCount = 0;
-
-    uuids.forEach((uuid) => {
-      const outcome = outcomesByUuid.get(uuid);
-
-      if (outcome?.kind === "found") {
-        foundRecords.push(outcome.record);
-        return;
-      }
-
-      if (outcome?.kind === "missing") {
-        missingUuids.push(uuid);
-        return;
-      }
-
-      uncheckedCount += 1;
-    });
+    const { foundRecords, missingUuids, uncheckedCount } = partitionOutcomes(
+      uuids,
+      outcomesByUuid,
+    );
 
     applyStatusUpdates(foundRecords);
 
@@ -748,12 +767,26 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     pruneSelection();
 
     const confirmedRecords = foundRecords.filter((record) =>
-      matchesRequestedUpdate(record, requestedStatus),
+      matchesRequestedUpdate(record, requestedStatus, requestedSyncedAt),
     );
     deselectUuids(confirmedRecords.map((record) => record.attributes.uuid));
 
-    if (uncheckedCount > 0) {
-      actionError.value = `${actionError.value ?? ""}${RECONCILE_INCOMPLETE_MESSAGE_SUFFIX}`;
+    // The catch block that calls this set a blanket "failed" message before
+    // any of the above ran — revise it to what actually happened, since a
+    // fully (or partially) confirmed batch reporting itself as failed is as
+    // much a stale-state bug as the stale row list this function exists to
+    // fix.
+    if (confirmedRecords.length === uuids.length) {
+      actionError.value = null;
+    } else if (confirmedRecords.length > 0) {
+      actionError.value = buildPartialUpdateMessage(
+        confirmedRecords.length,
+        uuids.length,
+      );
+    }
+
+    if (uncheckedCount > 0 && actionError.value !== null) {
+      actionError.value = `${actionError.value}${RECONCILE_INCOMPLETE_MESSAGE_SUFFIX}`;
     }
 
     return confirmedRecords;
@@ -778,20 +811,23 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     isUpdatingStatus.value = true;
     actionError.value = null;
 
+    // The server only writes fields present in the payload — moving a
+    // record to "synced" or "pending" without also clearing errorMessage
+    // would leave a stale failure reason on a record the UI now shows as
+    // healthy or not-yet-attempted. Only "error" itself should keep it.
+    //
+    // syncedAt gets the same treatment for the opposite reason: the
+    // "synced today" stat card (server/api/records/stats.get.ts) reads
+    // syncedAt, not status, so marking a record synced without stamping it
+    // would leave that card silently unmoved, and marking a previously
+    // synced record pending/error without clearing it would leave the
+    // record counted as synced today even though it no longer is. Computed
+    // outside the try block so a thrown request can still hand this exact
+    // timestamp to reconcileAfterFailedUpdate below.
+    const syncedAtForStatus =
+      status === "synced" ? new Date().toISOString() : null;
+
     try {
-      // The server only writes fields present in the payload — moving a
-      // record to "synced" or "pending" without also clearing errorMessage
-      // would leave a stale failure reason on a record the UI now shows as
-      // healthy or not-yet-attempted. Only "error" itself should keep it.
-      //
-      // syncedAt gets the same treatment for the opposite reason: the
-      // "synced today" stat card (server/api/records/stats.get.ts) reads
-      // syncedAt, not status, so marking a record synced without stamping it
-      // would leave that card silently unmoved, and marking a previously
-      // synced record pending/error without clearing it would leave the
-      // record counted as synced today even though it no longer is.
-      const syncedAtForStatus =
-        status === "synced" ? new Date().toISOString() : null;
       const updates: BulkStatusUpdate[] = uuids.map((uuid) => ({
         uuid,
         status,
@@ -812,7 +848,10 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       deselectUuids(uuids.filter((uuid) => updatedUuids.has(uuid)));
 
       if (updatedRecords.length < uuids.length) {
-        actionError.value = `Updated ${updatedRecords.length} of ${uuids.length} records. Please try again for the rest.`;
+        actionError.value = buildPartialUpdateMessage(
+          updatedRecords.length,
+          uuids.length,
+        );
       }
 
       return updatedRecords;
@@ -822,7 +861,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
         updateRequestError,
       );
       actionError.value = "Failed to update records. Please try again.";
-      return await reconcileAfterFailedUpdate(uuids, status);
+      return await reconcileAfterFailedUpdate(uuids, status, syncedAtForStatus);
     } finally {
       isUpdatingStatus.value = false;
     }

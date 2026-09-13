@@ -33,7 +33,7 @@ exports[`inbox page > matches snapshot in empty state 1`] = `
       </div>
     </div><!-- filters -->
     <div class="row between wrap gap-3" style="margin-bottom: 14px;">
-      <div class="seg" role="radiogroup" disabled="false"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
     </div><!-- bulk action toolbar -->
     <!--v-if-->
     <!-- loading state -->
@@ -79,7 +79,7 @@ exports[`inbox page > matches snapshot in error state 1`] = `
       </div>
     </div><!-- filters -->
     <div class="row between wrap gap-3" style="margin-bottom: 14px;">
-      <div class="seg" role="radiogroup" disabled="false"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
     </div><!-- bulk action toolbar -->
     <!--v-if-->
     <!-- loading state -->
@@ -124,7 +124,7 @@ exports[`inbox page > matches snapshot in loading state 1`] = `
       </div>
     </div><!-- filters -->
     <div class="row between wrap gap-3" style="margin-bottom: 14px;">
-      <div class="seg" role="radiogroup" disabled="false"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
     </div><!-- bulk action toolbar -->
     <!--v-if-->
     <!-- loading state -->
@@ -168,7 +168,7 @@ exports[`inbox page > matches snapshot with records 1`] = `
       </div>
     </div><!-- filters -->
     <div class="row between wrap gap-3" style="margin-bottom: 14px;">
-      <div class="seg" role="radiogroup" disabled="false"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">2 records</span>
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">2 records</span>
     </div><!-- bulk action toolbar -->
     <!--v-if-->
     <!-- loading state -->

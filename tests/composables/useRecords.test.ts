@@ -1044,6 +1044,8 @@ describe("useRecords updateRecordsStatus", () => {
   });
 
   it("reconciles affected rows with the server after a failed bulk PATCH, since Promise.all on the server can commit some rows before rejecting", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00Z"));
     const pendingRecordOne: RecordResource = {
       ...makeRecordResource("uuid-1"),
       attributes: {
@@ -1116,11 +1118,14 @@ describe("useRecords updateRecordsStatus", () => {
     // so it stays selected for a retry.
     expect(isSelected("uuid-1")).toBe(false);
     expect(isSelected("uuid-2")).toBe(true);
-    // Both uuids were successfully re-checked, so no "could not be
-    // re-checked" caveat should be appended to the failure message.
+    // The reconciled outcome — one of two actually landed — replaces the
+    // blanket "failed" message set before reconcile ran; reporting "failed"
+    // here would contradict the row that just flipped to "synced" above.
     expect(actionError.value).toBe(
-      "Failed to update records. Please try again.",
+      "Updated 1 of 2 records. Please try again for the rest.",
     );
+
+    vi.useRealTimers();
   });
 
   it("drops a uuid from the list entirely when it no longer exists after a failed bulk PATCH", async () => {
@@ -1192,6 +1197,53 @@ describe("useRecords updateRecordsStatus", () => {
     );
   });
 
+  it("does not confirm an already-synced record as 'just applied' when its stale syncedAt proves the write never landed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00Z"));
+
+    // Already synced from a prior sync, well before this request's timestamp.
+    const staleSyncedRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "synced",
+        syncedAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [staleSyncedRecord],
+        meta: { hasMore: false },
+      })
+      .mockRejectedValueOnce(new Error("mid-batch failure"))
+      // Reconcile refetches the exact same untouched row — the PATCH never
+      // actually re-stamped syncedAt.
+      .mockResolvedValueOnce({ data: staleSyncedRecord });
+
+    const {
+      loadRecords,
+      toggleSelection,
+      isSelected,
+      actionError,
+      updateRecordsStatus,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+
+    const updated = await updateRecordsStatus(["uuid-1"], "synced");
+
+    // Status alone matches ("synced"), but the timestamp proves this
+    // request's write never landed — the stats card that keys off *when*
+    // syncedAt was set would otherwise silently miss this record.
+    expect(updated).toEqual([]);
+    expect(isSelected("uuid-1")).toBe(true);
+    expect(actionError.value).toBe(
+      "Failed to update records. Please try again.",
+    );
+
+    vi.useRealTimers();
+  });
+
   it("reconciles every uuid in a failed batch even when it exceeds the concurrency pool size", async () => {
     const uuids = Array.from(
       { length: 7 },
@@ -1231,6 +1283,85 @@ describe("useRecords updateRecordsStatus", () => {
     expect(new Set(requestedDetailUrls)).toEqual(
       new Set(uuids.map((uuid) => `/api/records/${uuid}`)),
     );
+  });
+
+  it("never runs more than RECONCILE_FETCH_CONCURRENCY reconcile GETs at once", async () => {
+    const uuids = Array.from(
+      { length: 7 },
+      (_unused, index) => `uuid-${index}`,
+    );
+    const RECONCILE_FETCH_CONCURRENCY = 5;
+    const pendingRecords = uuids.map((uuid) => ({
+      ...makeRecordResource(uuid),
+      attributes: {
+        ...makeRecordResource(uuid).attributes,
+        status: "pending" as const,
+      },
+    }));
+
+    let inFlightCount = 0;
+    let maxInFlightCount = 0;
+    const deferredResolvers: Array<() => void> = [];
+
+    mockFetch.mockImplementation(
+      (url: string, options?: { method?: string }) => {
+        if (url === "/api/records" && options?.method !== "PATCH") {
+          return Promise.resolve({
+            data: pendingRecords,
+            meta: { hasMore: false },
+          });
+        }
+
+        if (url === "/api/records" && options?.method === "PATCH") {
+          return Promise.reject(new Error("mid-batch failure"));
+        }
+
+        // A reconcile detail GET: stays pending until the test explicitly
+        // releases it, so the test can observe exactly how many are
+        // in flight at once.
+        inFlightCount += 1;
+        maxInFlightCount = Math.max(maxInFlightCount, inFlightCount);
+
+        return new Promise((resolve) => {
+          deferredResolvers.push(() => {
+            inFlightCount -= 1;
+            const uuid = url.replace("/api/records/", "");
+            const record = pendingRecords.find(
+              (candidate) => candidate.attributes.uuid === uuid,
+            );
+            resolve({ data: record });
+          });
+        });
+      },
+    );
+
+    const { loadRecords, updateRecordsStatus } = useRecords("all");
+    await loadRecords();
+
+    const updatePromise = updateRecordsStatus(uuids, "pending");
+
+    // The first wave claims exactly the concurrency cap, never all 7 at once.
+    await vi.waitFor(() =>
+      expect(deferredResolvers).toHaveLength(RECONCILE_FETCH_CONCURRENCY),
+    );
+    expect(maxInFlightCount).toBe(RECONCILE_FETCH_CONCURRENCY);
+
+    deferredResolvers
+      .splice(0, RECONCILE_FETCH_CONCURRENCY)
+      .forEach((resolve) => resolve());
+
+    // Freed workers claim the remaining uuids, but the pool still never
+    // exceeds its cap even as the second wave starts.
+    await vi.waitFor(() =>
+      expect(deferredResolvers).toHaveLength(
+        uuids.length - RECONCILE_FETCH_CONCURRENCY,
+      ),
+    );
+    expect(maxInFlightCount).toBe(RECONCILE_FETCH_CONCURRENCY);
+
+    deferredResolvers.splice(0).forEach((resolve) => resolve());
+
+    await updatePromise;
   });
 
   it("reloads from the server when a failed bulk PATCH's reconcile empties the filtered page but more records remain", async () => {
