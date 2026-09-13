@@ -5,6 +5,8 @@ import {
 } from "#shared/utils/sourceTypes";
 import { computeElapsedBuckets } from "../utils/timeBuckets";
 import { downloadExport, type ExportOutcome } from "../utils/exportDownload";
+import { isNotFoundError } from "../utils/apiError";
+import { fetchRecord } from "./useRecordDetail";
 import { RECORDS_EXPORT_FILENAME } from "#shared/utils/export";
 import {
   RECORD_STATUSES,
@@ -67,10 +69,6 @@ type RecordListResponse = {
 
 type StatsResponse = {
   data: RecordStats;
-};
-
-type RecordDetailResponse = {
-  data: RecordResource;
 };
 
 const RECORDS_EXPORT_URL = "/api/records/export";
@@ -188,6 +186,8 @@ export const BULK_ACTION_MAX_BATCH_SIZE = Math.min(
 
 const BULK_ACTION_CAP_MESSAGE = `You can act on at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
 const BULK_SELECTION_CAP_MESSAGE = `You can select at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`;
+const RECONCILE_INCOMPLETE_MESSAGE_SUFFIX =
+  " Some records could not be re-checked — refresh to confirm their status.";
 
 type DeleteRecordsResponse = {
   meta: { deleted: number };
@@ -220,33 +220,101 @@ async function updateRecordsStatusRequest(
 
 // The bulk PATCH endpoint applies each update with its own Promise.all (no
 // transaction) — a mid-batch rejection can leave earlier rows already
-// committed server-side even though the request as a whole throws. Returns
-// null (never throws) for a uuid that's gone (deleted concurrently) or
-// unreachable, so a caller reconciling a failed batch can tell "confirmed
-// unchanged" apart from "no longer exists" without the whole reconciliation
-// aborting on the first miss.
-async function fetchRecordByUuid(uuid: string): Promise<RecordResource | null> {
+// committed server-side even though the request as a whole throws. A caller
+// reconciling a failed batch needs to tell three outcomes apart per uuid:
+// the row still exists and reflects the server's current state ("found"),
+// the row is genuinely gone ("missing", a real 404 — safe to drop locally),
+// or the re-check itself failed for some other reason ("unknown", e.g. the
+// same outage that likely felled the original PATCH — must NOT be treated
+// as "missing", or a transient failure would silently delete rows the
+// server still has).
+type RecordFetchOutcome =
+  | { kind: "found"; record: RecordResource }
+  | { kind: "missing" }
+  | { kind: "unknown" };
+
+async function fetchRecordOutcome(uuid: string): Promise<RecordFetchOutcome> {
   try {
-    const response = await $fetch<RecordDetailResponse>(`/api/records/${uuid}`);
-    return response.data;
+    // Reuses useRecordDetail's fetchRecord rather than a second copy of the
+    // same GET /api/records/:uuid call — that one already guards against a
+    // 200 with a null body (the server's contract allows it even though a
+    // 404 is the common "gone" signal), which a fresh copy here would need
+    // to re-derive.
+    const record = await fetchRecord(uuid);
+    if (!record) {
+      return { kind: "missing" };
+    }
+
+    return { kind: "found", record };
   } catch (fetchError) {
-    console.error("[useRecords] fetchRecordByUuid error:", fetchError);
-    return null;
+    if (isNotFoundError(fetchError)) {
+      return { kind: "missing" };
+    }
+
+    console.error("[useRecords] fetchRecordOutcome error:", fetchError);
+    return { kind: "unknown" };
   }
 }
 
+// Caps how many reconcile GETs run at once. This fires precisely when the
+// server just failed a request, so fanning out one request per uuid (up to
+// BULK_ACTION_MAX_BATCH_SIZE) would hit it with a retry storm at the worst
+// possible time; a small worker pool bounds that without serializing the
+// whole batch.
+const RECONCILE_FETCH_CONCURRENCY = 5;
+
 async function fetchRecordsByUuid(
   uuids: string[],
-): Promise<Map<string, RecordResource>> {
-  const fetchedRecords = await Promise.all(
-    uuids.map((uuid) => fetchRecordByUuid(uuid)),
-  );
+): Promise<Map<string, RecordFetchOutcome>> {
+  const outcomesByUuid = new Map<string, RecordFetchOutcome>();
+  const pendingUuids = [...uuids];
 
-  return new Map(
-    fetchedRecords
-      .filter((record): record is RecordResource => record !== null)
-      .map((record) => [record.attributes.uuid, record]),
-  );
+  async function runWorker(): Promise<void> {
+    for (;;) {
+      const nextUuid = pendingUuids.shift();
+      if (nextUuid === undefined) {
+        return;
+      }
+
+      outcomesByUuid.set(nextUuid, await fetchRecordOutcome(nextUuid));
+    }
+  }
+
+  const workerCount = Math.min(RECONCILE_FETCH_CONCURRENCY, uuids.length);
+  await Promise.all(Array.from({ length: workerCount }, runWorker));
+
+  return outcomesByUuid;
+}
+
+// Confirms a refetched record's state is consistent with the requested
+// write having landed — status alone can't tell "just applied" apart from
+// "already matched before the batch ran" (both look identical and both are
+// equally fine to deselect), so the real job here is catching the case that
+// status alone would miss: a record whose status happens to match but whose
+// syncedAt/errorMessage prove the write did NOT actually land, which must
+// stay selected for a retry rather than being waved through as done. The
+// server always writes syncedAt and errorMessage together with status (see
+// updateRecordsStatus below), so all three moving together is what "landed"
+// looks like.
+function matchesRequestedUpdate(
+  record: RecordResource,
+  requestedStatus: RecordStatus,
+): boolean {
+  if (record.attributes.status !== requestedStatus) {
+    return false;
+  }
+
+  const syncedAtMatches =
+    requestedStatus === "synced"
+      ? record.attributes.syncedAt !== null
+      : record.attributes.syncedAt === null;
+
+  if (!syncedAtMatches) {
+    return false;
+  }
+
+  // "error" is the one status the server doesn't clear errorMessage for.
+  return requestedStatus === "error" || record.attributes.errorMessage === null;
 }
 
 // The browser's IANA time zone, so the server can bucket "synced today" and
@@ -628,24 +696,47 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
   }
 
   // A rejected bulk PATCH can still have committed some rows server-side (see
-  // fetchRecordByUuid above), so the local list can't simply be left as-is —
+  // fetchRecordOutcome above), so the local list can't simply be left as-is —
   // it may now disagree with the server for some or all of the requested
   // uuids. Re-fetches exactly the rows this batch touched (not a full
   // loadRecords(), which would also discard any pages loaded via loadMore)
   // and merges in whatever the server actually holds: a uuid the server no
-  // longer has (deleted concurrently) is dropped from the list entirely; a
-  // uuid whose refetched status matches what we asked for is deselected,
-  // since it did apply despite the batch erroring; everything else stays
-  // selected for a retry.
+  // longer has is dropped from the list entirely; a uuid whose refetched
+  // state actually reflects the requested write is deselected, since it did
+  // apply despite the batch erroring; everything else — including anything
+  // the re-check itself couldn't confirm — stays selected for a retry.
+  // Returns the records confirmed to have actually landed, so a caller (e.g.
+  // a single-record retry) can tell "the batch errored but this row still
+  // committed" apart from "nothing happened" instead of always seeing an
+  // empty result on a thrown request.
   async function reconcileAfterFailedUpdate(
     uuids: string[],
     requestedStatus: RecordStatus,
-  ): Promise<void> {
-    const refreshedByUuid = await fetchRecordsByUuid(uuids);
+  ): Promise<RecordResource[]> {
+    const outcomesByUuid = await fetchRecordsByUuid(uuids);
 
-    applyStatusUpdates([...refreshedByUuid.values()]);
+    const foundRecords: RecordResource[] = [];
+    const missingUuids: string[] = [];
+    let uncheckedCount = 0;
 
-    const missingUuids = uuids.filter((uuid) => !refreshedByUuid.has(uuid));
+    uuids.forEach((uuid) => {
+      const outcome = outcomesByUuid.get(uuid);
+
+      if (outcome?.kind === "found") {
+        foundRecords.push(outcome.record);
+        return;
+      }
+
+      if (outcome?.kind === "missing") {
+        missingUuids.push(uuid);
+        return;
+      }
+
+      uncheckedCount += 1;
+    });
+
+    applyStatusUpdates(foundRecords);
+
     if (missingUuids.length > 0) {
       const missingSet = new Set(missingUuids);
       records.value = records.value.filter(
@@ -653,13 +744,19 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       );
     }
 
+    await backfillIfEmptied();
     pruneSelection();
 
-    const confirmedUuids = uuids.filter(
-      (uuid) =>
-        refreshedByUuid.get(uuid)?.attributes.status === requestedStatus,
+    const confirmedRecords = foundRecords.filter((record) =>
+      matchesRequestedUpdate(record, requestedStatus),
     );
-    deselectUuids(confirmedUuids);
+    deselectUuids(confirmedRecords.map((record) => record.attributes.uuid));
+
+    if (uncheckedCount > 0) {
+      actionError.value = `${actionError.value ?? ""}${RECONCILE_INCOMPLETE_MESSAGE_SUFFIX}`;
+    }
+
+    return confirmedRecords;
   }
 
   async function updateRecordsStatus(
@@ -725,8 +822,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
         updateRequestError,
       );
       actionError.value = "Failed to update records. Please try again.";
-      await reconcileAfterFailedUpdate(uuids, status);
-      return [];
+      return await reconcileAfterFailedUpdate(uuids, status);
     } finally {
       isUpdatingStatus.value = false;
     }
