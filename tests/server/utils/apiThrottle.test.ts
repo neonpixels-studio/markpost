@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createMockCreateError } from "../helpers";
 
 const updateMock = vi.fn();
+const mockCreateError = createMockCreateError();
 
 vi.mock("../../../server/db", () => ({
   getDb: () => ({ update: updateMock }),
@@ -48,14 +50,30 @@ function stubUpdateReturning(rows: unknown[]) {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("createError", mockCreateError);
+  mockCreateError.mockClear();
   updateMock.mockReset();
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe("recordAuthedApiHit atomic update shape", () => {
+  it("targets the row for the given userId, not some other column", async () => {
+    const { where } = stubUpdateReturning([
+      { apiThrottleCount: 1, apiThrottleWindowStart: new Date() },
+    ]);
+
+    await recordAuthedApiHit(USER_ID);
+
+    expect(where).toHaveBeenCalledWith({
+      column: users.userId,
+      value: USER_ID,
+    });
+  });
+
   it("builds a CASE expression that resets on an expired window and otherwise increments", async () => {
     const { set } = stubUpdateReturning([
       { apiThrottleCount: 1, apiThrottleWindowStart: new Date() },
@@ -166,11 +184,17 @@ describe("recordAuthedApiHit", () => {
     expect(allowed).toEqual({ allowed: true });
   });
 
-  it("allows the hit when the user row is not found (nothing to throttle)", async () => {
+  it("fails closed with a 401 when the user row is not found", async () => {
+    // Unlike webhookThrottle's "no row -> allow" fallback (a deleted source's
+    // own 404 takes over downstream), nothing downstream catches a missing
+    // users row here, so this must not silently hand out an unthrottled
+    // request. See the comment on recordAuthedApiHit.
     stubUpdateReturning([]);
 
-    const result = await recordAuthedApiHit(USER_ID);
+    await expect(recordAuthedApiHit(USER_ID)).rejects.toThrow();
 
-    expect(result).toEqual({ allowed: true });
+    expect(mockCreateError).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 401 }),
+    );
   });
 });

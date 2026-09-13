@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { users } from "../db/schema";
+import { throwUnauthorized } from "./errors";
 import {
   evaluateThrottleCounter,
   windowExpiredCondition,
@@ -51,18 +52,29 @@ async function recordHitAndFetchCounter(
 // Records this hit against the user's fixed window and reports whether it is
 // within the allowed rate. Isolated from the middleware so it can be
 // unit-tested against a mocked db independently of auth/session handling.
+//
+// Deliberately does NOT reuse webhookThrottle's "no row found -> allowed"
+// fallback: there, a deleted source's own 404 handling takes over downstream,
+// so letting that one request through unthrottled is harmless. Here nothing
+// downstream catches it — a missing `users` row for an already-authenticated
+// request only happens if the account was deleted after auth succeeded (a
+// still-valid Clerk JWT is never re-checked against the users table), and
+// silently allowing it would hand that request an unbounded budget. Fail
+// closed instead.
 export async function recordAuthedApiHit(
   userId: string,
 ): Promise<ThrottleResult> {
   const counter = await recordHitAndFetchCounter(userId);
 
+  if (!counter) {
+    throwUnauthorized();
+  }
+
   return evaluateThrottleCounter(
-    counter
-      ? {
-          count: counter.apiThrottleCount,
-          windowStart: counter.apiThrottleWindowStart,
-        }
-      : null,
+    {
+      count: counter.apiThrottleCount,
+      windowStart: counter.apiThrottleWindowStart,
+    },
     API_THROTTLE_MAX_HITS,
     API_THROTTLE_WINDOW_SECONDS,
   );
