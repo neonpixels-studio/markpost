@@ -3,9 +3,14 @@ import type { H3Event } from "h3";
 
 const updateMock = vi.fn();
 const selectMock = vi.fn();
+const writeEventMock = vi.fn(() => Promise.resolve());
 
 vi.mock("../../../../server/db", () => ({
   getDb: () => ({ update: updateMock, select: selectMock }),
+}));
+
+vi.mock("../../../../server/utils/eventWriter", () => ({
+  writeEvent: writeEventMock,
 }));
 
 const mockCreateError = vi.fn((options: object) => {
@@ -73,6 +78,7 @@ beforeEach(() => {
   mockGetRouterParam.mockReset();
   updateMock.mockReset();
   selectMock.mockReset();
+  writeEventMock.mockClear();
 });
 
 afterEach(() => {
@@ -282,6 +288,201 @@ describe("PATCH /api/records/:uuid", () => {
     await handler(buildEvent(userId));
 
     expect(set).toHaveBeenCalledWith({ syncedAt: null });
+  });
+
+  it("updates title and content, preserving createdAt and source lineage", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(
+      buildBody({ title: "Corrected title", content: "Corrected content" }),
+    );
+    const updatedRecord = {
+      ...sampleRecord,
+      title: "Corrected title",
+      content: "Corrected content",
+    };
+    const { set } = stubUpdateResult([updatedRecord]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({
+      title: "Corrected title",
+      content: "Corrected content",
+    });
+    expect(response.data?.attributes.title).toBe("Corrected title");
+    expect(response.data?.attributes.content).toBe("Corrected content");
+    expect(response.data?.attributes.createdAt).toEqual(sampleRecord.createdAt);
+  });
+
+  it("writes an activity event when title or content is edited", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ title: "Corrected title" }));
+    const updatedRecord = { ...sampleRecord, title: "Corrected title" };
+    stubUpdateResult([updatedRecord]);
+
+    await handler(buildEvent(userId));
+
+    expect(writeEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId,
+        kind: "dim",
+        recordUuid: validUuid,
+      }),
+    );
+  });
+
+  it("does not write an activity event for a status/filePath/syncedAt/errorMessage-only update", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+    stubUpdateResult([{ ...sampleRecord, status: "synced" }]);
+
+    await handler(buildEvent(userId));
+
+    expect(writeEventMock).not.toHaveBeenCalled();
+  });
+
+  it("does not fail the request when writing the edit event throws", async () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ title: "Corrected title" }));
+    stubUpdateResult([{ ...sampleRecord, title: "Corrected title" }]);
+    writeEventMock.mockReturnValueOnce(
+      Promise.reject(new Error("db unavailable")),
+    );
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data?.attributes.title).toBe("Corrected title");
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("updates only title without touching other fields", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ title: "New title" }));
+    const updatedRecord = { ...sampleRecord, title: "New title" };
+    const { set } = stubUpdateResult([updatedRecord]);
+
+    await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ title: "New title" });
+  });
+
+  it("updates only content without touching other fields", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ content: "New content" }));
+    const updatedRecord = { ...sampleRecord, content: "New content" };
+    const { set } = stubUpdateResult([updatedRecord]);
+
+    await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ content: "New content" });
+  });
+
+  it("trims whitespace from title before persisting", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ title: "  Padded title  " }));
+    const updatedRecord = { ...sampleRecord, title: "Padded title" };
+    const { set } = stubUpdateResult([updatedRecord]);
+
+    await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ title: "Padded title" });
+  });
+
+  it("allows content to be updated to an empty string", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ content: "" }));
+    const updatedRecord = { ...sampleRecord, content: "" };
+    const { set } = stubUpdateResult([updatedRecord]);
+
+    await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ content: "" });
+  });
+
+  it("throws 422 when title is not a string", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ title: 42 }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          {
+            status: "422",
+            title: "Invalid Attribute",
+            detail: "Title must be a non-empty string",
+            source: { pointer: "/data/attributes/title" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("throws 422 when title is null", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ title: null }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+  });
+
+  it("throws 422 when title is empty or whitespace-only", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ title: "   " }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          {
+            status: "422",
+            title: "Invalid Attribute",
+            detail: "Title must be a non-empty string",
+            source: { pointer: "/data/attributes/title" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("throws 422 when content is not a string", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ content: 42 }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 422,
+      data: {
+        errors: [
+          {
+            status: "422",
+            title: "Invalid Attribute",
+            detail: "Content must be a string",
+            source: { pointer: "/data/attributes/content" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("throws 422 when content is null", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ content: null }));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 422,
+    });
   });
 
   it("throws 422 when no updatable fields are provided", async () => {

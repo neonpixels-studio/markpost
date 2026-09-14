@@ -7,6 +7,13 @@
 export const RECORD_STATUSES = ["synced", "pending", "error"] as const;
 export type RecordStatus = (typeof RECORD_STATUSES)[number];
 
+export function isRecordStatus(value: unknown): value is RecordStatus {
+  return (
+    typeof value === "string" &&
+    (RECORD_STATUSES as readonly string[]).includes(value)
+  );
+}
+
 // DELETE and PATCH currently share one cap. They are exported separately
 // (rather than a single constant) so the endpoints can diverge later without
 // a rename — if they do, BULK_ACTION_MAX_BATCH_SIZE in
