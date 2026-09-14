@@ -241,7 +241,7 @@
       "patch": {
         "tags": ["Records"],
         "summary": "Update a record",
-        "description": "At least one of `status`, `syncedAt`, `filePath`, or `errorMessage` is required.",
+        "description": "At least one of `status`, `syncedAt`, `filePath`, `errorMessage`, `title`, or `content` is required. `title` and `content` update the record's database row only — they do not regenerate `filePath` or reset `status`/`syncedAt`, so an already-synced record's file on disk is not rewritten by this call.",
         "requestBody": {
           "required": true,
           "content": {
@@ -264,7 +264,9 @@
                             "format": "date-time"
                           },
                           "filePath": { "type": ["string", "null"] },
-                          "errorMessage": { "type": ["string", "null"] }
+                          "errorMessage": { "type": ["string", "null"] },
+                          "title": { "type": "string", "minLength": 1 },
+                          "content": { "type": "string" }
                         }
                       }
                     }

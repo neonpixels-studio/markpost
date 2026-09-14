@@ -15,7 +15,9 @@ body:
             "type": "records",
             "attributes": {
                 "status": "synced",
-                "syncedAt": "2024-01-15T10:00:00.000Z"
+                "syncedAt": "2024-01-15T10:00:00.000Z",
+                "title": "Corrected title",
+                "content": "Corrected content"
             }
         }
     }

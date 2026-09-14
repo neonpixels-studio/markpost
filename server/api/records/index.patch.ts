@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../db";
-import { records, RECORD_STATUSES, type RecordStatus } from "../../db/schema";
+import { records } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
 import { requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
@@ -10,8 +10,17 @@ import {
 } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
 import { writeEvent } from "../../utils/eventWriter";
-import { MAX_UPDATE_BATCH_SIZE } from "#shared/utils/records";
+import { MAX_UPDATE_BATCH_SIZE, isRecordStatus } from "#shared/utils/records";
 import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
+import {
+  invalidAttributeError,
+  attributesShapeError,
+  statusInvalidError,
+  syncedAtTypeError,
+  syncedAtInvalidError,
+  filePathTypeError,
+  errorMessageTypeError,
+} from "../../utils/recordErrors";
 
 type RecordUpdateAttributes = {
   uuid?: unknown;
@@ -42,27 +51,6 @@ type PreparedUpdate = {
 };
 
 const RECORDS_POINTER = "/data/attributes/records";
-
-function invalidAttributeError(detail: string, pointer: string): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "422",
-        title: "Invalid Attribute",
-        detail,
-        source: { pointer },
-      },
-    ],
-    422,
-  );
-}
-
-function attributesShapeError(): ApiError {
-  return invalidAttributeError(
-    "Attributes must be an object.",
-    "/data/attributes",
-  );
-}
 
 function recordsShapeError(): ApiError {
   return invalidAttributeError(
@@ -106,50 +94,8 @@ function itemEmptyUpdateError(index: number): ApiError {
   );
 }
 
-function statusInvalidError(index: number): ApiError {
-  return invalidAttributeError(
-    `Status must be one of: ${RECORD_STATUSES.join(", ")}`,
-    `${RECORDS_POINTER}/${index}/status`,
-  );
-}
-
-function syncedAtTypeError(index: number): ApiError {
-  return invalidAttributeError(
-    "SyncedAt must be a date string or null",
-    `${RECORDS_POINTER}/${index}/syncedAt`,
-  );
-}
-
-function syncedAtInvalidError(index: number): ApiError {
-  return invalidAttributeError(
-    "SyncedAt must be a valid date string",
-    `${RECORDS_POINTER}/${index}/syncedAt`,
-  );
-}
-
-function filePathTypeError(index: number): ApiError {
-  return invalidAttributeError(
-    "FilePath must be a string or null",
-    `${RECORDS_POINTER}/${index}/filePath`,
-  );
-}
-
-function errorMessageTypeError(index: number): ApiError {
-  return invalidAttributeError(
-    "ErrorMessage must be a string or null",
-    `${RECORDS_POINTER}/${index}/errorMessage`,
-  );
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isRecordStatus(value: unknown): value is RecordStatus {
-  return (
-    typeof value === "string" &&
-    (RECORD_STATUSES as readonly string[]).includes(value)
-  );
 }
 
 function parseStatus(
@@ -162,7 +108,7 @@ function parseStatus(
   }
 
   if (!isRecordStatus(attributes.status)) {
-    throw statusInvalidError(index);
+    throw statusInvalidError(`${RECORDS_POINTER}/${index}/status`);
   }
 
   payload.status = attributes.status;
@@ -178,6 +124,7 @@ function parseSyncedAt(
   }
 
   const raw = attributes.syncedAt;
+  const pointer = `${RECORDS_POINTER}/${index}/syncedAt`;
 
   if (raw === null) {
     payload.syncedAt = null;
@@ -185,13 +132,13 @@ function parseSyncedAt(
   }
 
   if (typeof raw !== "string") {
-    throw syncedAtTypeError(index);
+    throw syncedAtTypeError(pointer);
   }
 
   const parsed = new Date(raw);
 
   if (Number.isNaN(parsed.getTime())) {
-    throw syncedAtInvalidError(index);
+    throw syncedAtInvalidError(pointer);
   }
 
   payload.syncedAt = parsed;
@@ -209,7 +156,7 @@ function parseFilePath(
   const raw = attributes.filePath;
 
   if (raw !== null && typeof raw !== "string") {
-    throw filePathTypeError(index);
+    throw filePathTypeError(`${RECORDS_POINTER}/${index}/filePath`);
   }
 
   payload.filePath = raw ?? null;
@@ -227,7 +174,7 @@ function parseErrorMessage(
   const raw = attributes.errorMessage;
 
   if (raw !== null && typeof raw !== "string") {
-    throw errorMessageTypeError(index);
+    throw errorMessageTypeError(`${RECORDS_POINTER}/${index}/errorMessage`);
   }
 
   payload.errorMessage = raw ?? null;
