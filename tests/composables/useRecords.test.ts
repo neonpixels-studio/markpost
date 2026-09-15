@@ -411,6 +411,18 @@ describe("useRecords selection", () => {
     expect(isSelected("uuid-1")).toBe(false);
   });
 
+  it("never reports isAllVisibleSelected for an empty record list", () => {
+    const { isAllVisibleSelected, toggleSelectAllVisible, selectedCount } =
+      useRecords("all");
+
+    expect(isAllVisibleSelected.value).toBe(false);
+
+    // A no-op guard: with nothing loaded there is nothing to select or clear,
+    // and this must not disturb the (empty) selection or any pending message.
+    toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(0);
+  });
+
   it("toggles a uuid in and out of the selection", () => {
     const { selectedCount, isSelected, toggleSelection } = useRecords("all");
 
@@ -493,7 +505,7 @@ describe("useRecords selection", () => {
     expect(selectedCount.value).toBe(0);
   });
 
-  it("reports isAllVisibleSelected against the batch cap when more records are loaded than the cap allows", async () => {
+  it("never reports isAllVisibleSelected once more records are loaded than the cap allows, even with nothing left to load", async () => {
     const oversizedPage = Array.from(
       { length: BULK_ACTION_MAX_BATCH_SIZE + 10 },
       (_unused, index) => makeRecordResource(`uuid-${index}`),
@@ -511,12 +523,157 @@ describe("useRecords selection", () => {
     } = useRecords("all");
     await loadRecords();
 
-    // Selecting "all" can only ever reach the cap, so isAllVisibleSelected
-    // must key off the capped set — otherwise the header checkbox could never
-    // show checked, and a second click could never clear it. Assert the
-    // selection size directly: isAllVisibleSelected alone can't tell a
-    // correctly-capped selection from an over-cap one — both leave every
-    // capped uuid selected, which is all that flag checks.
+    // Selecting "all" can only ever reach the cap, leaving 10 loaded, visible
+    // records unselected — isAllVisibleSelected must say so even though
+    // hasMore is false (there is truly nothing more to load): "all selected"
+    // is about the rows on screen, not about whether the server has anything
+    // left to give.
+    toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
+    expect(isAllVisibleSelected.value).toBe(false);
+
+    // A second click re-selects the identical capped set rather than
+    // clearing, since isAllVisibleSelected never went true — the separate
+    // clearSelection control is the way out of a capped selection.
+    toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
+  });
+
+  it("surfaces a cap message when toggling select-all truncates the selection", async () => {
+    const oversizedPage = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE + 10 },
+      (_unused, index) => makeRecordResource(`uuid-${index}`),
+    );
+    mockFetch.mockResolvedValue({
+      data: oversizedPage,
+      meta: { hasMore: false },
+    });
+
+    const {
+      loadRecords,
+      actionError,
+      selectedCount,
+      selectedUuids,
+      toggleSelectAllVisible,
+    } = useRecords("all");
+    await loadRecords();
+
+    toggleSelectAllVisible();
+
+    expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
+    expect(actionError.value).toBe(
+      `You can select at most ${BULK_ACTION_MAX_BATCH_SIZE} records at a time.`,
+    );
+    // Identity, not just cardinality: the first BULK_ACTION_MAX_BATCH_SIZE
+    // records, not an arbitrary same-sized subset.
+    expect([...selectedUuids.value]).toEqual(
+      oversizedPage
+        .slice(0, BULK_ACTION_MAX_BATCH_SIZE)
+        .map((record) => record.attributes.uuid),
+    );
+  });
+
+  it("does not surface a cap message when select-all fits under the cap", async () => {
+    mockFetch.mockResolvedValue({
+      data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+      meta: { hasMore: false },
+    });
+
+    const { loadRecords, actionError, toggleSelectAllVisible } =
+      useRecords("all");
+    await loadRecords();
+
+    toggleSelectAllVisible();
+
+    expect(actionError.value).toBeNull();
+  });
+
+  it("stops reporting isAllVisibleSelected once loadMore reveals rows the cap can never reach", async () => {
+    const cappedPage = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE },
+      (_unused, index) => makeRecordResource(`uuid-${index}`),
+    );
+    const nextPage = [
+      makeRecordResource("uuid-extra-1"),
+      makeRecordResource("uuid-extra-2"),
+    ];
+    mockFetch
+      .mockResolvedValueOnce({ data: cappedPage, meta: { hasMore: true } })
+      .mockResolvedValueOnce({ data: nextPage, meta: { hasMore: true } });
+
+    const {
+      loadRecords,
+      loadMore,
+      isAllVisibleSelected,
+      toggleSelectAllVisible,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelectAllVisible();
+
+    // The whole first (and so far only) page fits exactly within the cap and
+    // is fully selected, so this honestly reports complete.
+    expect(isAllVisibleSelected.value).toBe(true);
+
+    // loadMore appends two more, now-visible rows that are not selected —
+    // this is the bug: the old implementation kept reporting true here
+    // because it only ever checked the first BULK_ACTION_MAX_BATCH_SIZE
+    // uuids (unchanged by the append), ignoring that the loaded set had grown
+    // past what "select all" could ever reach.
+    await loadMore();
+
+    expect(isAllVisibleSelected.value).toBe(false);
+  });
+
+  it("keeps isAllVisibleSelected false after loadMore even once the final page reports hasMore: false", async () => {
+    const cappedPage = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE },
+      (_unused, index) => makeRecordResource(`uuid-${index}`),
+    );
+    const finalPage = Array.from({ length: 20 }, (_unused, index) =>
+      makeRecordResource(`uuid-extra-${index}`),
+    );
+    mockFetch
+      .mockResolvedValueOnce({ data: cappedPage, meta: { hasMore: true } })
+      .mockResolvedValueOnce({ data: finalPage, meta: { hasMore: false } });
+
+    const {
+      loadRecords,
+      loadMore,
+      selectedCount,
+      isAllVisibleSelected,
+      toggleSelectAllVisible,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelectAllVisible();
+    await loadMore();
+
+    // The server has nothing left (hasMore: false), but 20 loaded, visible
+    // rows past the cap are still unselected — "nothing more to load" is not
+    // the same claim as "everything visible is selected", so this must stay
+    // false rather than flipping true just because pagination ended.
+    expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
+    expect(isAllVisibleSelected.value).toBe(false);
+  });
+
+  it("reports isAllVisibleSelected and allows clearing when the loaded page lands exactly at the cap, even with more on the server", async () => {
+    const cappedPage = Array.from(
+      { length: BULK_ACTION_MAX_BATCH_SIZE },
+      (_unused, index) => makeRecordResource(`uuid-${index}`),
+    );
+    mockFetch.mockResolvedValue({ data: cappedPage, meta: { hasMore: true } });
+
+    const {
+      loadRecords,
+      selectedCount,
+      isAllVisibleSelected,
+      toggleSelectAllVisible,
+    } = useRecords("all");
+    await loadRecords();
+
+    // Every currently visible row fits within the cap and gets selected, so
+    // this is a true, non-stale "all selected" — the fact that hasMore is
+    // true just means the server has rows not yet loaded, which is a
+    // different question from whether everything on screen is checked.
     toggleSelectAllVisible();
     expect(selectedCount.value).toBe(BULK_ACTION_MAX_BATCH_SIZE);
     expect(isAllVisibleSelected.value).toBe(true);

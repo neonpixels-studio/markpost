@@ -399,37 +399,58 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     );
   }
 
-  // "All visible" means every visible record up to the batch cap — with more
-  // records loaded than the cap allows, toggleSelectAllVisible below can never
-  // select every one of them, so basing this on the raw record count would
-  // leave the header checkbox permanently unchecked and unable to clear.
+  // "All visible" means every visible record is selected — and only counts as
+  // "all" when the cap didn't have to cut anything, i.e. every currently
+  // loaded record fits within it. Once loadMore (or a single oversized page)
+  // pushes the loaded count past the cap, a "select all" can only ever reach
+  // the first BULK_ACTION_MAX_BATCH_SIZE of them, leaving later, visible rows
+  // unselected — so this must report false from that point on, no matter how
+  // many further pages get appended afterwards or whether the server still
+  // has more (hasMore) or not. Reporting true there, even once, would be a
+  // lie about rows the user can plainly see are unchecked.
+  //
+  // toggleSelectAllVisible below branches on this same flag (not a separate
+  // "is the capped window full" check) so a click always matches what the
+  // control displays: unchecked always means "try to select", checked always
+  // means "clear". Once the loaded count has exceeded the cap this flag can
+  // never go true again, so the header control alone can no longer clear an
+  // already-maxed selection — the separate bulk-action "clear" control
+  // (RecordBulkActions) still can. Wiring a true indeterminate visual state
+  // would remove that gap but means changing InputCheckbox and inbox.vue,
+  // out of scope here (see PR body).
   const isAllVisibleSelected = computed(() => {
-    if (records.value.length === 0) {
+    if (
+      records.value.length === 0 ||
+      records.value.length > BULK_ACTION_MAX_BATCH_SIZE
+    ) {
       return false;
     }
 
-    const cappedVisibleUuids = records.value
-      .map((record) => record.attributes.uuid)
-      .slice(0, BULK_ACTION_MAX_BATCH_SIZE);
-
-    return cappedVisibleUuids.every((uuid) => isSelected(uuid));
+    return records.value.every((record) => isSelected(record.attributes.uuid));
   });
 
   // Selecting every visible record is capped the same way as a single toggle —
   // a page larger than the batch limit selects only its first
   // BULK_ACTION_MAX_BATCH_SIZE records rather than a set the server would
-  // reject.
+  // reject. Unlike a single toggle, this truncation was never the user
+  // clicking past a limit they could see coming, so it must say so rather
+  // than silently selecting fewer records than "select all" implied.
   function toggleSelectAllVisible(): void {
+    if (records.value.length === 0) {
+      return;
+    }
+
     if (isAllVisibleSelected.value) {
       clearSelection();
       return;
     }
 
-    setSelection(
-      records.value
-        .map((record) => record.attributes.uuid)
-        .slice(0, BULK_ACTION_MAX_BATCH_SIZE),
-    );
+    const visibleUuids = records.value.map((record) => record.attributes.uuid);
+    setSelection(visibleUuids.slice(0, BULK_ACTION_MAX_BATCH_SIZE));
+
+    if (visibleUuids.length > BULK_ACTION_MAX_BATCH_SIZE) {
+      actionError.value = BULK_SELECTION_CAP_MESSAGE;
+    }
   }
 
   // Selection only ever refers to uuids still visible in `records` — a filter
