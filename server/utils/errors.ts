@@ -1,6 +1,7 @@
 import type { ApiError as ApiErrorObject } from "../types/api.types";
 
 const UNAUTHORIZED_STATUS = 401;
+const TOO_MANY_REQUESTS_STATUS = 429;
 
 export class ApiError extends Error {
   readonly errors: ApiErrorObject[];
@@ -32,6 +33,25 @@ export function unauthorizedError(): ApiError {
       },
     ],
     UNAUTHORIZED_STATUS,
+  );
+}
+
+// Shared 429 envelope for every fixed-window throttle that rejects a request
+// (currently the authenticated-API limiter in server/middleware/auth.ts; the
+// webhook throttle in server/api/hooks/[slug].post.ts builds its own since it
+// needs a webhook-specific detail message and 409-vs-429 semantics per
+// provider). Callers are responsible for setting the Retry-After header
+// themselves, since that requires the H3 event this function doesn't have.
+export function tooManyRequestsError(detail: string): ApiError {
+  return new ApiError(
+    [
+      {
+        status: String(TOO_MANY_REQUESTS_STATUS),
+        title: "Too Many Requests",
+        detail,
+      },
+    ],
+    TOO_MANY_REQUESTS_STATUS,
   );
 }
 

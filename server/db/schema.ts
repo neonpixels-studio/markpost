@@ -30,6 +30,23 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
+  // Fixed-window counters backing recordAuthedApiHit (server/utils/apiThrottle.ts),
+  // the authenticated-request analogue of sources.throttleWindowStart/throttleCount
+  // below: persisted on the row (not an in-memory counter) so the count survives
+  // across Netlify's stateless serverless invocations, and keyed by userId
+  // rather than by API token so rotating a token doesn't reset the budget.
+  // Tradeoff: `users` is the FK parent of every other table and is read on
+  // most requests, so this makes it a write on every authenticated request
+  // too (unlike sources.throttle*, which is scoped to webhook ingest volume
+  // on far-fewer-reader rows) — don't add more wide/hot columns here without
+  // considering that; a dedicated narrow throttle table is the follow-up if
+  // this ever shows up in autovacuum/lock contention.
+  apiThrottleWindowStart: timestamp("api_throttle_window_start", {
+    withTimezone: true,
+  })
+    .defaultNow()
+    .notNull(),
+  apiThrottleCount: integer("api_throttle_count").default(0).notNull(),
 });
 
 export const SUBSCRIPTION_PLANS = ["hobby", "pro"] as const;
