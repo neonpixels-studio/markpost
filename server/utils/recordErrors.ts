@@ -1,4 +1,5 @@
 import { ApiError } from "./errors";
+import { RECORD_STATUSES } from "../db/schema";
 
 // Shared JSON:API error builders for the record endpoints. invalidUuidError and
 // recordNotFoundError were duplicated verbatim across the show/patch handlers;
@@ -46,5 +47,78 @@ export function filePathConflictError(): ApiError {
       },
     ],
     409,
+  );
+}
+
+// The PATCH validation builders below are shared between the single-record
+// (server/api/records/[uuid].patch.ts) and bulk (server/api/records/index.patch.ts)
+// endpoints, which validate the same attribute shapes but point at different
+// JSON pointers (a bare `/data/attributes/status` vs. an indexed
+// `/data/attributes/records/0/status`) — each caller builds its own pointer
+// and passes it in, so the message/status pairing can't drift between the two
+// endpoints while the pointer stays endpoint-specific.
+export function invalidAttributeError(
+  detail: string,
+  pointer: string,
+): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "422",
+        title: "Invalid Attribute",
+        detail,
+        source: { pointer },
+      },
+    ],
+    422,
+  );
+}
+
+export function attributesShapeError(): ApiError {
+  return invalidAttributeError(
+    "Attributes must be an object.",
+    "/data/attributes",
+  );
+}
+
+export function statusInvalidError(pointer: string): ApiError {
+  return invalidAttributeError(
+    `Status must be one of: ${RECORD_STATUSES.join(", ")}`,
+    pointer,
+  );
+}
+
+export function syncedAtTypeError(pointer: string): ApiError {
+  return invalidAttributeError(
+    "SyncedAt must be a date string or null",
+    pointer,
+  );
+}
+
+export function syncedAtInvalidError(pointer: string): ApiError {
+  return invalidAttributeError("SyncedAt must be a valid date string", pointer);
+}
+
+// syncedAt is server-derived on bulk status changes (see
+// withServerDerivedSyncedAt in index.patch.ts); a client that still sends it
+// gets a clear 422 rather than a value that's silently ignored (markpost#265
+// — client-trusted syncedAt corrupted stats). The single-record PATCH
+// endpoint still accepts a client-supplied syncedAt directly, so this is only
+// thrown by the bulk endpoint.
+export function syncedAtNotSettableError(pointer: string): ApiError {
+  return invalidAttributeError(
+    "SyncedAt is derived by the server from status changes and cannot be set directly.",
+    pointer,
+  );
+}
+
+export function filePathTypeError(pointer: string): ApiError {
+  return invalidAttributeError("FilePath must be a string or null", pointer);
+}
+
+export function errorMessageTypeError(pointer: string): ApiError {
+  return invalidAttributeError(
+    "ErrorMessage must be a string or null",
+    pointer,
   );
 }

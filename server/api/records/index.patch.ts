@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
-import { records, RECORD_STATUSES, type RecordStatus } from "../../db/schema";
+import { records, type RecordStatus } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
 import { requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
@@ -10,8 +10,16 @@ import {
 } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
 import { writeEvent } from "../../utils/eventWriter";
-import { MAX_UPDATE_BATCH_SIZE } from "#shared/utils/records";
+import { MAX_UPDATE_BATCH_SIZE, isRecordStatus } from "#shared/utils/records";
 import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
+import {
+  invalidAttributeError,
+  attributesShapeError,
+  statusInvalidError,
+  syncedAtNotSettableError,
+  filePathTypeError,
+  errorMessageTypeError,
+} from "../../utils/recordErrors";
 
 // Annotated rather than destructured from RECORD_STATUSES by position, so a
 // reorder of that array can't silently change which status this means.
@@ -46,27 +54,6 @@ type PreparedUpdate = {
 };
 
 const RECORDS_POINTER = "/data/attributes/records";
-
-function invalidAttributeError(detail: string, pointer: string): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "422",
-        title: "Invalid Attribute",
-        detail,
-        source: { pointer },
-      },
-    ],
-    422,
-  );
-}
-
-function attributesShapeError(): ApiError {
-  return invalidAttributeError(
-    "Attributes must be an object.",
-    "/data/attributes",
-  );
-}
 
 function recordsShapeError(): ApiError {
   return invalidAttributeError(
@@ -110,46 +97,8 @@ function itemEmptyUpdateError(index: number): ApiError {
   );
 }
 
-function statusInvalidError(index: number): ApiError {
-  return invalidAttributeError(
-    `Status must be one of: ${RECORD_STATUSES.join(", ")}`,
-    `${RECORDS_POINTER}/${index}/status`,
-  );
-}
-
-// syncedAt is server-derived (see withServerDerivedSyncedAt below); a client
-// that still sends it gets a clear 422 rather than a value that's silently
-// ignored (markpost#265 — client-trusted syncedAt corrupted stats).
-function syncedAtNotSettableError(index: number): ApiError {
-  return invalidAttributeError(
-    "SyncedAt is derived by the server from status changes and cannot be set directly.",
-    `${RECORDS_POINTER}/${index}/syncedAt`,
-  );
-}
-
-function filePathTypeError(index: number): ApiError {
-  return invalidAttributeError(
-    "FilePath must be a string or null",
-    `${RECORDS_POINTER}/${index}/filePath`,
-  );
-}
-
-function errorMessageTypeError(index: number): ApiError {
-  return invalidAttributeError(
-    "ErrorMessage must be a string or null",
-    `${RECORDS_POINTER}/${index}/errorMessage`,
-  );
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isRecordStatus(value: unknown): value is RecordStatus {
-  return (
-    typeof value === "string" &&
-    (RECORD_STATUSES as readonly string[]).includes(value)
-  );
 }
 
 function parseStatus(
@@ -162,7 +111,7 @@ function parseStatus(
   }
 
   if (!isRecordStatus(attributes.status)) {
-    throw statusInvalidError(index);
+    throw statusInvalidError(`${RECORDS_POINTER}/${index}/status`);
   }
 
   payload.status = attributes.status;
@@ -173,7 +122,7 @@ function rejectClientSyncedAt(
   index: number,
 ): void {
   if ("syncedAt" in attributes) {
-    throw syncedAtNotSettableError(index);
+    throw syncedAtNotSettableError(`${RECORDS_POINTER}/${index}/syncedAt`);
   }
 }
 
@@ -189,7 +138,7 @@ function parseFilePath(
   const raw = attributes.filePath;
 
   if (raw !== null && typeof raw !== "string") {
-    throw filePathTypeError(index);
+    throw filePathTypeError(`${RECORDS_POINTER}/${index}/filePath`);
   }
 
   payload.filePath = raw ?? null;
@@ -207,7 +156,7 @@ function parseErrorMessage(
   const raw = attributes.errorMessage;
 
   if (raw !== null && typeof raw !== "string") {
-    throw errorMessageTypeError(index);
+    throw errorMessageTypeError(`${RECORDS_POINTER}/${index}/errorMessage`);
   }
 
   payload.errorMessage = raw ?? null;

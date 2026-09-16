@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mount, type VueWrapper } from "@vue/test-utils";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
+
+const mockUpdateRecordContent = vi.fn();
+vi.mock("~/composables/useRecordEdit", () => ({
+  updateRecordContent: (...args: unknown[]) => mockUpdateRecordContent(...args),
+}));
 
 import RecordDetailModal from "../../app/components/RecordDetailModal.vue";
+import RealRecordTitleField from "../../app/components/RecordTitleField.vue";
+import RealRecordContentField from "../../app/components/RecordContentField.vue";
 
 function findButtonByText(wrapper: VueWrapper, label: string) {
   return wrapper.findAll(".app-btn").find((button) => button.text() === label);
@@ -66,6 +73,64 @@ const stubs = {
     template: '<div class="app-code-block"><slot /></div>',
     props: ["lang", "copy"],
   },
+  // Stubbed here the same way sources.test.ts stubs FieldMappingModal —
+  // RecordTitleField/RecordContentField are feature-specific children with
+  // their own dedicated test files (RecordTitleField.test.ts,
+  // RecordContentField.test.ts); this stub only needs to stay wired closely
+  // enough (same aria-labels, .app-btn class, button text) that this file's
+  // edit-flow tests can drive it exactly like the real component.
+  RecordTitleField: {
+    template: `
+      <div>
+        <input
+          v-if="isEditing"
+          aria-label="Record title"
+          :value="modelValue"
+          @input="$emit('update:modelValue', $event.target.value)"
+        />
+        <div v-if="titleError">{{ titleError }}</div>
+        <h3 v-else>{{ title }}</h3>
+        <button v-if="!isEditing" class="app-btn" @click="$emit('edit')">
+          edit
+        </button>
+      </div>
+    `,
+    props: ["title", "modelValue", "isEditing", "disabled", "titleError"],
+    emits: ["update:modelValue", "edit"],
+  },
+  RecordContentField: {
+    template: `
+      <div>
+        <textarea
+          v-if="isEditing"
+          aria-label="Record content"
+          :value="modelValue"
+          @input="$emit('update:modelValue', $event.target.value)"
+        />
+        <div v-else class="app-code-block">{{ content }}</div>
+        <div v-if="saveError">{{ saveError }}</div>
+        <template v-if="isEditing">
+          <button class="app-btn" @click="$emit('cancel')">cancel</button>
+          <button
+            class="app-btn"
+            :disabled="isSaving || !canSave"
+            @click="$emit('save')"
+          >
+            {{ isSaving ? "saving…" : "save" }}
+          </button>
+        </template>
+      </div>
+    `,
+    props: [
+      "content",
+      "modelValue",
+      "isEditing",
+      "isSaving",
+      "canSave",
+      "saveError",
+    ],
+    emits: ["update:modelValue", "save", "cancel"],
+  },
 };
 
 function mountModal(props: Record<string, unknown> = {}) {
@@ -84,6 +149,7 @@ describe("RecordDetailModal", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-01T12:00:00Z"));
+    mockUpdateRecordContent.mockReset();
   });
 
   afterEach(() => {
@@ -351,6 +417,311 @@ describe("RecordDetailModal", () => {
     const wrapper = mountModal();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
     expect(wrapper.emitted("close")).toBeFalsy();
+  });
+
+  describe("closing while editing", () => {
+    it("cancels the edit instead of closing when Escape is pressed", async () => {
+      const wrapper = mountModal();
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.emitted("close")).toBeFalsy();
+      expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+        false,
+      );
+    });
+
+    it("does not close on a backdrop click while editing", async () => {
+      const wrapper = mountModal();
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+
+      await wrapper.trigger("mousedown");
+      await wrapper.trigger("mouseup");
+      await wrapper.trigger("click");
+
+      expect(wrapper.emitted("close")).toBeFalsy();
+      expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+        true,
+      );
+    });
+
+    it("does not close on the header close button while editing", async () => {
+      const wrapper = mountModal();
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+
+      await findButtonByText(wrapper, "close")?.trigger("click");
+
+      expect(wrapper.emitted("close")).toBeFalsy();
+      expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+        true,
+      );
+    });
+
+    it("returns focus to the card when canceling drops focus to <body>", async () => {
+      const wrapper = mount(RecordDetailModal, {
+        attachTo: document.body,
+        props: { record: makeRecord(), isLoading: false, loadError: null },
+        global: { stubs },
+      });
+
+      try {
+        await findButtonByText(wrapper, "edit")?.trigger("click");
+        const cancelButton = findButtonByText(wrapper, "cancel");
+        await cancelButton?.element.focus();
+        expect(document.activeElement).toBe(cancelButton?.element);
+
+        // jsdom/happy-dom don't replicate the browser's own focus-fixup when
+        // a focused element unmounts (see the retry-button tests above for
+        // the same simulation), so drop focus to <body> by hand — that's
+        // the state the real browser would leave it in once the Cancel
+        // button (still focused) is removed by isEditing flipping false.
+        (document.activeElement as HTMLElement | null)?.blur();
+
+        await cancelButton?.trigger("click");
+
+        expect(document.activeElement).toBe(wrapper.find(".card").element);
+      } finally {
+        wrapper.unmount();
+      }
+    });
+  });
+
+  describe("editing title and content", () => {
+    it("shows the edit button and no edit fields by default", () => {
+      const wrapper = mountModal();
+      expect(findButtonByText(wrapper, "edit")).toBeDefined();
+      expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+        false,
+      );
+    });
+
+    it("enters edit mode seeded with the current title and content", async () => {
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+
+      const titleInput = wrapper.find<HTMLInputElement>(
+        "input[aria-label='Record title']",
+      );
+      const contentTextarea = wrapper.find<HTMLTextAreaElement>(
+        "textarea[aria-label='Record content']",
+      );
+      expect(titleInput.element.value).toBe("Test Record");
+      expect(contentTextarea.element.value).toBe("# Heading\n\nBody");
+    });
+
+    it("cancels edit mode without saving", async () => {
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      await wrapper
+        .find("input[aria-label='Record title']")
+        .setValue("Changed title");
+      await findButtonByText(wrapper, "cancel")?.trigger("click");
+
+      expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+        false,
+      );
+      expect(wrapper.text()).toContain("Test Record");
+      expect(mockUpdateRecordContent).not.toHaveBeenCalled();
+    });
+
+    it("disables save and shows a validation message when the title is blank", async () => {
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      await wrapper.find("input[aria-label='Record title']").setValue("   ");
+
+      expect(wrapper.text()).toContain("Title can't be empty.");
+      expect(findButtonByText(wrapper, "save")?.attributes("disabled")).toBe(
+        "",
+      );
+      expect(mockUpdateRecordContent).not.toHaveBeenCalled();
+    });
+
+    it("saves the edit, exits edit mode, and emits updated with the server response", async () => {
+      const updatedRecord = makeRecord({
+        title: "Fixed title",
+        content: "Fixed content",
+      });
+      mockUpdateRecordContent.mockResolvedValue(updatedRecord);
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      await wrapper
+        .find("input[aria-label='Record title']")
+        .setValue("Fixed title");
+      await wrapper
+        .find("textarea[aria-label='Record content']")
+        .setValue("Fixed content");
+      await findButtonByText(wrapper, "save")?.trigger("click");
+      // Waits on the resolved effect (the input disappearing once isEditing
+      // flips false), not just on the request having been made — the
+      // request itself fires synchronously inside the click handler, so
+      // asserting only that it was "called" would pass before the
+      // response's continuation ever runs.
+      await vi.waitFor(() => {
+        expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+          false,
+        );
+      });
+
+      expect(mockUpdateRecordContent).toHaveBeenCalledWith("uuid-1", {
+        title: "Fixed title",
+        content: "Fixed content",
+      });
+      expect(wrapper.text()).toContain("Fixed title");
+      expect(wrapper.emitted("updated")).toEqual([[updatedRecord]]);
+    });
+
+    it("trims the title before sending it to the server", async () => {
+      mockUpdateRecordContent.mockResolvedValue(makeRecord());
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      await wrapper
+        .find("input[aria-label='Record title']")
+        .setValue("  Padded  ");
+      await findButtonByText(wrapper, "save")?.trigger("click");
+      await vi.waitFor(() => {
+        expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+          false,
+        );
+      });
+
+      expect(mockUpdateRecordContent).toHaveBeenCalledWith(
+        "uuid-1",
+        expect.objectContaining({ title: "Padded" }),
+      );
+    });
+
+    it("shows an error and stays in edit mode when the save fails", async () => {
+      mockUpdateRecordContent.mockRejectedValue({
+        data: { errors: [{ detail: "Title must be a non-empty string" }] },
+      });
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      await findButtonByText(wrapper, "save")?.trigger("click");
+      await vi.waitFor(() => {
+        expect(wrapper.text()).toContain("Title must be a non-empty string");
+      });
+
+      expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+        true,
+      );
+      expect(wrapper.emitted("updated")).toBeFalsy();
+    });
+
+    it("resets edit state when the parent starts loading a different record", async () => {
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+        true,
+      );
+
+      await wrapper.setProps({ record: null, isLoading: true });
+
+      await wrapper.setProps({
+        record: makeRecord({ uuid: "uuid-2", title: "Other Record" }),
+        isLoading: false,
+      });
+
+      expect(wrapper.find("input[aria-label='Record title']").exists()).toBe(
+        false,
+      );
+      expect(wrapper.text()).toContain("Other Record");
+    });
+
+    it("ignores a save response that resolves after the parent has switched to a different record", async () => {
+      let resolveSave!: (record: ReturnType<typeof makeRecord>) => void;
+      mockUpdateRecordContent.mockReturnValue(
+        new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+      );
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      await findButtonByText(wrapper, "save")?.trigger("click");
+
+      // The parent moves on to a different record while the save is still
+      // in flight (isLoading toggles true, then a different record arrives).
+      await wrapper.setProps({ record: null, isLoading: true });
+      await wrapper.setProps({
+        record: makeRecord({ uuid: "uuid-2", title: "Other Record" }),
+        isLoading: false,
+      });
+
+      // mockUpdateRecordContent was already called synchronously by the
+      // earlier click (before the props even changed) — waiting on that
+      // call happening would prove nothing about whether resolveSave's
+      // continuation ran. flushPromises actually drains it, so the
+      // assertions below cover the resolved response, not just the request.
+      resolveSave(makeRecord({ title: "Stale save response" }));
+      await flushPromises();
+
+      expect(wrapper.text()).toContain("Other Record");
+      expect(wrapper.text()).not.toContain("Stale save response");
+      expect(wrapper.emitted("updated")).toBeFalsy();
+    });
+
+    it("clears a saved override once the parent pushes a fresher copy of the same record", async () => {
+      const updatedRecord = makeRecord({ title: "Fixed title" });
+      mockUpdateRecordContent.mockResolvedValue(updatedRecord);
+      const wrapper = mountModal();
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      await findButtonByText(wrapper, "save")?.trigger("click");
+      await vi.waitFor(() => {
+        expect(wrapper.text()).toContain("Fixed title");
+      });
+
+      // A same-record update from elsewhere (e.g. retryRecord's
+      // applyDetailUpdate) is authoritative — it was read from the database
+      // after this save already landed there — so it replaces the local
+      // override rather than being shadowed by it forever.
+      await wrapper.setProps({
+        record: makeRecord({ title: "Fixed title", status: "pending" }),
+      });
+
+      expect(wrapper.text()).toContain("pending");
+      expect(wrapper.text()).toContain("Fixed title");
+    });
+
+    // RecordTitleField/RecordContentField are stubbed everywhere else in
+    // this file (see the comment above the stubs above), so a renamed prop
+    // (e.g. `canSave` -> `canSubmit`) would pass every other test here
+    // silently. This one mounts the real children — only their own leaf UI
+    // primitives (AppBtn, AppAlert, AppCodeBlock) stay stubbed — so a drift
+    // between what RecordDetailModal passes and what the child declares
+    // shows up as a real, unstubbed rendering difference.
+    it("wires isTitleValid/saveError through to the real title and content fields", async () => {
+      const { RecordTitleField, RecordContentField, ...leafStubs } = stubs;
+      const wrapper = mount(RecordDetailModal, {
+        props: { record: makeRecord(), isLoading: false, loadError: null },
+        global: {
+          stubs: leafStubs,
+          components: {
+            RecordTitleField: RealRecordTitleField,
+            RecordContentField: RealRecordContentField,
+          },
+        },
+      });
+
+      await findButtonByText(wrapper, "edit")?.trigger("click");
+      await wrapper.find("input[aria-label='Record title']").setValue("   ");
+
+      const titleInput = wrapper.find("input[aria-label='Record title']");
+      expect(titleInput.attributes("aria-invalid")).toBe("true");
+      expect(wrapper.text()).toContain("Title can't be empty.");
+      expect(findButtonByText(wrapper, "save")?.attributes("disabled")).toBe(
+        "",
+      );
+    });
   });
 
   it("matches the snapshot for a loaded record", () => {
