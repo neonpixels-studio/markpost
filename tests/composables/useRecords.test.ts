@@ -1148,6 +1148,10 @@ describe("useRecords updateRecordsStatus", () => {
   });
 
   it("sets actionError and returns an empty list when the request fails", async () => {
+    // Every call rejects, including the reconcile re-check that follows —
+    // an outage severe enough to fail the PATCH plausibly also fails the
+    // GETs used to reconcile it, so the message picks up the "could not be
+    // re-checked" caveat too.
     mockFetch.mockRejectedValue(new Error("network error"));
 
     const { actionError, updateRecordsStatus } = useRecords("all");
@@ -1155,7 +1159,7 @@ describe("useRecords updateRecordsStatus", () => {
 
     expect(updated).toEqual([]);
     expect(actionError.value).toBe(
-      "Failed to update records. Please try again.",
+      "Failed to update records. Please try again. Some records could not be re-checked — refresh to confirm their status.",
     );
   });
 
@@ -1186,6 +1190,376 @@ describe("useRecords updateRecordsStatus", () => {
     expect(actionError.value).toBe(
       "Updated 1 of 2 records. Please try again for the rest.",
     );
+  });
+
+  it("reconciles affected rows with the server after a failed bulk PATCH, since Promise.all on the server can commit some rows before rejecting", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00Z"));
+    const pendingRecordOne: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "pending",
+      },
+    };
+    const pendingRecordTwo: RecordResource = {
+      ...makeRecordResource("uuid-2"),
+      attributes: {
+        ...makeRecordResource("uuid-2").attributes,
+        status: "pending",
+      },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [pendingRecordOne, pendingRecordTwo],
+        meta: { hasMore: false },
+      })
+      // The bulk PATCH itself rejects (e.g. the server errored mid-batch).
+      .mockRejectedValueOnce(new Error("mid-batch failure"))
+      // uuid-1's row had already committed server-side before the
+      // rejection — status, syncedAt, and errorMessage all reflect the
+      // requested write, which is what distinguishes "actually applied"
+      // from merely already matching the target status.
+      .mockResolvedValueOnce({
+        data: {
+          ...pendingRecordOne,
+          attributes: {
+            ...pendingRecordOne.attributes,
+            status: "synced",
+            syncedAt: "2026-06-27T12:00:00.000Z",
+            errorMessage: null,
+          },
+        },
+      })
+      // uuid-2 never committed — still reflects its prior state.
+      .mockResolvedValueOnce({ data: pendingRecordTwo });
+
+    const {
+      loadRecords,
+      toggleSelection,
+      isSelected,
+      records,
+      actionError,
+      updateRecordsStatus,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+    toggleSelection("uuid-2");
+
+    const updated = await updateRecordsStatus(["uuid-1", "uuid-2"], "synced");
+
+    // A caller (e.g. a single-record retry reading updated[0]) must be able
+    // to see that uuid-1 actually landed despite the batch throwing, instead
+    // of always getting an empty result indistinguishable from "nothing
+    // happened".
+    expect(updated.map((record) => record.attributes.uuid)).toEqual(["uuid-1"]);
+
+    // The UI must reflect the server's true state for the committed row
+    // instead of staying stuck on the pre-request "pending" snapshot.
+    expect(
+      records.value.find((record) => record.id === "uuid-1")?.attributes.status,
+    ).toBe("synced");
+    expect(
+      records.value.find((record) => record.id === "uuid-2")?.attributes.status,
+    ).toBe("pending");
+
+    // uuid-1 actually applied, so it's cleared for the user; uuid-2 didn't,
+    // so it stays selected for a retry.
+    expect(isSelected("uuid-1")).toBe(false);
+    expect(isSelected("uuid-2")).toBe(true);
+    // The reconciled outcome — one of two actually landed — replaces the
+    // blanket "failed" message set before reconcile ran; reporting "failed"
+    // here would contradict the row that just flipped to "synced" above.
+    expect(actionError.value).toBe(
+      "Updated 1 of 2 records. Please try again for the rest.",
+    );
+
+    vi.useRealTimers();
+  });
+
+  it("drops a uuid from the list entirely when it no longer exists after a failed bulk PATCH", async () => {
+    const recordOne = makeRecordResource("uuid-1");
+    const notFoundError = Object.assign(new Error("Not Found"), {
+      statusCode: 404,
+    });
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [recordOne],
+        meta: { hasMore: false },
+      })
+      .mockRejectedValueOnce(new Error("mid-batch failure"))
+      // The row was deleted concurrently, so the reconcile fetch 404s.
+      .mockRejectedValueOnce(notFoundError);
+
+    const { loadRecords, records, actionError, updateRecordsStatus } =
+      useRecords("all");
+    await loadRecords();
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(records.value).toHaveLength(0);
+    expect(actionError.value).toBe(
+      "Failed to update records. Please try again.",
+    );
+  });
+
+  it("keeps a row and its selection untouched when its reconcile re-check fails for a reason other than 404, since that failure could be transient rather than proof the row is gone", async () => {
+    const recordOne: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "pending",
+      },
+    };
+    const serverError = Object.assign(new Error("Internal Server Error"), {
+      statusCode: 500,
+    });
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [recordOne],
+        meta: { hasMore: false },
+      })
+      .mockRejectedValueOnce(new Error("mid-batch failure"))
+      // The reconcile re-check itself fails — must NOT be treated the same
+      // as a confirmed 404, or a transient outage would silently delete a
+      // row the server still has.
+      .mockRejectedValueOnce(serverError);
+
+    const {
+      loadRecords,
+      toggleSelection,
+      isSelected,
+      records,
+      actionError,
+      updateRecordsStatus,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-1"]);
+    expect(records.value[0]?.attributes.status).toBe("pending");
+    expect(isSelected("uuid-1")).toBe(true);
+    expect(actionError.value).toBe(
+      "Failed to update records. Please try again. Some records could not be re-checked — refresh to confirm their status.",
+    );
+  });
+
+  it("does not confirm an already-synced record as 'just applied' when its stale syncedAt proves the write never landed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00Z"));
+
+    // Already synced from a prior sync, well before this request's timestamp.
+    const staleSyncedRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "synced",
+        syncedAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        data: [staleSyncedRecord],
+        meta: { hasMore: false },
+      })
+      .mockRejectedValueOnce(new Error("mid-batch failure"))
+      // Reconcile refetches the exact same untouched row — the PATCH never
+      // actually re-stamped syncedAt.
+      .mockResolvedValueOnce({ data: staleSyncedRecord });
+
+    const {
+      loadRecords,
+      toggleSelection,
+      isSelected,
+      actionError,
+      updateRecordsStatus,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+
+    const updated = await updateRecordsStatus(["uuid-1"], "synced");
+
+    // Status alone matches ("synced"), but the timestamp proves this
+    // request's write never landed — the stats card that keys off *when*
+    // syncedAt was set would otherwise silently miss this record.
+    expect(updated).toEqual([]);
+    expect(isSelected("uuid-1")).toBe(true);
+    expect(actionError.value).toBe(
+      "Failed to update records. Please try again.",
+    );
+
+    vi.useRealTimers();
+  });
+
+  it("reconciles every uuid in a failed batch even when it exceeds the concurrency pool size", async () => {
+    const uuids = Array.from(
+      { length: 7 },
+      (_unused, index) => `uuid-${index}`,
+    );
+    const pendingRecords = uuids.map((uuid) => ({
+      ...makeRecordResource(uuid),
+      attributes: {
+        ...makeRecordResource(uuid).attributes,
+        status: "pending" as const,
+      },
+    }));
+
+    mockFetch.mockResolvedValueOnce({
+      data: pendingRecords,
+      meta: { hasMore: false },
+    });
+    mockFetch.mockRejectedValueOnce(new Error("mid-batch failure"));
+    pendingRecords.forEach((record) => {
+      mockFetch.mockResolvedValueOnce({ data: record });
+    });
+
+    const { loadRecords, updateRecordsStatus } = useRecords("all");
+    await loadRecords();
+
+    await updateRecordsStatus(uuids, "pending");
+
+    // The worker pool (RECONCILE_FETCH_CONCURRENCY = 5) must still drain the
+    // full queue rather than stopping once its initial batch of workers runs
+    // out of uuids to claim.
+    const requestedDetailUrls = mockFetch.mock.calls
+      .map(([url]) => url)
+      .filter(
+        (url): url is string =>
+          typeof url === "string" && url.startsWith("/api/records/uuid-"),
+      );
+    expect(new Set(requestedDetailUrls)).toEqual(
+      new Set(uuids.map((uuid) => `/api/records/${uuid}`)),
+    );
+  });
+
+  it("never runs more than RECONCILE_FETCH_CONCURRENCY reconcile GETs at once", async () => {
+    const uuids = Array.from(
+      { length: 7 },
+      (_unused, index) => `uuid-${index}`,
+    );
+    const RECONCILE_FETCH_CONCURRENCY = 5;
+    const pendingRecords = uuids.map((uuid) => ({
+      ...makeRecordResource(uuid),
+      attributes: {
+        ...makeRecordResource(uuid).attributes,
+        status: "pending" as const,
+      },
+    }));
+
+    let inFlightCount = 0;
+    let maxInFlightCount = 0;
+    const deferredResolvers: Array<() => void> = [];
+
+    mockFetch.mockImplementation(
+      (url: string, options?: { method?: string }) => {
+        if (url === "/api/records" && options?.method !== "PATCH") {
+          return Promise.resolve({
+            data: pendingRecords,
+            meta: { hasMore: false },
+          });
+        }
+
+        if (url === "/api/records" && options?.method === "PATCH") {
+          return Promise.reject(new Error("mid-batch failure"));
+        }
+
+        // A reconcile detail GET: stays pending until the test explicitly
+        // releases it, so the test can observe exactly how many are
+        // in flight at once.
+        inFlightCount += 1;
+        maxInFlightCount = Math.max(maxInFlightCount, inFlightCount);
+
+        return new Promise((resolve) => {
+          deferredResolvers.push(() => {
+            inFlightCount -= 1;
+            const uuid = url.replace("/api/records/", "");
+            const record = pendingRecords.find(
+              (candidate) => candidate.attributes.uuid === uuid,
+            );
+            resolve({ data: record });
+          });
+        });
+      },
+    );
+
+    const { loadRecords, updateRecordsStatus } = useRecords("all");
+    await loadRecords();
+
+    const updatePromise = updateRecordsStatus(uuids, "pending");
+
+    // The first wave claims exactly the concurrency cap, never all 7 at once.
+    await vi.waitFor(() =>
+      expect(deferredResolvers).toHaveLength(RECONCILE_FETCH_CONCURRENCY),
+    );
+    expect(maxInFlightCount).toBe(RECONCILE_FETCH_CONCURRENCY);
+
+    deferredResolvers
+      .splice(0, RECONCILE_FETCH_CONCURRENCY)
+      .forEach((resolve) => resolve());
+
+    // Freed workers claim the remaining uuids, but the pool still never
+    // exceeds its cap even as the second wave starts.
+    await vi.waitFor(() =>
+      expect(deferredResolvers).toHaveLength(
+        uuids.length - RECONCILE_FETCH_CONCURRENCY,
+      ),
+    );
+    expect(maxInFlightCount).toBe(RECONCILE_FETCH_CONCURRENCY);
+
+    deferredResolvers.splice(0).forEach((resolve) => resolve());
+
+    await updatePromise;
+  });
+
+  it("reloads from the server when a failed bulk PATCH's reconcile empties the filtered page but more records remain", async () => {
+    const errorRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "error",
+      },
+    };
+    const confirmedSyncedRecord: RecordResource = {
+      ...errorRecord,
+      attributes: {
+        ...errorRecord.attributes,
+        status: "synced",
+        syncedAt: "2026-06-27T12:00:00.000Z",
+        errorMessage: null,
+      },
+    };
+    const nextErrorRecord: RecordResource = {
+      ...makeRecordResource("uuid-2"),
+      attributes: {
+        ...makeRecordResource("uuid-2").attributes,
+        status: "error",
+      },
+    };
+    mockFetch
+      .mockResolvedValueOnce({ data: [errorRecord], meta: { hasMore: true } })
+      .mockRejectedValueOnce(new Error("mid-batch failure"))
+      // The reconcile re-check shows uuid-1 actually landed as "synced",
+      // which drops it out of the active "errors" filter.
+      .mockResolvedValueOnce({ data: confirmedSyncedRecord })
+      // The backfill reload triggered because the "errors" page is now
+      // empty even though more error records exist server-side.
+      .mockResolvedValueOnce({
+        data: [nextErrorRecord],
+        meta: { hasMore: false },
+      });
+
+    const { loadRecords, records, hasMore, filter, updateRecordsStatus } =
+      useRecords("errors");
+    filter.value = "errors";
+    await loadRecords();
+    expect(hasMore.value).toBe(true);
+
+    await updateRecordsStatus(["uuid-1"], "synced");
+
+    expect(records.value.map((record) => record.id)).toEqual(["uuid-2"]);
+    expect(hasMore.value).toBe(false);
   });
 
   it("tracks isUpdatingStatus while the request is in flight", async () => {
