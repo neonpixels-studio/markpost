@@ -1,11 +1,17 @@
 import { and, eq, isNull } from "drizzle-orm";
+import type { H3Event } from "h3";
 import { getDb } from "../db";
 import { apiTokens } from "../db/schema";
 import { hashToken, isApiToken, isTokenExpired } from "../utils/tokens";
 import { refreshTokenLastUsedAt } from "../utils/tokenUsage";
 import { ensureUserRegistered } from "../utils/auth";
 import { getClerkClient } from "../utils/clerk";
-import { throwUnauthorized } from "../utils/errors";
+import {
+  apiErrorHandler,
+  throwUnauthorized,
+  tooManyRequestsError,
+} from "../utils/errors";
+import { recordAuthedApiHit } from "../utils/apiThrottle";
 
 const BEARER_PREFIX = /^Bearer\s+/i;
 
@@ -55,6 +61,33 @@ const BILLING_WEBHOOK_PATH = "/api/billing/webhook";
 // Clerk signs this webhook with a Svix signature (verified in the handler), not
 // a bearer token, so it must bypass the token/session auth below.
 const CLERK_WEBHOOK_PATH = "/api/webhooks/clerk";
+const RETRY_AFTER_HEADER = "Retry-After";
+
+// Throttles every authenticated /api/* request (see apiThrottle.ts for why
+// this is keyed by userId and not by token/session). Mirrors
+// enforceThrottle in server/api/hooks/[slug].post.ts: record the hit, and on
+// denial set Retry-After before throwing the 429 envelope.
+async function enforceApiThrottle(
+  event: H3Event,
+  userId: string,
+): Promise<void> {
+  const throttleResult = await recordAuthedApiHit(userId);
+
+  if (throttleResult.allowed) {
+    return;
+  }
+
+  setHeader(
+    event,
+    RETRY_AFTER_HEADER,
+    String(throttleResult.retryAfterSeconds),
+  );
+  apiErrorHandler(
+    tooManyRequestsError(
+      "You have made too many requests. Slow down and try again shortly.",
+    ),
+  );
+}
 
 export default defineEventHandler(async (event) => {
   if (!event.path.startsWith("/api/")) {
@@ -96,6 +129,8 @@ export default defineEventHandler(async (event) => {
   if (!viaApiToken) {
     await ensureUserRegistered(userId);
   }
+
+  await enforceApiThrottle(event, userId);
 
   event.context.userId = userId;
 });

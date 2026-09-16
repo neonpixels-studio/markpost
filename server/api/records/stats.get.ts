@@ -42,8 +42,13 @@ async function fetchRecordStats(
 
   const rows = await db
     .select({
+      // syncedAt alone isn't enough: a record synced earlier today and since
+      // moved to pending/error (see server/api/records/index.patch.ts) keeps
+      // its real syncedAt, so the status check here is what keeps this card
+      // reporting records that are *currently* synced, not just ones that
+      // were at some point today.
       syncedToday: count(
-        sql`CASE WHEN ${isNotNull(records.syncedAt)} AND ${gte(records.syncedAt, todayStartIso)} THEN 1 END`,
+        sql`CASE WHEN ${eq(records.status, STATUS_SYNCED)} AND ${isNotNull(records.syncedAt)} AND ${gte(records.syncedAt, todayStartIso)} THEN 1 END`,
       ),
       pending: count(
         sql`CASE WHEN ${records.status} = ${STATUS_PENDING} THEN 1 END`,
