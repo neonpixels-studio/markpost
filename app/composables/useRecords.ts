@@ -201,11 +201,12 @@ async function deleteRecordsRequest(uuids: string[]): Promise<number> {
   return response.meta.deleted;
 }
 
+// No syncedAt field: the server derives it (see server/api/records/index.patch.ts)
+// rather than trusting a client-supplied value.
 type BulkStatusUpdate = {
   uuid: string;
   status: RecordStatus;
   errorMessage?: null;
-  syncedAt?: string | null;
 };
 
 async function updateRecordsStatusRequest(
@@ -327,11 +328,14 @@ function buildPartialUpdateMessage(
 // Confirms a refetched record's state proves the requested write actually
 // landed, not just that it happens to already look like the target state —
 // those aren't the same thing. A record already "synced" from a prior sync
-// has a non-null syncedAt too; only comparing against this request's own
-// timestamp (which the server stores verbatim — see parseSyncedAt in
-// server/api/records/index.patch.ts) can tell "just synced by this batch"
-// apart from "was already synced from before, this batch never landed" —
-// which matters because the stats card keys off *when* syncedAt was set.
+// has a non-null syncedAt too; only comparing against requestedSyncedAt (a
+// timestamp taken client-side just before the request — the server now
+// derives and stamps its own, later, value; see withServerDerivedSyncedAt in
+// server/api/records/index.patch.ts, markpost#265) can tell "just synced by
+// this batch" apart from "was already synced from before, this batch never
+// landed" — which matters because the stats card keys off *when* syncedAt
+// was set. The ">=" comparison below only needs that ordering, not an exact
+// match, so it still holds with a server-derived timestamp.
 function matchesRequestedUpdate(
   record: RecordResource,
   requestedStatus: RecordStatus,
@@ -542,37 +546,58 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     );
   }
 
-  // "All visible" means every visible record up to the batch cap — with more
-  // records loaded than the cap allows, toggleSelectAllVisible below can never
-  // select every one of them, so basing this on the raw record count would
-  // leave the header checkbox permanently unchecked and unable to clear.
+  // "All visible" means every visible record is selected — and only counts as
+  // "all" when the cap didn't have to cut anything, i.e. every currently
+  // loaded record fits within it. Once loadMore (or a single oversized page)
+  // pushes the loaded count past the cap, a "select all" can only ever reach
+  // the first BULK_ACTION_MAX_BATCH_SIZE of them, leaving later, visible rows
+  // unselected — so this must report false from that point on, no matter how
+  // many further pages get appended afterwards or whether the server still
+  // has more (hasMore) or not. Reporting true there, even once, would be a
+  // lie about rows the user can plainly see are unchecked.
+  //
+  // toggleSelectAllVisible below branches on this same flag (not a separate
+  // "is the capped window full" check) so a click always matches what the
+  // control displays: unchecked always means "try to select", checked always
+  // means "clear". Once the loaded count has exceeded the cap this flag can
+  // never go true again, so the header control alone can no longer clear an
+  // already-maxed selection — the separate bulk-action "clear" control
+  // (RecordBulkActions) still can. Wiring a true indeterminate visual state
+  // would remove that gap but means changing InputCheckbox and inbox.vue,
+  // out of scope here (see PR body).
   const isAllVisibleSelected = computed(() => {
-    if (records.value.length === 0) {
+    if (
+      records.value.length === 0 ||
+      records.value.length > BULK_ACTION_MAX_BATCH_SIZE
+    ) {
       return false;
     }
 
-    const cappedVisibleUuids = records.value
-      .map((record) => record.attributes.uuid)
-      .slice(0, BULK_ACTION_MAX_BATCH_SIZE);
-
-    return cappedVisibleUuids.every((uuid) => isSelected(uuid));
+    return records.value.every((record) => isSelected(record.attributes.uuid));
   });
 
   // Selecting every visible record is capped the same way as a single toggle —
   // a page larger than the batch limit selects only its first
   // BULK_ACTION_MAX_BATCH_SIZE records rather than a set the server would
-  // reject.
+  // reject. Unlike a single toggle, this truncation was never the user
+  // clicking past a limit they could see coming, so it must say so rather
+  // than silently selecting fewer records than "select all" implied.
   function toggleSelectAllVisible(): void {
+    if (records.value.length === 0) {
+      return;
+    }
+
     if (isAllVisibleSelected.value) {
       clearSelection();
       return;
     }
 
-    setSelection(
-      records.value
-        .map((record) => record.attributes.uuid)
-        .slice(0, BULK_ACTION_MAX_BATCH_SIZE),
-    );
+    const visibleUuids = records.value.map((record) => record.attributes.uuid);
+    setSelection(visibleUuids.slice(0, BULK_ACTION_MAX_BATCH_SIZE));
+
+    if (visibleUuids.length > BULK_ACTION_MAX_BATCH_SIZE) {
+      actionError.value = BULK_SELECTION_CAP_MESSAGE;
+    }
   }
 
   // Selection only ever refers to uuids still visible in `records` — a filter
@@ -816,14 +841,17 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     // would leave a stale failure reason on a record the UI now shows as
     // healthy or not-yet-attempted. Only "error" itself should keep it.
     //
-    // syncedAt gets the same treatment for the opposite reason: the
-    // "synced today" stat card (server/api/records/stats.get.ts) reads
-    // syncedAt, not status, so marking a record synced without stamping it
-    // would leave that card silently unmoved, and marking a previously
-    // synced record pending/error without clearing it would leave the
-    // record counted as synced today even though it no longer is. Computed
-    // outside the try block so a thrown request can still hand this exact
-    // timestamp to reconcileAfterFailedUpdate below.
+    // syncedAt itself is never sent in the request payload — the server
+    // derives it and rejects a client-supplied value outright (see
+    // BulkStatusUpdate and rejectClientSyncedAt in
+    // server/api/records/index.patch.ts, markpost#265). This local timestamp
+    // exists purely so a thrown request can still hand
+    // reconcileAfterFailedUpdate below a lower bound to confirm against:
+    // computed just before the request goes out, it's guaranteed to be at or
+    // before whatever timestamp the server ends up stamping, so the ">="
+    // check in matchesRequestedUpdate still tells "just synced by this
+    // batch" apart from "was already synced before, this batch never
+    // landed" without the client ever dictating the real value.
     const syncedAtForStatus =
       status === "synced" ? new Date().toISOString() : null;
 
@@ -831,7 +859,6 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       const updates: BulkStatusUpdate[] = uuids.map((uuid) => ({
         uuid,
         status,
-        syncedAt: syncedAtForStatus,
         ...(status === "error" ? {} : { errorMessage: null }),
       }));
       const updatedRecords = await updateRecordsStatusRequest(updates);

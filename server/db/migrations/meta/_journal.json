@@ -155,6 +155,13 @@
       "when": 1788738965250,
       "tag": "0025_add_events_record_kind_dedup_index",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789324855911,
+      "tag": "0026_add_users_api_throttle_columns",
+      "breakpoints": true
     }
   ]
 }

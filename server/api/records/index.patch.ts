@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records, RECORD_STATUSES, type RecordStatus } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
@@ -12,6 +12,10 @@ import { isValidUuid } from "../../utils/uuid";
 import { writeEvent } from "../../utils/eventWriter";
 import { MAX_UPDATE_BATCH_SIZE } from "#shared/utils/records";
 import { resolveSourceTypes, withSourceType } from "../../utils/sourceType";
+
+// Annotated rather than destructured from RECORD_STATUSES by position, so a
+// reorder of that array can't silently change which status this means.
+const SYNCED_STATUS: RecordStatus = "synced";
 
 type RecordUpdateAttributes = {
   uuid?: unknown;
@@ -31,7 +35,7 @@ type BulkPatchBody = ApiRequest & {
 
 type RecordUpdatePayload = {
   status?: string;
-  syncedAt?: Date | null;
+  syncedAt?: Date;
   filePath?: string | null;
   errorMessage?: string | null;
 };
@@ -101,7 +105,7 @@ function itemUuidError(index: number): ApiError {
 
 function itemEmptyUpdateError(index: number): ApiError {
   return invalidAttributeError(
-    "At least one of status, syncedAt, filePath, or errorMessage must be provided.",
+    "At least one of status, filePath, or errorMessage must be provided.",
     `${RECORDS_POINTER}/${index}`,
   );
 }
@@ -113,16 +117,12 @@ function statusInvalidError(index: number): ApiError {
   );
 }
 
-function syncedAtTypeError(index: number): ApiError {
+// syncedAt is server-derived (see withServerDerivedSyncedAt below); a client
+// that still sends it gets a clear 422 rather than a value that's silently
+// ignored (markpost#265 — client-trusted syncedAt corrupted stats).
+function syncedAtNotSettableError(index: number): ApiError {
   return invalidAttributeError(
-    "SyncedAt must be a date string or null",
-    `${RECORDS_POINTER}/${index}/syncedAt`,
-  );
-}
-
-function syncedAtInvalidError(index: number): ApiError {
-  return invalidAttributeError(
-    "SyncedAt must be a valid date string",
+    "SyncedAt is derived by the server from status changes and cannot be set directly.",
     `${RECORDS_POINTER}/${index}/syncedAt`,
   );
 }
@@ -168,33 +168,13 @@ function parseStatus(
   payload.status = attributes.status;
 }
 
-function parseSyncedAt(
+function rejectClientSyncedAt(
   attributes: RecordUpdateAttributes,
   index: number,
-  payload: RecordUpdatePayload,
 ): void {
-  if (!("syncedAt" in attributes)) {
-    return;
+  if ("syncedAt" in attributes) {
+    throw syncedAtNotSettableError(index);
   }
-
-  const raw = attributes.syncedAt;
-
-  if (raw === null) {
-    payload.syncedAt = null;
-    return;
-  }
-
-  if (typeof raw !== "string") {
-    throw syncedAtTypeError(index);
-  }
-
-  const parsed = new Date(raw);
-
-  if (Number.isNaN(parsed.getTime())) {
-    throw syncedAtInvalidError(index);
-  }
-
-  payload.syncedAt = parsed;
 }
 
 function parseFilePath(
@@ -240,7 +220,7 @@ function buildItemPayload(
   const payload: RecordUpdatePayload = {};
 
   parseStatus(attributes, index, payload);
-  parseSyncedAt(attributes, index, payload);
+  rejectClientSyncedAt(attributes, index);
   parseFilePath(attributes, index, payload);
   parseErrorMessage(attributes, index, payload);
 
@@ -303,6 +283,58 @@ function prepareUpdates(body: BulkPatchBody): PreparedUpdate[] {
   return updates;
 }
 
+type Database = ReturnType<typeof getDb>;
+
+// A uuid belongs in this set only when marking it "synced" would be a true
+// no-op: status is already "synced" *and* it already has a real syncedAt.
+// Status alone would wrongly skip a POST-created record that's "synced" with
+// no syncedAt yet; syncedAt alone would wrongly skip a genuine pending/error
+// -> synced re-sync that still has a syncedAt left over from before.
+async function resolveNoOpSyncedUuids(
+  db: Database,
+  userId: string,
+  uuids: string[],
+): Promise<Set<string>> {
+  if (uuids.length === 0) {
+    return new Set();
+  }
+
+  const rows = await db
+    .select({
+      uuid: records.uuid,
+      status: records.status,
+      syncedAt: records.syncedAt,
+    })
+    .from(records)
+    .where(and(eq(records.userId, userId), inArray(records.uuid, uuids)));
+
+  return new Set(
+    rows
+      // Loose null check: a nullable column with no value should come back
+      // as `null`, but this only needs to trust "is there a real value?",
+      // not the driver's exact absent-value representation.
+      .filter((row) => row.status === SYNCED_STATUS && row.syncedAt != null)
+      .map((row) => row.uuid),
+  );
+}
+
+// Stamps syncedAt with the current time unless resolveNoOpSyncedUuids says
+// it'd be a no-op; a move to pending/error never touches syncedAt. Returns a
+// new PreparedUpdate rather than mutating the one it's given.
+function withServerDerivedSyncedAt(
+  update: PreparedUpdate,
+  noOpSyncedUuids: Set<string>,
+): PreparedUpdate {
+  const isMovingToSynced = update.payload.status === SYNCED_STATUS;
+  const shouldStampNow = isMovingToSynced && !noOpSyncedUuids.has(update.uuid);
+
+  if (!shouldStampNow) {
+    return update;
+  }
+
+  return { ...update, payload: { ...update.payload, syncedAt: new Date() } };
+}
+
 async function applyUpdate(userId: string, update: PreparedUpdate) {
   const db = getDb();
 
@@ -343,7 +375,28 @@ export default defineEventHandler(
       const body = (await readBody(event)) as BulkPatchBody;
 
       const updates = prepareUpdates(body);
-      const updatedRecords = await applyUpdates(userId, updates);
+      // Only items moving to "synced" can ever consult the lookup below, so
+      // that's what it's scoped to — a batch that only moves records to
+      // pending/error skips the query entirely.
+      const movingToSyncedUuids = updates
+        .filter((update) => update.payload.status === SYNCED_STATUS)
+        .map((update) => update.uuid);
+      // Unlike resolveSourceTypes below (a display-only enrichment that
+      // degrades to "unknown" on failure), this lookup feeds what actually
+      // gets written — a failure here is left uncaught so it aborts the whole
+      // batch via apiErrorHandler rather than risk writing under a guess.
+      const noOpSyncedUuids = await resolveNoOpSyncedUuids(
+        getDb(),
+        userId,
+        movingToSyncedUuids,
+      );
+      const updatesWithDerivedSyncedAt = updates.map((update) =>
+        withServerDerivedSyncedAt(update, noOpSyncedUuids),
+      );
+      const updatedRecords = await applyUpdates(
+        userId,
+        updatesWithDerivedSyncedAt,
+      );
 
       if (updatedRecords.length > 0) {
         logBulkUpdate(userId, updatedRecords.length);
