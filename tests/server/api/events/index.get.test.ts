@@ -227,3 +227,167 @@ describe("GET /api/events", () => {
     expect(response.data[0].attributes.sourceId).toBe("src-uuid");
   });
 });
+
+type CapturedWhere = { conditions?: unknown[] } | undefined;
+
+// The drizzle mock's `eq` returns { column, value } and `and` returns
+// { conditions }. Every WHERE clause the handler builds is an `and(...)`, so we
+// locate an individual filter by the literal value it was compared against —
+// userId ("user_abc123"), a kind, or a source uuid are all distinct, so there
+// is no collision.
+function findConditionByValue(
+  where: CapturedWhere,
+  value: unknown,
+): { column: unknown; value: unknown } | undefined {
+  const conditions = where?.conditions ?? [];
+  return conditions.find(
+    (condition): condition is { column: unknown; value: unknown } =>
+      typeof condition === "object" &&
+      condition !== null &&
+      "value" in condition &&
+      (condition as { value: unknown }).value === value,
+  );
+}
+
+// Captures the WHERE clause passed to the count query (call 0) and the page
+// query (call 1) so a test can assert the active filters reached both.
+function captureFilteredSelect(rows: unknown[], countValue: number) {
+  const captured: { count: CapturedWhere; page: CapturedWhere } = {
+    count: undefined,
+    page: undefined,
+  };
+  let callCount = 0;
+
+  selectMock.mockImplementation(() => {
+    const callIndex = callCount;
+    callCount++;
+
+    if (callIndex === 0) {
+      const whereFn = vi.fn((condition: CapturedWhere) => {
+        captured.count = condition;
+        return Promise.resolve([{ value: countValue }]);
+      });
+      return { from: vi.fn(() => ({ where: whereFn })) };
+    }
+
+    const limitFn = vi.fn(() => Promise.resolve(rows));
+    const orderByFn = vi.fn(() => ({ limit: limitFn }));
+    const whereFn = vi.fn((condition: CapturedWhere) => {
+      captured.page = condition;
+      return { orderBy: orderByFn };
+    });
+    return { from: vi.fn(() => ({ where: whereFn })) };
+  });
+
+  return captured;
+}
+
+describe("GET /api/events filters", () => {
+  it("applies filter[kind] to both the count and page queries", async () => {
+    mockGetQuery.mockReturnValue({ "filter[kind]": "err" });
+    const captured = captureFilteredSelect([makeEventRow(1)], 1);
+
+    await handler(buildEvent(userId));
+
+    expect(findConditionByValue(captured.page, "err")).toBeDefined();
+    expect(findConditionByValue(captured.count, "err")).toBeDefined();
+  });
+
+  it("applies filter[source] to both the count and page queries", async () => {
+    const sourceUuid = "550e8400-e29b-41d4-a716-446655440000";
+    mockGetQuery.mockReturnValue({ "filter[source]": sourceUuid });
+    const captured = captureFilteredSelect([makeEventRow(1)], 1);
+
+    await handler(buildEvent(userId));
+
+    expect(findConditionByValue(captured.page, sourceUuid)).toBeDefined();
+    expect(findConditionByValue(captured.count, sourceUuid)).toBeDefined();
+  });
+
+  it("uses the first value when filter[kind] is repeated", async () => {
+    mockGetQuery.mockReturnValue({ "filter[kind]": ["warn", "err"] });
+    const captured = captureFilteredSelect([makeEventRow(1)], 1);
+
+    await handler(buildEvent(userId));
+
+    expect(findConditionByValue(captured.page, "warn")).toBeDefined();
+    expect(findConditionByValue(captured.page, "err")).toBeUndefined();
+  });
+
+  it("throws 400 when filter[kind] is not a known event kind", async () => {
+    mockGetQuery.mockReturnValue({ "filter[kind]": "bogus" });
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 400 }),
+    );
+  });
+
+  it("throws 400 when filter[source] is not a valid uuid", async () => {
+    mockGetQuery.mockReturnValue({ "filter[source]": "not-a-uuid" });
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 400 }),
+    );
+  });
+
+  it("applies filters alongside keyset cursor pagination", async () => {
+    const cursorId = "550e8400-e29b-41d4-a716-446655440003";
+    const sourceUuid = "550e8400-e29b-41d4-a716-446655440000";
+    const rows = [makeEventRow(2), makeEventRow(1)];
+    mockGetQuery.mockReturnValue({
+      "filter[kind]": "err",
+      "filter[source]": sourceUuid,
+      "page[after]": cursorId,
+      "page[size]": "2",
+    });
+
+    let callCount = 0;
+    let pageWhere: CapturedWhere;
+    selectMock.mockImplementation(() => {
+      const callIndex = callCount;
+      callCount++;
+
+      if (callIndex === 0) {
+        const limitFn = vi.fn(() =>
+          Promise.resolve([{ ts: new Date(), id: cursorId }]),
+        );
+        const whereFn = vi.fn(() => ({ limit: limitFn }));
+        return { from: vi.fn(() => ({ where: whereFn })) };
+      }
+
+      if (callIndex === 1) {
+        const whereFn = vi.fn(() => Promise.resolve([{ value: 10 }]));
+        return { from: vi.fn(() => ({ where: whereFn })) };
+      }
+
+      const limitFn = vi.fn(() => Promise.resolve(rows));
+      const orderByFn = vi.fn(() => ({ limit: limitFn }));
+      const whereFn = vi.fn((condition: CapturedWhere) => {
+        pageWhere = condition;
+        return { orderBy: orderByFn };
+      });
+      return { from: vi.fn(() => ({ where: whereFn })) };
+    });
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data).toHaveLength(2);
+    expect(response.meta?.total).toBe(10);
+    expect(findConditionByValue(pageWhere, "err")).toBeDefined();
+    expect(findConditionByValue(pageWhere, sourceUuid)).toBeDefined();
+
+    const hasCursorCondition = (pageWhere?.conditions ?? []).some(
+      (condition) =>
+        typeof condition === "object" &&
+        condition !== null &&
+        "or" in condition,
+    );
+    expect(hasCursorCondition).toBe(true);
+  });
+});
