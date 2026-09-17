@@ -1,4 +1,4 @@
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
 import { findSubscriptionByUserId } from "../../utils/billing";
 import { buildAppUrl } from "../../utils/appUrl";
@@ -7,6 +7,7 @@ import { createCustomerPortalSession } from "../../services/stripe";
 export default defineEventHandler(async (event) => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "billing:write");
     const subscription = await findSubscriptionByUserId(userId);
 
     if (!subscription?.stripeCustomerId) {

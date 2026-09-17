@@ -23,8 +23,13 @@ const { default: handler } =
 const userId = "user_abc123";
 const tokenId = "550e8400-e29b-41d4-a716-446655440001";
 
-function buildEvent(contextUserId: string | undefined): H3Event {
-  return { context: { userId: contextUserId } } as unknown as H3Event;
+function buildEvent(
+  contextUserId: string | undefined,
+  tokenScopes?: string[] | null,
+): H3Event {
+  return {
+    context: { userId: contextUserId, tokenScopes },
+  } as unknown as H3Event;
 }
 
 function stubUpdateResult(rows: { id: string }[]) {
@@ -132,6 +137,48 @@ describe("DELETE /api/tokens/:id", () => {
           }),
         ],
       },
+    });
+  });
+
+  describe("requireScope enforcement (tokens:write)", () => {
+    it("throws 403 when the token lacks tokens:write", async () => {
+      mockGetRouterParam.mockReturnValue(tokenId);
+
+      await expect(
+        handler(buildEvent(userId, ["records:read"])),
+      ).rejects.toMatchObject({ statusCode: 403 });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 403,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "403",
+              title: "Forbidden",
+              detail:
+                "This token does not have the required `tokens:write` scope.",
+            }),
+          ],
+        },
+      });
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it("revokes successfully when the token carries tokens:write", async () => {
+      mockGetRouterParam.mockReturnValue(tokenId);
+      stubUpdateResult([{ id: tokenId }]);
+
+      const response = await handler(buildEvent(userId, ["tokens:write"]));
+
+      expect(response).toEqual({ data: null });
+    });
+
+    it("revokes successfully for a full-access (unscoped) token", async () => {
+      mockGetRouterParam.mockReturnValue(tokenId);
+      stubUpdateResult([{ id: tokenId }]);
+
+      const response = await handler(buildEvent(userId, null));
+
+      expect(response).toEqual({ data: null });
     });
   });
 });

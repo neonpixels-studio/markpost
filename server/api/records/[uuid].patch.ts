@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import { recordSerializer, type RecordApiResponse } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
@@ -279,6 +279,7 @@ async function updateUserRecord(
 export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "records:write");
     const recordUuid = getRouterParam(event, "uuid");
 
     if (!isValidUuid(recordUuid)) {

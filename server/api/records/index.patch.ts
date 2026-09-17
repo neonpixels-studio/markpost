@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records, type RecordStatus } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import {
   recordSerializer,
@@ -321,6 +321,7 @@ export default defineEventHandler(
   async (event): Promise<RecordListApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "records:write");
       const body = (await readBody(event)) as BulkPatchBody;
 
       const updates = prepareUpdates(body);

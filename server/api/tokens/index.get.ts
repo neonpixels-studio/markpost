@@ -1,8 +1,9 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../../db";
 import { apiTokens } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
+import type { ScopeName } from "../../utils/protectedResource";
 import type { ApiResponse } from "../../types/api.types";
 
 type TokenListItem = {
@@ -12,6 +13,7 @@ type TokenListItem = {
   createdAt: Date;
   lastUsedAt: Date | null;
   expiresAt: Date | null;
+  scopes: string[] | null;
 };
 
 type TokenResource = {
@@ -23,6 +25,8 @@ type TokenResource = {
     createdAt: Date;
     lastUsedAt: Date | null;
     expiresAt: Date | null;
+    // NULL means full access — see server/db/schema.ts apiTokens.scopes.
+    scopes: ScopeName[] | null;
   };
 };
 
@@ -38,6 +42,9 @@ function tokenSerializer(token: TokenListItem): TokenResource {
       createdAt: token.createdAt,
       lastUsedAt: token.lastUsedAt,
       expiresAt: token.expiresAt,
+      // Cast is safe: every persisted value was validated against
+      // SCOPE_NAMES at mint time (server/api/tokens/index.post.ts).
+      scopes: token.scopes as ScopeName[] | null,
     },
   };
 }
@@ -58,6 +65,7 @@ async function listUnrevokedTokens(
       createdAt: apiTokens.createdAt,
       lastUsedAt: apiTokens.lastUsedAt,
       expiresAt: apiTokens.expiresAt,
+      scopes: apiTokens.scopes,
     })
     .from(apiTokens)
     .where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)))
@@ -68,6 +76,7 @@ export default defineEventHandler(
   async (event): Promise<TokenListApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "tokens:read");
       const tokens = await listUnrevokedTokens(getDb(), userId);
 
       return { data: tokens.map(tokenSerializer) };

@@ -1,7 +1,7 @@
 import { and, eq, getTableColumns } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records, sources } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import { recordSerializer, type RecordApiResponse } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
@@ -33,6 +33,7 @@ export async function findRecordForUser(
 
 export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
   const userId = requireUser(event);
+  requireScope(event, "records:read");
   try {
     const uuid = getRouterParam(event, "uuid");
 

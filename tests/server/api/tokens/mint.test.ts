@@ -24,8 +24,13 @@ const { default: handler } =
 
 const userId = "user_abc123";
 
-function buildEvent(contextUserId: string | undefined): H3Event {
-  return { context: { userId: contextUserId } } as unknown as H3Event;
+function buildEvent(
+  contextUserId: string | undefined,
+  tokenScopes?: string[] | null,
+): H3Event {
+  return {
+    context: { userId: contextUserId, tokenScopes },
+  } as unknown as H3Event;
 }
 
 function buildBody(attributes: Record<string, unknown>) {
@@ -39,6 +44,7 @@ function stubInsertResult(record: {
   hashedToken: string;
   createdAt: Date;
   expiresAt?: Date | null;
+  scopes?: string[] | null;
 }) {
   const returning = vi.fn(() => Promise.resolve([record]));
   const values = vi.fn(() => ({ returning }));
@@ -393,6 +399,179 @@ describe("POST /api/tokens", () => {
       await expect(handler(buildEvent(userId))).rejects.toMatchObject({
         statusCode: 422,
       });
+    });
+  });
+
+  describe("scopes", () => {
+    // Shared by every test in this block: stubs the insert chain and hands
+    // back the row that was actually passed to `.values(...)`, so each test
+    // can assert on the scopes drizzle would have persisted.
+    function stubInsertCapturingRow() {
+      let capturedRow: { scopes?: string[] | null } | undefined;
+
+      const returning = vi.fn(async () => [
+        {
+          id: "token-uuid-1",
+          name: "my-token",
+          prefix: "mp_live_abcd",
+          hashedToken: "some-hash",
+          createdAt: new Date(),
+          scopes: capturedRow?.scopes ?? null,
+        },
+      ]);
+      const values = vi.fn((row: { scopes?: string[] | null }) => {
+        capturedRow = row;
+        return { returning };
+      });
+      insertMock.mockReturnValue({ values });
+
+      return () => capturedRow;
+    }
+
+    it("mints a full-access token (scopes: null) when scopes is omitted", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      const response = await handler(buildEvent(userId));
+
+      expect(getCapturedRow()?.scopes).toBeNull();
+      const data = (
+        response as { data: { attributes: { scopes: string[] | null } } }
+      ).data;
+      expect(data.attributes.scopes).toBeNull();
+    });
+
+    it("mints a full-access token (scopes: null) when scopes is explicitly null", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: null }),
+      );
+
+      await handler(buildEvent(userId));
+
+      expect(getCapturedRow()?.scopes).toBeNull();
+    });
+
+    it("persists a valid scope list", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+      const scopes = ["records:read", "records:write"];
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token", scopes }));
+
+      const response = await handler(buildEvent(userId));
+
+      expect(getCapturedRow()?.scopes).toEqual(scopes);
+      const data = (
+        response as { data: { attributes: { scopes: string[] | null } } }
+      ).data;
+      expect(data.attributes.scopes).toEqual(scopes);
+    });
+
+    it("throws 422 when scopes is not an array", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: "records:read" }),
+      );
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 422,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "422",
+              source: { pointer: "/data/attributes/scopes" },
+            }),
+          ],
+        },
+      });
+    });
+
+    it("throws 422 for an empty scopes array (a token scoped to nothing)", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: [] }),
+      );
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+    });
+
+    it("throws 422 when scopes contains an unrecognized scope name", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: ["records:read", "nonsense"] }),
+      );
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+    });
+  });
+
+  describe("requireScope enforcement (tokens:write)", () => {
+    it("throws 403 when the minting token lacks tokens:write", async () => {
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await expect(
+        handler(buildEvent(userId, ["records:read"])),
+      ).rejects.toMatchObject({ statusCode: 403 });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 403,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "403",
+              title: "Forbidden",
+              detail:
+                "This token does not have the required `tokens:write` scope.",
+            }),
+          ],
+        },
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("mints successfully when the token carries tokens:write", async () => {
+      stubInsertResult({
+        id: "token-uuid-1",
+        name: "my-token",
+        prefix: "mp_live_abcd",
+        hashedToken: "some-hash",
+        createdAt: new Date(),
+      });
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      const response = await handler(buildEvent(userId, ["tokens:write"]));
+
+      expect(mockSetResponseStatus).toHaveBeenCalledWith(
+        expect.anything(),
+        201,
+      );
+      expect((response as { data: { id: string } }).data.id).toBe(
+        "token-uuid-1",
+      );
+    });
+
+    it("mints successfully for a full-access (unscoped) token", async () => {
+      stubInsertResult({
+        id: "token-uuid-1",
+        name: "my-token",
+        prefix: "mp_live_abcd",
+        hashedToken: "some-hash",
+        createdAt: new Date(),
+      });
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      const response = await handler(buildEvent(userId, null));
+
+      expect((response as { data: { id: string } }).data.id).toBe(
+        "token-uuid-1",
+      );
     });
   });
 });

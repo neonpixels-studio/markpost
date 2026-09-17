@@ -75,10 +75,10 @@ const userId = "user_abc123";
 const tokenId = "token-uuid-1";
 
 function buildEvent(path: string = "/api/records"): H3Event & {
-  context: { userId?: string };
+  context: { userId?: string; tokenScopes?: string[] | null };
 } {
   return { path, context: {} } as unknown as H3Event & {
-    context: { userId?: string };
+    context: { userId?: string; tokenScopes?: string[] | null };
   };
 }
 
@@ -356,6 +356,46 @@ describe("auth middleware", () => {
 
       expect(stubs.where).toHaveBeenCalledOnce();
       expect(stubs.limit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe("tokenScopes context (server/utils/auth.ts requireScope reads this)", () => {
+    it("sets tokenScopes to null for a legacy/unscoped token (full access)", async () => {
+      const rawToken = generateRawToken();
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, scopes: null }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenScopes).toBeNull();
+    });
+
+    it("carries the token's scopes array through to context", async () => {
+      const rawToken = generateRawToken();
+      const scopes = ["records:read", "records:write"];
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, scopes }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenScopes).toEqual(scopes);
+    });
+
+    it("sets tokenScopes to null for a Clerk session (always full access)", async () => {
+      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
+      mockGetHeader.mockReturnValue(`Bearer ${clerkToken}`);
+      mockVerifyToken.mockResolvedValue({ sub: userId });
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenScopes).toBeNull();
     });
   });
 

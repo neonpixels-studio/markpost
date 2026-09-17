@@ -110,6 +110,14 @@ export const apiTokens = pgTable(
     // every token minted before this column existed and for anyone who mints
     // a new token without requesting an expiry.
     expiresAt: timestamp("expires_at", { withTimezone: true }),
+    // Nullable and opt-in at mint time (server/api/tokens/index.post.ts): a
+    // NULL scopes means "full access" — every scope in
+    // server/utils/protectedResource.ts SCOPE_NAMES — which is both the
+    // documented default for a token minted without a `scopes` attribute and
+    // the behavior every token minted before this column existed keeps
+    // (server/middleware/auth.ts + server/utils/auth.ts requireScope treat
+    // NULL as unrestricted rather than "no scopes").
+    scopes: text("scopes").array(),
   },
   (table) => [
     index("api_tokens_user_id_idx").on(table.userId),

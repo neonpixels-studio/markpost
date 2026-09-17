@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../../db";
 import { userSettings } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import {
   userSettingsSerializer,
@@ -47,6 +47,7 @@ export default defineEventHandler(
   async (event): Promise<UserSettingsApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "settings:read");
       const database = getDb();
       const settings = await getOrCreateSettings(database, userId);
 

@@ -2,7 +2,7 @@ import { count, eq } from "drizzle-orm";
 import { getDb } from "../../db";
 import { sources } from "../../db/schema";
 import type { SubscriptionPlan, SubscriptionStatus } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import { countRecordsCreatedThisMonth } from "../../utils/recordUsage";
 import {
@@ -76,6 +76,7 @@ export default defineEventHandler(
   async (event): Promise<BillingUsageApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "billing:read");
 
       const [recordsCreatedThisMonth, connectedSourceCount, subscription] =
         await Promise.all([

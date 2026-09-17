@@ -161,6 +161,13 @@ function stubRequireUser(returnedUserId: string | undefined) {
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
   vi.stubGlobal("getQuery", mockGetQuery);
+  // This handler relies on Nitro's auto-import for server/utils/auth exports
+  // (no explicit import in production code), so requireScope needs the same
+  // global-stub treatment as requireUser above. A no-op mirrors the
+  // production default (unscoped/full-access token) since none of this
+  // file's tests target scope enforcement — that's covered directly in
+  // tests/server/utils/auth.test.ts and tests/server/api/tokens/revoke.test.ts.
+  vi.stubGlobal("requireScope", () => {});
   stubRequireUser(userId);
   mockCreateError.mockClear();
   selectMock.mockReset();

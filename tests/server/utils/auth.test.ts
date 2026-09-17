@@ -12,11 +12,17 @@ vi.mock("../../../server/db", () => ({
 const runtimeConfig = { disableSignups: "" };
 const mockCreateError = createMockCreateError();
 
-const { signupsDisabled, ensureUserRegistered, requireUser } =
+const { signupsDisabled, ensureUserRegistered, requireUser, requireScope } =
   await import("../../../server/utils/auth");
 
 function buildEvent(contextUserId?: string): H3Event {
   return { context: { userId: contextUserId } } as unknown as H3Event;
+}
+
+function buildEventWithScopes(
+  tokenScopes: string[] | null | undefined,
+): H3Event {
+  return { context: { tokenScopes } } as unknown as H3Event;
 }
 
 const userId = "user_abc123";
@@ -69,6 +75,59 @@ describe("requireUser", () => {
         ],
       },
     });
+  });
+});
+
+describe("requireScope", () => {
+  it("allows the request when tokenScopes is undefined (Clerk session or unset context)", () => {
+    expect(() =>
+      requireScope(buildEventWithScopes(undefined), "records:read"),
+    ).not.toThrow();
+  });
+
+  it("allows the request when tokenScopes is null (full-access token, the mint default)", () => {
+    expect(() =>
+      requireScope(buildEventWithScopes(null), "records:read"),
+    ).not.toThrow();
+  });
+
+  it("allows the request when the required scope is present", () => {
+    expect(() =>
+      requireScope(
+        buildEventWithScopes(["records:read", "records:write"]),
+        "records:read",
+      ),
+    ).not.toThrow();
+  });
+
+  it("throws a 403 carrying the JSON:API envelope when the scope is missing", () => {
+    expect(() =>
+      requireScope(buildEventWithScopes(["records:read"]), "records:write"),
+    ).toThrow();
+
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 403,
+      data: {
+        errors: [
+          expect.objectContaining({
+            status: "403",
+            title: "Forbidden",
+            detail:
+              "This token does not have the required `records:write` scope.",
+          }),
+        ],
+      },
+    });
+  });
+
+  it("throws a 403 for an empty scope list (a token scoped to nothing)", () => {
+    expect(() =>
+      requireScope(buildEventWithScopes([]), "records:read"),
+    ).toThrow();
+
+    expect(mockCreateError).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 403 }),
+    );
   });
 });
 

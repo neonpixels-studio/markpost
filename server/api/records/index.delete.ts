@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import { apiValidate } from "../../utils/validate";
 import { isValidUuid } from "../../utils/uuid";
@@ -84,6 +84,7 @@ export default defineEventHandler(
   async (event): Promise<DeleteRecordsResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "records:write");
       const body = (await readBody(event)) as DeleteRecordsBody;
 
       const uuids = validateUuids(body);

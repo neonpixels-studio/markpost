@@ -15,9 +15,16 @@ import { recordAuthedApiHit } from "../utils/apiThrottle";
 
 const BEARER_PREFIX = /^Bearer\s+/i;
 
+type ApiTokenAuthResult = {
+  userId: string;
+  // NULL preserved from the column: "full access" (see requireScope in
+  // server/utils/auth.ts), not "no scopes".
+  scopes: string[] | null;
+};
+
 async function authenticateViaApiToken(
   rawToken: string,
-): Promise<string | null> {
+): Promise<ApiTokenAuthResult | null> {
   const incomingHash = hashToken(rawToken);
 
   const [matched] = await getDb()
@@ -26,6 +33,7 @@ async function authenticateViaApiToken(
       userId: apiTokens.userId,
       expiresAt: apiTokens.expiresAt,
       lastUsedAt: apiTokens.lastUsedAt,
+      scopes: apiTokens.scopes,
     })
     .from(apiTokens)
     .where(
@@ -43,7 +51,7 @@ async function authenticateViaApiToken(
 
   await refreshTokenLastUsedAt(matched.id, matched.lastUsedAt);
 
-  return matched.userId;
+  return { userId: matched.userId, scopes: matched.scopes ?? null };
 }
 
 async function authenticateViaClerk(token: string): Promise<string | null> {
@@ -115,8 +123,11 @@ export default defineEventHandler(async (event) => {
   }
 
   const viaApiToken = isApiToken(rawToken);
-  const userId = viaApiToken
+  const apiTokenAuth = viaApiToken
     ? await authenticateViaApiToken(rawToken)
+    : null;
+  const userId = viaApiToken
+    ? apiTokenAuth?.userId
     : await authenticateViaClerk(rawToken);
 
   if (!userId) {
@@ -133,4 +144,10 @@ export default defineEventHandler(async (event) => {
   await enforceApiThrottle(event, userId);
 
   event.context.userId = userId;
+  // A Clerk session is always full access (scoping only restricts API
+  // tokens); an API token's scopes came back from authenticateViaApiToken,
+  // where NULL already means full access (see requireScope).
+  event.context.tokenScopes = viaApiToken
+    ? (apiTokenAuth?.scopes ?? null)
+    : null;
 });
