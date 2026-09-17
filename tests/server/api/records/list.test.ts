@@ -718,4 +718,37 @@ describe("GET /api/records", () => {
     expect(findSourceIdInArray(countConditions)).toBeDefined();
     expect(hasCursorColumns(countConditions)).toBe(false);
   });
+
+  // Every other test in this file stubs requireScope as a no-op (see
+  // beforeEach) so it can focus on list/filter/cursor behavior. This test
+  // overrides that stub for one case to prove the real requireScope
+  // rejection (server/utils/auth.ts, exercised end-to-end in
+  // tests/server/utils/auth.test.ts) is actually wired into this handler,
+  // runs before any query fires, and is not just a comment or dead call —
+  // the static check in tests/server/api/scopeCoverage.test.ts cannot prove
+  // that on its own.
+  describe("requireScope enforcement (records:read)", () => {
+    it("throws 403 and never queries the database when the token lacks records:read", async () => {
+      vi.stubGlobal("requireScope", () => {
+        throw mockCreateError({
+          statusCode: 403,
+          data: {
+            errors: [
+              {
+                status: "403",
+                title: "Forbidden",
+                detail:
+                  "This token does not have the required `records:read` scope.",
+              },
+            ],
+          },
+        });
+      });
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 403,
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+  });
 });

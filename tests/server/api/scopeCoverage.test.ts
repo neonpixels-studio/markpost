@@ -73,13 +73,21 @@ function listHandlerFiles(): string[] {
     .filter((entry) => entry.endsWith(".ts"));
 }
 
-function readHandlerSource(relativePath: string): string {
-  return readFileSync(join(API_DIR, relativePath), "utf8");
+// Strips comments before every check below matches against source text, so
+// a call that was merely commented out (rather than genuinely removed) is
+// not mistaken for a live one — the whole point of this file is to catch a
+// gate that looks present but never runs.
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
 
-function requireScopeCallFor(relativePath: string): string | undefined {
-  const scope = EXPECTED_HANDLER_SCOPES[relativePath];
-  return scope && `requireScope(event, "${scope}");`;
+function readHandlerSource(relativePath: string): string {
+  const raw = readFileSync(join(API_DIR, relativePath), "utf8");
+  return stripComments(raw);
+}
+
+function requireScopeCallFor(relativePath: string): string {
+  return `requireScope(event, "${EXPECTED_HANDLER_SCOPES[relativePath]}");`;
 }
 
 // A Nitro filename maps to its route by stripping the method suffix and
@@ -149,9 +157,9 @@ describe("server/api scope coverage", () => {
 
   it.each(Object.entries(EXPECTED_HANDLER_SCOPES))(
     "%s calls requireScope with its documented scope",
-    (relativePath, scope) => {
+    (relativePath) => {
       const source = readHandlerSource(relativePath);
-      expect(source).toContain(requireScopeCallFor(relativePath) ?? scope);
+      expect(source).toContain(requireScopeCallFor(relativePath));
     },
   );
 });

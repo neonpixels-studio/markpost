@@ -193,11 +193,17 @@ function assertWithinCallerAuthority(
 // — the expiry half of caller-authority containment, alongside
 // assertWithinCallerAuthority for scopes above. Without this, a short-lived
 // leaked token could mint itself a longer-lived (or permanent, by omitting
-// expiresInDays) replacement and outlive its own revocation/expiry, making
-// the short expiry that was supposed to contain a leak worthless. A null
-// callerExpiresAt (a Clerk session, which has no token to inherit a
-// lifetime from, or a caller token that itself never expires) means no
-// constraint to inherit.
+// expiresInDays) replacement, making the short expiry that was supposed to
+// contain a leak worthless once it lapses. A null callerExpiresAt (a Clerk
+// session, which has no token to inherit a lifetime from, or a caller token
+// that itself never expires) means no constraint to inherit.
+//
+// This does NOT make revocation cascade: api_tokens has no parent/child
+// link, so revoking the leaked parent token does not revoke a child it
+// minted — the child still authenticates until its own (now-bounded)
+// expiry. Closing that gap needs a lineage column (e.g. `mintedByTokenId`)
+// and a cascading revoke in server/api/tokens/[id].delete.ts; flagged as a
+// follow-up rather than added here.
 function clampToCallerExpiry(
   expiresAt: Date | null,
   callerExpiresAt: Date | null | undefined,
