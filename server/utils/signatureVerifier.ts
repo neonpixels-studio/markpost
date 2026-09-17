@@ -160,6 +160,38 @@ function computeStripeSignature(
     .digest("hex");
 }
 
+// Builds a real Stripe-Signature header value from a source's own stored
+// secret, so a caller can round-trip a synthetic payload through
+// verifyStripeSignature exactly as a live Stripe delivery would (see the
+// source test-event endpoint, server/api/sources/[uuid]/test.post.ts). Shares
+// computeStripeSignature with the verifier above so the two can never sign
+// and verify with different HMAC logic. Defaults to "now" like a live
+// delivery would, but takes an explicit timestamp so tests can pin it.
+export function buildStripeSignatureHeader(
+  rawBody: string,
+  secret: string,
+  timestampSeconds: number = Math.floor(Date.now() / 1000),
+): string {
+  const timestamp = String(timestampSeconds);
+  const signature = computeStripeSignature(timestamp, rawBody, secret);
+  return `${STRIPE_TIMESTAMP_PREFIX}${timestamp},${STRIPE_V1_PREFIX}${signature}`;
+}
+
+// Single source of the GitHub HMAC digest, shared by verifyGithubSignature
+// (compares against an incoming header) and buildGithubSignatureHeader below
+// (builds one from a source's own stored secret for the test-event endpoint)
+// so signing and verifying can never drift onto different algorithms.
+function computeGithubSignatureHex(rawBody: string, secret: string): string {
+  return createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+}
+
+export function buildGithubSignatureHeader(
+  rawBody: string,
+  secret: string,
+): string {
+  return `${GITHUB_SIGNATURE_PREFIX}${computeGithubSignatureHex(rawBody, secret)}`;
+}
+
 function isTimestampFresh(timestamp: string): boolean {
   if (!/^\d+$/.test(timestamp)) {
     return false;
@@ -232,9 +264,7 @@ export function verifyGithubSignature(
   }
 
   const candidate = signatureHeader.slice(GITHUB_SIGNATURE_PREFIX.length);
-  const expected = createHmac("sha256", secret)
-    .update(rawBody, "utf8")
-    .digest("hex");
+  const expected = computeGithubSignatureHex(rawBody, secret);
 
   if (!compareSignatures(expected, [candidate])) {
     return { ok: false, reason: "GitHub webhook signature mismatch" };

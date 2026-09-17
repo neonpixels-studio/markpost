@@ -615,4 +615,88 @@ describe("useSources", () => {
       );
     });
   });
+
+  describe("sendTestEvent", () => {
+    const sampleResult = {
+      provider: null,
+      payload: { title: "Test event from markpost" },
+      signatureCheck: { status: "not_required", message: "no provider" },
+      fieldMapping: {
+        title: "Test event from markpost",
+        content: "",
+        tags: ["test"],
+        frontmatter: {},
+        filePath: "99-incoming/test.md",
+      },
+    };
+
+    it("POSTs to the source's test endpoint with the given payload", async () => {
+      mockFetch.mockResolvedValue({ data: { attributes: sampleResult } });
+      const { sendTestEvent } = useSources();
+
+      const result = await sendTestEvent("attributes-uuid", {
+        title: "custom",
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/sources/attributes-uuid/test",
+        {
+          method: "POST",
+          body: {
+            data: {
+              type: "sourceTestEvents",
+              attributes: { payload: { title: "custom" } },
+            },
+          },
+        },
+      );
+      expect(result).toEqual(sampleResult);
+    });
+
+    it("omits payload from the request body when none is given (server supplies its own default)", async () => {
+      mockFetch.mockResolvedValue({ data: { attributes: sampleResult } });
+      const { sendTestEvent } = useSources();
+
+      await sendTestEvent("attributes-uuid");
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/sources/attributes-uuid/test",
+        {
+          method: "POST",
+          body: {
+            data: {
+              type: "sourceTestEvents",
+              attributes: { payload: undefined },
+            },
+          },
+        },
+      );
+    });
+
+    it("never mutates the reactive sources list (a test event does not change the source)", async () => {
+      mockFetch.mockResolvedValue({ data: { attributes: sampleResult } });
+      const { sources, sendTestEvent } = useSources();
+      sources.value = [makeSourceResource()];
+
+      await sendTestEvent("attributes-uuid");
+
+      expect(sources.value).toEqual([makeSourceResource()]);
+    });
+
+    it("throws when the server returns no data", async () => {
+      mockFetch.mockResolvedValue({ data: null });
+      const { sendTestEvent } = useSources();
+      await expect(sendTestEvent("attributes-uuid")).rejects.toThrow(
+        "Server returned no data",
+      );
+    });
+
+    it("propagates send errors to the caller", async () => {
+      mockFetch.mockRejectedValue(new Error("test event failed"));
+      const { sendTestEvent } = useSources();
+      await expect(sendTestEvent("attributes-uuid")).rejects.toThrow(
+        "test event failed",
+      );
+    });
+  });
 });

@@ -93,6 +93,7 @@
             @remove="onRemoveRequested"
             @rotate="onRotateRequested"
             @configure-mapping="onConfigureMappingRequested"
+            @test-event="onTestEventRequested"
           />
 
           <button
@@ -153,6 +154,15 @@
       @close="closeFieldMappingModal"
       @save="saveFieldMapping"
     />
+
+    <TestEventModal
+      v-if="testEventState"
+      :test-event-state="testEventState"
+      :submitting="isSendingTestEvent"
+      :error="testEventError"
+      @close="closeTestEventModal"
+      @send="sendTestEventPayload"
+    />
   </TheAppShell>
 </template>
 
@@ -166,8 +176,10 @@ import {
   isSourceMappable,
   type FieldMappingConfig,
 } from "#shared/utils/fieldMapping";
+import { EMAIL_SOURCE_TYPE } from "#shared/utils/sourceTypes";
 import type { RotateState } from "~/types/rotateSecret";
 import type { FieldMappingState } from "~/types/fieldMapping";
+import type { TestEventState } from "~/types/testEvent";
 
 definePageMeta({ middleware: "auth" });
 
@@ -204,17 +216,20 @@ const {
   addSource: addSourceToList,
   rotateSecret,
   updateFieldMapping,
+  sendTestEvent,
 } = useSources();
 
 const modalState = ref<ModalState | null>(null);
 const rotateState = ref<RotateState | null>(null);
 const fieldMappingState = ref<FieldMappingState | null>(null);
+const testEventState = ref<TestEventState | null>(null);
 const pendingRemoveUuid = ref<string | null>(null);
 const loadError = ref<string | null>(null);
 const addError = ref<string | null>(null);
 const removeError = ref<string | null>(null);
 const rotateError = ref<string | null>(null);
 const fieldMappingError = ref<string | null>(null);
+const testEventError = ref<string | null>(null);
 // Guards against a double-click on "add source" firing two create requests
 // (see AddSourceModal's `submitting` prop).
 const isAddingSource = ref(false);
@@ -223,6 +238,9 @@ const isRotatingSecret = ref(false);
 // Same guard for saving a field mapping (see FieldMappingModal's `submitting`
 // prop).
 const isSavingFieldMapping = ref(false);
+// Same guard for sending a test event (see TestEventModal's `submitting`
+// prop).
+const isSendingTestEvent = ref(false);
 
 // The transient add/remove failures share one dismissible-banner shape. Each is
 // cleared when its own action restarts, so both can be visible at once if the
@@ -481,6 +499,62 @@ const saveFieldMapping = async (fieldMapping: FieldMappingConfig | null) => {
     fieldMappingError.value = "Failed to save field mapping. Please try again.";
   } finally {
     isSavingFieldMapping.value = false;
+  }
+};
+
+const onTestEventRequested = (uuid: string) => {
+  const source = sources.value.find(
+    (candidate) => candidate.attributes.uuid === uuid,
+  );
+  // Mirrors SourceCard's own gate (isTestable): a source the card wouldn't
+  // have shown the button for can't open the modal here either.
+  if (!source || source.attributes.type === EMAIL_SOURCE_TYPE) {
+    return;
+  }
+
+  testEventError.value = null;
+  testEventState.value = {
+    source: { uuid, name: source.attributes.name },
+    result: null,
+  };
+};
+
+// Ignored while a send is in flight: a stray close shouldn't discard an
+// in-progress request the user might come back to (mirrors the other modals'
+// submitting guard).
+const closeTestEventModal = () => {
+  if (isSendingTestEvent.value) {
+    return;
+  }
+  testEventState.value = null;
+  testEventError.value = null;
+};
+
+const sendTestEventPayload = async (payload: Record<string, unknown>) => {
+  if (!testEventState.value || isSendingTestEvent.value) {
+    return;
+  }
+
+  const { uuid } = testEventState.value.source;
+  testEventError.value = null;
+  isSendingTestEvent.value = true;
+
+  try {
+    const result = await sendTestEvent(uuid, payload);
+    // The flow may have been retargeted to another source mid-request; only
+    // act when the modal still holds the source this result belongs to, so we
+    // never show source A's result under source B's name.
+    if (testEventState.value?.source.uuid === uuid) {
+      testEventState.value = { ...testEventState.value, result };
+    }
+  } catch (testEventErrorValue) {
+    console.error(
+      "[sources] sendTestEvent error:",
+      toErrorMessage(testEventErrorValue),
+    );
+    testEventError.value = "Failed to send test event. Please try again.";
+  } finally {
+    isSendingTestEvent.value = false;
   }
 };
 

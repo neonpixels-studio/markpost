@@ -1,5 +1,8 @@
-import { createHmac } from "node:crypto";
 import { vi } from "vitest";
+import {
+  buildGithubSignatureHeader,
+  buildStripeSignatureHeader,
+} from "../../server/utils/signatureVerifier";
 
 export function createMockCreateError() {
   return vi.fn((options: object) => {
@@ -9,27 +12,23 @@ export function createMockCreateError() {
   });
 }
 
+// Delegates to the app's own signing helpers (added alongside the source
+// test-event endpoint, server/api/sources/[uuid]/test.post.ts) rather than
+// recomputing the HMAC here, so a test fixture can never silently drift from
+// the real signing logic it's meant to exercise.
 export function buildValidStripeHeader(
   rawBody: string,
   secret: string,
   timestamp?: number,
 ): string {
-  const ts = timestamp ?? Math.floor(Date.now() / 1000);
-  const signedPayload = `${ts}.${rawBody}`;
-  const sig = createHmac("sha256", secret)
-    .update(signedPayload, "utf8")
-    .digest("hex");
-  return `t=${ts},v1=${sig}`;
+  return buildStripeSignatureHeader(rawBody, secret, timestamp);
 }
 
 export function buildValidGithubHeader(
   rawBody: string,
   secret: string,
 ): string {
-  const sig = createHmac("sha256", secret)
-    .update(rawBody, "utf8")
-    .digest("hex");
-  return `sha256=${sig}`;
+  return buildGithubSignatureHeader(rawBody, secret);
 }
 
 export function stubFailingUpdate(updateMock: ReturnType<typeof vi.fn>): void {

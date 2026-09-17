@@ -72,6 +72,15 @@
           <AppIcon name="refresh" :size="16" />
         </button>
         <button
+          v-if="isTestable"
+          class="icon-btn"
+          title="Send test event"
+          style="color: var(--ink-3)"
+          @click="emit('test-event', source.attributes.uuid)"
+        >
+          <AppIcon name="activity" :size="16" />
+        </button>
+        <button
           class="icon-btn"
           title="Remove source"
           style="color: var(--ink-3)"
@@ -132,6 +141,7 @@ import {
   SHARED_SECRET_PROVIDER_IDS,
 } from "#shared/utils/webhookSecrets";
 import { isSourceMappable } from "#shared/utils/fieldMapping";
+import { EMAIL_SOURCE_TYPE } from "#shared/utils/sourceTypes";
 
 const ICON_BY_TYPE: Record<string, string> = {
   webhook: "zap",
@@ -181,12 +191,24 @@ const emit = defineEmits<{
   remove: [uuid: string];
   rotate: [uuid: string];
   "configure-mapping": [uuid: string];
+  "test-event": [uuid: string];
 }>();
 
 // Only provider-backed sources have a rotatable secret; a plain webhook or
 // email-in source has none, so the action is hidden for them.
 const isRotatable = computed(() =>
   isRotatableProvider(props.source.attributes.provider ?? ""),
+);
+
+// A test event exercises applyFieldMapping and the hooks endpoint's signature
+// dispatch (server/api/sources/[uuid]/test.post.ts) — both of which only ever
+// run for the JSON webhook ingest path. Email sources ingest through a
+// separate path (parseEmailPayload, via the direct record-create API) that
+// never reads a field mapping or checks a signature, so there is nothing for
+// this action to test there. Mirrors EMAIL_SOURCE_TYPE's carve-out for
+// isSourceMappable above.
+const isTestable = computed(
+  () => props.source.attributes.type !== EMAIL_SOURCE_TYPE,
 );
 
 const isMappable = computed(() =>

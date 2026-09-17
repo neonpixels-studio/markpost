@@ -46,6 +46,37 @@ export type CreateSourcePayload = {
   fieldMapping?: unknown;
 };
 
+// Mirrors server/api/sources/[uuid]/test.post.ts's response shape.
+export type TestEventSignatureCheck = {
+  status: "not_required" | "verified" | "failed" | "not_verifiable";
+  message: string;
+};
+
+export type TestEventFieldMappingPreview = {
+  title: string;
+  content: string;
+  tags: string[];
+  frontmatter: unknown;
+  filePath: string;
+};
+
+export type TestEventResult = {
+  provider: string | null;
+  payload: Record<string, unknown>;
+  signatureCheck: TestEventSignatureCheck;
+  fieldMapping: TestEventFieldMappingPreview;
+};
+
+type TestEventResource = {
+  type: "sourceTestEvents";
+  id: string;
+  attributes: TestEventResult;
+};
+
+type TestEventResponse = {
+  data: TestEventResource | null;
+};
+
 export function buildEndpointUrl(
   sourceType: string,
   endpointSlug: string,
@@ -214,6 +245,31 @@ async function rotateSourceSecret(
 // sources UI today — routeFolder editing has no UI yet). Unlike rotateSecret,
 // there's nothing one-time or unrecoverable in the response, so this carries
 // no reveal-once concerns.
+// Sends a synthetic event through the source's real signature-verification
+// and field-mapping code paths (see server/api/sources/[uuid]/test.post.ts) so
+// the user can confirm a source works before a real delivery arrives. `payload`
+// lets a source with a custom field mapping be tested against a shape that
+// actually matches its own dot paths; omitted, the server falls back to a
+// generic sample.
+async function requestTestEvent(
+  uuid: string,
+  payload?: Record<string, unknown>,
+): Promise<TestEventResult> {
+  const response = await $fetch<TestEventResponse>(
+    `/api/sources/${uuid}/test`,
+    {
+      method: "POST",
+      body: { data: { type: "sourceTestEvents", attributes: { payload } } },
+    },
+  );
+
+  if (!response.data) {
+    throw new Error("Server returned no data for the test event");
+  }
+
+  return response.data.attributes;
+}
+
 async function patchSourceFieldMapping(
   uuid: string,
   fieldMapping: FieldMappingConfig | null,
@@ -316,6 +372,16 @@ export function useSources() {
     return updated;
   }
 
+  // Unlike rotateSecret/updateFieldMapping, a test event never mutates the
+  // source, so there is no reactive list entry to reconcile here — just pass
+  // the result straight through to the caller.
+  async function sendTestEvent(
+    uuid: string,
+    payload?: Record<string, unknown>,
+  ): Promise<TestEventResult> {
+    return requestTestEvent(uuid, payload);
+  }
+
   return {
     sources,
     isLoading,
@@ -324,5 +390,6 @@ export function useSources() {
     removeSource,
     rotateSecret,
     updateFieldMapping,
+    sendTestEvent,
   };
 }
