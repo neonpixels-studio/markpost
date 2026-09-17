@@ -4,7 +4,12 @@ import type { ApiRequest } from "../../types/api.types";
 import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import type { ApiResponse } from "../../types/api.types";
-import { SCOPE_NAMES, type ScopeName } from "../../utils/protectedResource";
+import {
+  isScopeName,
+  parseScopes,
+  SCOPE_NAMES,
+  type ScopeName,
+} from "../../utils/protectedResource";
 import { apiValidate, type AttributeRule } from "../../utils/validate";
 import {
   computeExpiresAt,
@@ -113,8 +118,25 @@ function invalidScopesError(): ApiError {
   );
 }
 
-function isScopeName(value: unknown): value is ScopeName {
-  return SCOPE_NAMES.includes(value as ScopeName);
+// A scoped token minting a token with broader authority than it has itself
+// would let any `tokens:write` scope escalate to full access one request
+// later (mint with `scopes` omitted). Full-access minters (event.context.
+// tokenScopes is null — a Clerk session, or a full-access token) are
+// unrestricted; a scoped minter may only grant a subset of its own scopes,
+// and may not omit `scopes` (which would request full access).
+function exceedsCallerAuthorityError(): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "422",
+        title: "Invalid Attribute",
+        detail:
+          "A scoped token cannot mint a token with scopes it does not itself have.",
+        source: { pointer: "/data/attributes/scopes" },
+      },
+    ],
+    422,
+  );
 }
 
 // Only undefined/null mean "full access requested" (the documented default —
@@ -136,6 +158,31 @@ function normalizeScopes(scopes: unknown): ScopeName[] | null {
   }
 
   return scopes;
+}
+
+function assertWithinCallerAuthority(
+  requestedScopes: ScopeName[] | null,
+  callerScopes: ScopeName[] | null | undefined,
+): void {
+  // A full-access caller (Clerk session, or a full-access token) may mint
+  // any scope set, including another full-access token.
+  if (callerScopes == null) {
+    return;
+  }
+
+  // Omitting `scopes` under a scoped caller would mint a full-access
+  // token — broader than the caller's own authority.
+  if (requestedScopes === null) {
+    throw exceedsCallerAuthorityError();
+  }
+
+  const exceedsCallerAuthority = requestedScopes.some(
+    (scope) => !callerScopes.includes(scope),
+  );
+
+  if (exceedsCallerAuthority) {
+    throw exceedsCallerAuthorityError();
+  }
 }
 
 type InsertTokenInput = {
@@ -178,6 +225,10 @@ export default defineEventHandler(
       const expiresInDays = normalizeExpiresInDays(attributes.expiresInDays);
       assertValidExpiresInDays(expiresInDays);
       const scopes = normalizeScopes(attributes.scopes);
+      assertWithinCallerAuthority(
+        scopes,
+        event.context.tokenScopes as ScopeName[] | null | undefined,
+      );
 
       const rawToken = generateRawToken();
       const expiresAt = computeExpiresAt(expiresInDays);
@@ -200,9 +251,7 @@ export default defineEventHandler(
             prefix: record.prefix,
             createdAt: record.createdAt,
             expiresAt: record.expiresAt,
-            // Cast is safe: normalizeScopes already validated every entry
-            // against SCOPE_NAMES before insertToken persisted this row.
-            scopes: record.scopes as ScopeName[] | null,
+            scopes: parseScopes(record.scopes),
             token: rawToken,
           },
         },

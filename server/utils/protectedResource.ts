@@ -68,6 +68,33 @@ export type ScopeName = (typeof SCOPES)[number]["name"];
 
 export const SCOPE_NAMES: ScopeName[] = SCOPES.map((scope) => scope.name);
 
+export function isScopeName(value: unknown): value is ScopeName {
+  return SCOPE_NAMES.includes(value as ScopeName);
+}
+
+// Single trust boundary for the persisted `scopes` column (server/db/
+// schema.ts apiTokens.scopes is a plain text[] with no CHECK constraint).
+// Called everywhere a stored value is read back — server/middleware/auth.ts
+// (populating event.context.tokenScopes) and server/api/tokens/index.get.ts
+// and index.post.ts (serializing the resource) — so a scope name later
+// retired from SCOPES can never silently keep working, and a row that is
+// somehow neither NULL nor a valid array can never be misread as full
+// access. NULL stays NULL (full access, the documented default); a
+// non-array or an array containing nothing recognizable comes back as `[]`
+// (an explicit deny, since only a genuine NULL column value means
+// unrestricted); a valid array is de-duplicated.
+export function parseScopes(value: unknown): ScopeName[] | null {
+  if (value == null) {
+    return null;
+  }
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(new Set(value.filter(isScopeName)));
+}
+
 // RFC 9728 §3. `authorization_servers` is intentionally omitted: Markpost does
 // not yet front the API with an OAuth authorization server, and RFC 9728 makes
 // that member optional. `resource_documentation` points agents at the full

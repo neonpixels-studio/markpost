@@ -12,6 +12,7 @@ import {
   tooManyRequestsError,
 } from "../utils/errors";
 import { recordAuthedApiHit } from "../utils/apiThrottle";
+import { parseScopes } from "../utils/protectedResource";
 
 const BEARER_PREFIX = /^Bearer\s+/i;
 
@@ -51,7 +52,7 @@ async function authenticateViaApiToken(
 
   await refreshTokenLastUsedAt(matched.id, matched.lastUsedAt);
 
-  return { userId: matched.userId, scopes: matched.scopes ?? null };
+  return { userId: matched.userId, scopes: parseScopes(matched.scopes) };
 }
 
 async function authenticateViaClerk(token: string): Promise<string | null> {

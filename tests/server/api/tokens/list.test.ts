@@ -130,6 +130,7 @@ describe("GET /api/tokens", () => {
             createdAt: expiredToken.createdAt,
             lastUsedAt: expiredToken.lastUsedAt,
             expiresAt: expiredToken.expiresAt,
+            scopes: null,
           },
         },
       ],

@@ -3,7 +3,7 @@ import { getDb } from "../../db";
 import { apiTokens } from "../../db/schema";
 import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
-import type { ScopeName } from "../../utils/protectedResource";
+import { parseScopes, type ScopeName } from "../../utils/protectedResource";
 import type { ApiResponse } from "../../types/api.types";
 
 type TokenListItem = {
@@ -42,9 +42,7 @@ function tokenSerializer(token: TokenListItem): TokenResource {
       createdAt: token.createdAt,
       lastUsedAt: token.lastUsedAt,
       expiresAt: token.expiresAt,
-      // Cast is safe: every persisted value was validated against
-      // SCOPE_NAMES at mint time (server/api/tokens/index.post.ts).
-      scopes: token.scopes as ScopeName[] | null,
+      scopes: parseScopes(token.scopes),
     },
   };
 }

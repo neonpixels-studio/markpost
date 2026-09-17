@@ -511,6 +511,86 @@ describe("POST /api/tokens", () => {
     });
   });
 
+  // A scoped token minting an unscoped (or broader) token would let any
+  // `tokens:write` scope escalate to full access one request later.
+  describe("privilege escalation guard (caller authority)", () => {
+    it("throws 422 when a scoped caller omits `scopes` (would request full access)", async () => {
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await expect(
+        handler(buildEvent(userId, ["tokens:write"])),
+      ).rejects.toMatchObject({ statusCode: 422 });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 422,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "422",
+              detail:
+                "A scoped token cannot mint a token with scopes it does not itself have.",
+              source: { pointer: "/data/attributes/scopes" },
+            }),
+          ],
+        },
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("throws 422 when a scoped caller requests a scope it does not itself have", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody({
+          name: "my-token",
+          scopes: ["tokens:write", "account:write"],
+        }),
+      );
+
+      await expect(
+        handler(buildEvent(userId, ["tokens:write"])),
+      ).rejects.toMatchObject({ statusCode: 422 });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("allows a scoped caller to mint a token scoped to a subset of its own scopes", async () => {
+      stubInsertResult({
+        id: "token-uuid-1",
+        name: "my-token",
+        prefix: "mp_live_abcd",
+        hashedToken: "some-hash",
+        createdAt: new Date(),
+      });
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: ["records:read"] }),
+      );
+
+      const response = await handler(
+        buildEvent(userId, ["records:read", "records:write", "tokens:write"]),
+      );
+
+      expect((response as { data: { id: string } }).data.id).toBe(
+        "token-uuid-1",
+      );
+    });
+
+    it("allows a full-access caller (unscoped token) to mint a full-access token", async () => {
+      stubInsertResult({
+        id: "token-uuid-1",
+        name: "my-token",
+        prefix: "mp_live_abcd",
+        hashedToken: "some-hash",
+        createdAt: new Date(),
+      });
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      const response = await handler(buildEvent(userId, null));
+
+      expect((response as { data: { id: string } }).data.id).toBe(
+        "token-uuid-1",
+      );
+    });
+  });
+
   describe("requireScope enforcement (tokens:write)", () => {
     it("throws 403 when the minting token lacks tokens:write", async () => {
       mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
@@ -534,7 +614,7 @@ describe("POST /api/tokens", () => {
       expect(insertMock).not.toHaveBeenCalled();
     });
 
-    it("mints successfully when the token carries tokens:write", async () => {
+    it("mints successfully when the token carries tokens:write and requests scopes within its own authority", async () => {
       stubInsertResult({
         id: "token-uuid-1",
         name: "my-token",
@@ -543,7 +623,9 @@ describe("POST /api/tokens", () => {
         createdAt: new Date(),
       });
 
-      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: ["tokens:write"] }),
+      );
 
       const response = await handler(buildEvent(userId, ["tokens:write"]));
 
