@@ -56,10 +56,13 @@
         </AppAlert>
 
         <AppAlert tone="info" title="What this does">
-          Sends the payload below through this source's real signature check and
-          field mapping — the same code a live delivery runs — without creating
-          a record. Edit the payload to match your provider's actual shape,
-          especially if this source has a custom field mapping.
+          Runs the payload below through this source's real field mapping — the
+          same code a live delivery runs — without creating a record. For
+          GitHub/Stripe sources it also confirms the stored secret produces a
+          signature this app accepts; it cannot confirm the provider's own copy
+          of the secret matches (see the result below for details). Edit the
+          payload to match your provider's actual shape, especially if this
+          source has a custom field mapping.
         </AppAlert>
 
         <div style="margin-top: 16px">
@@ -122,6 +125,10 @@
                 <span class="faint">file path</span>
                 {{ testResult.fieldMapping.filePath }}
               </div>
+              <div>
+                <span class="faint">frontmatter</span>
+                {{ frontmatterPreview }}
+              </div>
             </div>
           </div>
         </div>
@@ -180,6 +187,15 @@ const payloadError = computed(() =>
 
 const testResult = computed(() => props.testEventState.result);
 
+// Compact one-line preview of the would-be YAML frontmatter block, so the
+// server's frontmatter field (which the response already carries) is
+// actually surfaced somewhere rather than sent and never rendered.
+const frontmatterPreview = computed(() =>
+  testResult.value
+    ? JSON.stringify(testResult.value.fieldMapping.frontmatter)
+    : "",
+);
+
 const SIGNATURE_TONE = {
   not_required: "info",
   verified: "ok",
@@ -189,7 +205,10 @@ const SIGNATURE_TONE = {
 
 const SIGNATURE_TITLE = {
   not_required: "No signature required",
-  verified: "Signature verified",
+  // Not "Signature verified" — that would overstate what a self-signed test
+  // can prove (see the message body, and the server-side comment on
+  // buildSignatureCheck in server/api/sources/[uuid]/test.post.ts).
+  verified: "Secret signs correctly",
   failed: "Signature check failed",
   not_verifiable: "Signature check not verifiable",
 } as const;

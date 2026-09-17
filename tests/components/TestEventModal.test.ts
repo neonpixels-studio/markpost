@@ -124,7 +124,7 @@ describe("TestEventModal", () => {
   });
 
   it.each([
-    ["verified", "ok", "Signature verified"],
+    ["verified", "ok", "Secret signs correctly"],
     ["failed", "err", "Signature check failed"],
     ["not_verifiable", "warn", "Signature check not verifiable"],
     ["not_required", "info", "No signature required"],

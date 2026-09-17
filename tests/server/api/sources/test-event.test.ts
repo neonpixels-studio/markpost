@@ -48,12 +48,36 @@ function buildBody(attributes: Record<string, unknown> = {}) {
 
 // Two-step chain (select -> from -> where -> limit) returning the given rows,
 // mirroring the source lookup used by every other sources/:uuid handler.
-function stubSource(row: Partial<typeof sampleSource> | null) {
+// The handler issues up to two selects: the source lookup, then (only if it
+// gets as far as buildFieldMappingPreview) the userSettings lookup for
+// filenameTemplate (server/utils/userSettings.ts). Queuing them with
+// mockReturnValueOnce — rather than one shared mockReturnValue every select
+// call resolves to — keeps the two independent, so a test asserting on the
+// source query's `where` args can't accidentally read the settings query's,
+// and a test can stub a specific filenameTemplate without it leaking into the
+// source row. Omitting filenameTemplate (the default for every test that
+// doesn't care) yields an empty settings result, which fetchFilenameTemplate
+// falls back from — the same effective behavior every test here relied on
+// before this was split out.
+function stubSource(
+  row: Partial<typeof sampleSource> | null,
+  filenameTemplate?: string,
+) {
   const rows = row ? [{ ...sampleSource, ...row }] : [];
   const limit = vi.fn(() => Promise.resolve(rows));
   const where = vi.fn(() => ({ limit }));
   const from = vi.fn(() => ({ where }));
-  selectMock.mockReturnValue({ from });
+
+  const settingsRows =
+    filenameTemplate === undefined ? [] : [{ filenameTemplate }];
+  const settingsLimit = vi.fn(() => Promise.resolve(settingsRows));
+  const settingsWhere = vi.fn(() => ({ limit: settingsLimit }));
+  const settingsFrom = vi.fn(() => ({ where: settingsWhere }));
+
+  selectMock
+    .mockReturnValueOnce({ from })
+    .mockReturnValueOnce({ from: settingsFrom });
+
   return { from, where, limit };
 }
 
@@ -113,6 +137,21 @@ describe("POST /api/sources/:uuid/test", () => {
     expect(attributes.fieldMapping).toMatchObject({
       title: "Test event from markpost",
       tags: ["test"],
+    });
+  });
+
+  it("shapes the previewed filePath with the user's configured filenameTemplate", async () => {
+    stubSource({ provider: null, providerSecret: null }, "{{slug}}.md");
+
+    const response = await handler(buildEvent(userId));
+
+    const attributes = attributesOf(response);
+    // Default sample payload's title ("Test event from markpost") slugifies to
+    // this — proves fetchFilenameTemplate's result actually reaches
+    // parseWebhookPayload rather than always falling back to the
+    // {{date}}-{{slug}}.md default (which this template omits the date from).
+    expect(attributes.fieldMapping).toMatchObject({
+      filePath: "test-event-from-markpost.md",
     });
   });
 

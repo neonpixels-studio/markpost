@@ -175,9 +175,9 @@ function buildSignatureHeaders(
 }
 
 // Mirrors the exact dispatch verifyProviderSignature uses at real delivery
-// time (server/api/hooks/[slug].post.ts), so "verified" here means the same
-// code path a live webhook goes through would also pass. Two branches are
-// handled before ever calling it:
+// time (server/api/hooks/[slug].post.ts), so this exercises the same code
+// path a live webhook goes through. Two branches are handled before ever
+// calling it:
 // - No provider: slug-only sources need no signature, so there's nothing to
 //   exercise — report that plainly rather than a vacuous "verified".
 // - Shared-secret providers (zapier/shortcuts): only a SHA-256 hash of the
@@ -186,6 +186,12 @@ function buildSignatureHeaders(
 //   generated, so this can never be re-signed from the server. Reported as
 //   "not_verifiable" (not "failed") since that's a storage design choice, not
 //   a misconfiguration.
+// For github/stripe, note what "verified" can and cannot prove: this signs
+// the test payload with the source's OWN stored secret and then verifies that
+// same signature (see buildSignatureHeaders below), so a pass only shows the
+// secret is present, well-formed, and accepted by this app's HMAC logic — it
+// cannot show the provider's own copy of the secret matches (see the
+// "verified" branch's message for the caveat surfaced to the user).
 function buildSignatureCheck(
   provider: string,
   rawBody: string,
@@ -217,7 +223,14 @@ function buildSignatureCheck(
   if (result.ok) {
     return {
       status: "verified",
-      message: `A ${provider} signature computed from this source's stored secret verified successfully against this test payload.`,
+      // Deliberately not phrased as "delivery confirmed": this signs the test
+      // payload with the source's OWN stored secret and then verifies that
+      // same signature, so it can only ever prove the secret is present,
+      // well-formed, and accepted by this app's own HMAC logic — it cannot
+      // prove the provider's copy of the secret matches (a typo pasted into
+      // Stripe/GitHub's own webhook settings would still 401 every real
+      // delivery while this reports "verified").
+      message: `This source's stored secret produced a valid ${provider} signature that markpost's own verification logic accepted. This confirms the secret is present and usable here — it cannot confirm ${provider} itself has the exact same value configured. If real deliveries still fail, re-copy the current secret from this source into ${provider}.`,
     };
   }
 
