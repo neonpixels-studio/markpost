@@ -21,6 +21,12 @@ type ApiTokenAuthResult = {
   // NULL preserved from the column: "full access" (see requireScope in
   // server/utils/auth.ts), not "no scopes".
   scopes: string[] | null;
+  // NULL means "never expires". Carried into context so a mint request
+  // (server/api/tokens/index.post.ts) can bound a newly minted token's
+  // lifetime to its own — otherwise a short-lived leaked token could mint
+  // itself a longer-lived (or permanent) replacement and outlive its own
+  // expiry, the same escalation the scopes subset check closes for scope.
+  expiresAt: Date | null;
 };
 
 async function authenticateViaApiToken(
@@ -52,7 +58,11 @@ async function authenticateViaApiToken(
 
   await refreshTokenLastUsedAt(matched.id, matched.lastUsedAt);
 
-  return { userId: matched.userId, scopes: parseScopes(matched.scopes) };
+  return {
+    userId: matched.userId,
+    scopes: parseScopes(matched.scopes),
+    expiresAt: matched.expiresAt,
+  };
 }
 
 async function authenticateViaClerk(token: string): Promise<string | null> {
@@ -65,11 +75,15 @@ async function authenticateViaClerk(token: string): Promise<string | null> {
   }
 }
 
-const HOOKS_PATH_PREFIX = "/api/hooks/";
-const BILLING_WEBHOOK_PATH = "/api/billing/webhook";
+// Exported so tests/server/api/scopeCoverage.test.ts can verify its list of
+// scope-exempt public handlers against this same bypass list instead of
+// hand-duplicating it — the two are the same security-relevant decision and
+// must not drift apart.
+export const HOOKS_PATH_PREFIX = "/api/hooks/";
+export const BILLING_WEBHOOK_PATH = "/api/billing/webhook";
 // Clerk signs this webhook with a Svix signature (verified in the handler), not
 // a bearer token, so it must bypass the token/session auth below.
-const CLERK_WEBHOOK_PATH = "/api/webhooks/clerk";
+export const CLERK_WEBHOOK_PATH = "/api/webhooks/clerk";
 const RETRY_AFTER_HEADER = "Retry-After";
 
 // Throttles every authenticated /api/* request (see apiThrottle.ts for why
@@ -150,5 +164,11 @@ export default defineEventHandler(async (event) => {
   // where NULL already means full access (see requireScope).
   event.context.tokenScopes = viaApiToken
     ? (apiTokenAuth?.scopes ?? null)
+    : null;
+  // A Clerk session has no token lifetime to inherit (null = unconstrained);
+  // an API token's own expiresAt bounds what it can mint (see
+  // clampToCallerExpiry in server/api/tokens/index.post.ts).
+  event.context.tokenExpiresAt = viaApiToken
+    ? (apiTokenAuth?.expiresAt ?? null)
     : null;
 });

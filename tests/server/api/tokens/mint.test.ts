@@ -27,9 +27,10 @@ const userId = "user_abc123";
 function buildEvent(
   contextUserId: string | undefined,
   tokenScopes?: string[] | null,
+  tokenExpiresAt?: Date | null,
 ): H3Event {
   return {
-    context: { userId: contextUserId, tokenScopes },
+    context: { userId: contextUserId, tokenScopes, tokenExpiresAt },
   } as unknown as H3Event;
 }
 
@@ -588,6 +589,97 @@ describe("POST /api/tokens", () => {
       expect((response as { data: { id: string } }).data.id).toBe(
         "token-uuid-1",
       );
+    });
+  });
+
+  // A caller with a bounded lifetime of its own must not be able to mint a
+  // token that outlives it — the expiry half of caller-authority
+  // containment (assertWithinCallerAuthority above is the scopes half).
+  describe("expiry containment (caller authority)", () => {
+    function stubInsertCapturingRow() {
+      let capturedRow: { expiresAt?: Date | null } | undefined;
+
+      const returning = vi.fn(async () => [
+        {
+          id: "token-uuid-1",
+          name: "my-token",
+          prefix: "mp_live_abcd",
+          hashedToken: "some-hash",
+          createdAt: new Date(),
+          expiresAt: capturedRow?.expiresAt ?? null,
+        },
+      ]);
+      const values = vi.fn((row: { expiresAt?: Date | null }) => {
+        capturedRow = row;
+        return { returning };
+      });
+      insertMock.mockReturnValue({ values });
+
+      return () => capturedRow;
+    }
+
+    it("clamps a longer requested expiry down to the caller's own expiry", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+      const callerExpiresAt = new Date("2026-07-01T00:00:00.000Z");
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", expiresInDays: 365 }),
+      );
+
+      await handler(buildEvent(userId, null, callerExpiresAt));
+
+      expect(getCapturedRow()?.expiresAt).toEqual(callerExpiresAt);
+    });
+
+    it("clamps an omitted (never-expires) request down to the caller's own expiry", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+      const callerExpiresAt = new Date("2026-07-01T00:00:00.000Z");
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await handler(buildEvent(userId, null, callerExpiresAt));
+
+      expect(getCapturedRow()?.expiresAt).toEqual(callerExpiresAt);
+    });
+
+    it("keeps a requested expiry that is already shorter than the caller's own", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-06-01T00:00:00.000Z"));
+
+      const getCapturedRow = stubInsertCapturingRow();
+      const callerExpiresAt = new Date("2027-01-01T00:00:00.000Z");
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", expiresInDays: 30 }),
+      );
+
+      await handler(buildEvent(userId, null, callerExpiresAt));
+
+      expect(getCapturedRow()?.expiresAt).toEqual(
+        new Date("2026-07-01T00:00:00.000Z"),
+      );
+
+      vi.useRealTimers();
+    });
+
+    it("does not clamp when the caller itself never expires (tokenExpiresAt null)", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await handler(buildEvent(userId, null, null));
+
+      expect(getCapturedRow()?.expiresAt).toBeNull();
+    });
+
+    it("does not clamp a Clerk session (no token expiresAt to inherit)", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await handler(buildEvent(userId, undefined, undefined));
+
+      expect(getCapturedRow()?.expiresAt).toBeNull();
     });
   });
 

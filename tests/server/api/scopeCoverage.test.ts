@@ -1,6 +1,15 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// server/middleware/auth.ts's default export is `defineEventHandler(...)`,
+// invoked at module load time, so importing it (purely to read its exported
+// path constants below) needs the same global stub every other test that
+// imports a Nitro handler module already uses.
+vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
+
+const { BILLING_WEBHOOK_PATH, CLERK_WEBHOOK_PATH, HOOKS_PATH_PREFIX } =
+  await import("../../../server/middleware/auth");
 
 // Every authenticated handler must gate on a scope (server/utils/auth.ts
 // requireScope), or a scoped API token silently gets full access to that
@@ -45,9 +54,11 @@ const EXPECTED_HANDLER_SCOPES: Record<string, string> = {
 };
 
 // Public webhook/hook handlers bypass the auth middleware entirely (verified
-// by their own signature — see server/middleware/auth.ts's path bypass
-// list), so they never call requireUser and are exempt from this coverage
-// check rather than missing entries in EXPECTED_HANDLER_SCOPES.
+// by their own signature), so they never call requireUser and are exempt
+// from this coverage check rather than missing entries in
+// EXPECTED_HANDLER_SCOPES. Cross-checked below against the middleware's own
+// exported bypass-path constants, so this list can't silently drift from the
+// real security-relevant decision it claims to mirror.
 const PUBLIC_HANDLERS = new Set([
   "billing/webhook.post.ts",
   "hooks/[slug].post.ts",
@@ -66,53 +77,74 @@ function readHandlerSource(relativePath: string): string {
   return readFileSync(join(API_DIR, relativePath), "utf8");
 }
 
-function callsRequireUser(source: string): boolean {
-  return source.includes("requireUser(event)");
-}
-
 function requireScopeCallFor(relativePath: string): string | undefined {
   const scope = EXPECTED_HANDLER_SCOPES[relativePath];
   return scope && `requireScope(event, "${scope}");`;
 }
 
+// A Nitro filename maps to its route by stripping the method suffix and
+// prefixing "/api/" — "hooks/[slug].post.ts" -> "/api/hooks/[slug]",
+// "billing/webhook.post.ts" -> "/api/billing/webhook".
+function handlerRoutePath(relativePath: string): string {
+  const withoutMethodSuffix = relativePath.replace(
+    /\.(get|post|put|patch|delete)\.ts$/,
+    "",
+  );
+  return `/api/${withoutMethodSuffix}`;
+}
+
 describe("server/api scope coverage", () => {
   const handlerFiles = listHandlerFiles();
-  const authenticatedHandlers = handlerFiles.filter((relativePath) =>
-    callsRequireUser(readHandlerSource(relativePath)),
-  );
 
-  it("finds at least one authenticated handler (sanity check for the file walk)", () => {
-    expect(authenticatedHandlers.length).toBeGreaterThan(0);
+  it("finds at least one handler file (sanity check for the file walk)", () => {
+    expect(handlerFiles.length).toBeGreaterThan(0);
   });
 
-  it("every authenticated handler has an entry in EXPECTED_HANDLER_SCOPES", () => {
-    const missingEntries = authenticatedHandlers.filter(
-      (relativePath) => !(relativePath in EXPECTED_HANDLER_SCOPES),
+  // Deliberately does NOT gate on "calls requireUser(event)" the way the
+  // per-scope checks below do: a handler that reads event.context.userId
+  // directly, or authenticates through some future helper, would be
+  // invisible to a requireUser-string filter and silently ship unscoped.
+  // Every single file must be accounted for by name, with no way to opt out
+  // by construction.
+  it("every handler file is classified as either scoped or public", () => {
+    const unclassified = handlerFiles.filter(
+      (relativePath) =>
+        !(relativePath in EXPECTED_HANDLER_SCOPES) &&
+        !PUBLIC_HANDLERS.has(relativePath),
     );
 
-    expect(missingEntries).toEqual([]);
+    expect(unclassified).toEqual([]);
   });
 
-  it("every EXPECTED_HANDLER_SCOPES entry still exists on disk and still authenticates", () => {
-    const staleEntries = Object.keys(EXPECTED_HANDLER_SCOPES).filter(
-      (relativePath) => !authenticatedHandlers.includes(relativePath),
-    );
+  it("every EXPECTED_HANDLER_SCOPES and PUBLIC_HANDLERS entry still exists on disk", () => {
+    const staleEntries = [
+      ...Object.keys(EXPECTED_HANDLER_SCOPES),
+      ...PUBLIC_HANDLERS,
+    ].filter((relativePath) => !handlerFiles.includes(relativePath));
 
     expect(staleEntries).toEqual([]);
   });
 
-  it("no authenticated handler is left off both the expected map and the public exemption list", () => {
-    const unaccountedFor = handlerFiles.filter((relativePath) => {
-      const isExempt = PUBLIC_HANDLERS.has(relativePath);
-      const isCovered = relativePath in EXPECTED_HANDLER_SCOPES;
-      return (
-        !isExempt &&
-        !isCovered &&
-        callsRequireUser(readHandlerSource(relativePath))
-      );
+  it("every scoped handler still calls requireUser (still authenticates)", () => {
+    const noLongerAuthenticated = Object.keys(EXPECTED_HANDLER_SCOPES).filter(
+      (relativePath) =>
+        !readHandlerSource(relativePath).includes("requireUser(event)"),
+    );
+
+    expect(noLongerAuthenticated).toEqual([]);
+  });
+
+  it("every public exemption is actually bypassed by the auth middleware", () => {
+    const notBypassed = [...PUBLIC_HANDLERS].filter((relativePath) => {
+      const routePath = handlerRoutePath(relativePath);
+      const isBypassed =
+        routePath.startsWith(HOOKS_PATH_PREFIX) ||
+        routePath === BILLING_WEBHOOK_PATH ||
+        routePath === CLERK_WEBHOOK_PATH;
+      return !isBypassed;
     });
 
-    expect(unaccountedFor).toEqual([]);
+    expect(notBypassed).toEqual([]);
   });
 
   it.each(Object.entries(EXPECTED_HANDLER_SCOPES))(

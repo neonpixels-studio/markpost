@@ -157,7 +157,11 @@ function normalizeScopes(scopes: unknown): ScopeName[] | null {
     throw invalidScopesError();
   }
 
-  return scopes;
+  // De-duplicated so the persisted column, the 201 response, and every
+  // later GET /api/tokens agree on the same set (parseScopes de-duplicates
+  // on read, so a write-side duplicate would otherwise disagree with what a
+  // client sees a moment later).
+  return Array.from(new Set(scopes));
 }
 
 function assertWithinCallerAuthority(
@@ -183,6 +187,30 @@ function assertWithinCallerAuthority(
   if (exceedsCallerAuthority) {
     throw exceedsCallerAuthorityError();
   }
+}
+
+// Bounds a newly minted token's lifetime to the minting token's own lifetime
+// — the expiry half of caller-authority containment, alongside
+// assertWithinCallerAuthority for scopes above. Without this, a short-lived
+// leaked token could mint itself a longer-lived (or permanent, by omitting
+// expiresInDays) replacement and outlive its own revocation/expiry, making
+// the short expiry that was supposed to contain a leak worthless. A null
+// callerExpiresAt (a Clerk session, which has no token to inherit a
+// lifetime from, or a caller token that itself never expires) means no
+// constraint to inherit.
+function clampToCallerExpiry(
+  expiresAt: Date | null,
+  callerExpiresAt: Date | null | undefined,
+): Date | null {
+  if (callerExpiresAt == null) {
+    return expiresAt;
+  }
+
+  if (expiresAt === null || expiresAt > callerExpiresAt) {
+    return callerExpiresAt;
+  }
+
+  return expiresAt;
 }
 
 type InsertTokenInput = {
@@ -231,7 +259,10 @@ export default defineEventHandler(
       );
 
       const rawToken = generateRawToken();
-      const expiresAt = computeExpiresAt(expiresInDays);
+      const expiresAt = clampToCallerExpiry(
+        computeExpiresAt(expiresInDays),
+        event.context.tokenExpiresAt as Date | null | undefined,
+      );
       const record = await insertToken(getDb(), {
         userId,
         name: attributes.name,

@@ -75,10 +75,18 @@ const userId = "user_abc123";
 const tokenId = "token-uuid-1";
 
 function buildEvent(path: string = "/api/records"): H3Event & {
-  context: { userId?: string; tokenScopes?: string[] | null };
+  context: {
+    userId?: string;
+    tokenScopes?: string[] | null;
+    tokenExpiresAt?: Date | null;
+  };
 } {
   return { path, context: {} } as unknown as H3Event & {
-    context: { userId?: string; tokenScopes?: string[] | null };
+    context: {
+      userId?: string;
+      tokenScopes?: string[] | null;
+      tokenExpiresAt?: Date | null;
+    };
   };
 }
 
@@ -396,6 +404,46 @@ describe("auth middleware", () => {
       await handler(event);
 
       expect(event.context.tokenScopes).toBeNull();
+    });
+  });
+
+  describe("tokenExpiresAt context (mint-time caller-authority clamp reads this)", () => {
+    it("carries the token's own expiresAt through to context", async () => {
+      const rawToken = generateRawToken();
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, expiresAt }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenExpiresAt).toEqual(expiresAt);
+    });
+
+    it("sets tokenExpiresAt to null for a token that never expires", async () => {
+      const rawToken = generateRawToken();
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, expiresAt: null }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenExpiresAt).toBeNull();
+    });
+
+    it("sets tokenExpiresAt to null for a Clerk session (no token to inherit a lifetime from)", async () => {
+      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
+      mockGetHeader.mockReturnValue(`Bearer ${clerkToken}`);
+      mockVerifyToken.mockResolvedValue({ sub: userId });
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenExpiresAt).toBeNull();
     });
   });
 
