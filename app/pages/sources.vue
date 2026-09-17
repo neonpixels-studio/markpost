@@ -157,6 +157,7 @@
 
     <TestEventModal
       v-if="testEventState"
+      :key="testEventState.source.uuid"
       :test-event-state="testEventState"
       :submitting="isSendingTestEvent"
       :error="testEventError"
@@ -176,7 +177,7 @@ import {
   isSourceMappable,
   type FieldMappingConfig,
 } from "#shared/utils/fieldMapping";
-import { EMAIL_SOURCE_TYPE } from "#shared/utils/sourceTypes";
+import { isSourceTestable } from "#shared/utils/sourceTypes";
 import type { RotateState } from "~/types/rotateSecret";
 import type { FieldMappingState } from "~/types/fieldMapping";
 import type { TestEventState } from "~/types/testEvent";
@@ -508,7 +509,7 @@ const onTestEventRequested = (uuid: string) => {
   );
   // Mirrors SourceCard's own gate (isTestable): a source the card wouldn't
   // have shown the button for can't open the modal here either.
-  if (!source || source.attributes.type === EMAIL_SOURCE_TYPE) {
+  if (!source || !isSourceTestable(source.attributes.type)) {
     return;
   }
 

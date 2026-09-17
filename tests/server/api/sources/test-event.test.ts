@@ -14,7 +14,7 @@ const mockCreateError = vi.fn((options: object) => {
   return error;
 });
 
-const mockReadBody = vi.fn();
+const mockReadRawBody = vi.fn();
 const mockGetRouterParam = vi.fn();
 
 vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
@@ -41,6 +41,14 @@ function buildEvent(contextUserId: string | undefined): H3Event {
 
 function buildBody(attributes: Record<string, unknown> = {}) {
   return { data: { type: "sourceTestEvents", attributes } };
+}
+
+// The handler now reads the raw request body itself (readRawBody, not
+// readBody) so it can size-check the bytes before parsing them — see
+// parseRequestBody's comment in server/api/sources/[uuid]/test.post.ts. Tests
+// stub the raw JSON string this produces, rather than a pre-parsed object.
+function stubRequestBody(attributes: Record<string, unknown> = {}): void {
+  mockReadRawBody.mockResolvedValue(JSON.stringify(buildBody(attributes)));
 }
 
 // Two-step chain (select -> from -> where -> limit) returning the given rows,
@@ -108,11 +116,12 @@ function serializeSql(value: unknown): string {
 
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
-  vi.stubGlobal("readBody", mockReadBody);
+  vi.stubGlobal("readRawBody", mockReadRawBody);
   vi.stubGlobal("getRouterParam", mockGetRouterParam);
   mockCreateError.mockClear();
-  mockReadBody.mockReset();
-  mockReadBody.mockResolvedValue(undefined);
+  mockReadRawBody.mockReset();
+  // Matches h3's readRawBody behavior for a request with no body.
+  mockReadRawBody.mockResolvedValue(undefined);
   mockGetRouterParam.mockReset();
   mockGetRouterParam.mockReturnValue(validUuid);
   selectMock.mockReset();
@@ -225,9 +234,9 @@ describe("POST /api/sources/:uuid/test", () => {
       provider: null,
       fieldMapping: { title: "data.subject", content: "data.body" },
     });
-    mockReadBody.mockResolvedValue(
-      buildBody({ payload: { data: { subject: "Hi", body: "Body text" } } }),
-    );
+    stubRequestBody({
+      payload: { data: { subject: "Hi", body: "Body text" } },
+    });
 
     const response = await handler(buildEvent(userId));
 
@@ -243,7 +252,7 @@ describe("POST /api/sources/:uuid/test", () => {
 
   it("throws 422 when the supplied payload is not a JSON object", async () => {
     stubSource({ provider: null });
-    mockReadBody.mockResolvedValue(buildBody({ payload: "not-an-object" }));
+    stubRequestBody({ payload: "not-an-object" });
 
     await expect(handler(buildEvent(userId))).rejects.toMatchObject({
       statusCode: 422,
@@ -260,16 +269,46 @@ describe("POST /api/sources/:uuid/test", () => {
     });
   });
 
-  it("throws 413 for a payload exceeding the same size cap real webhook deliveries are held to", async () => {
+  it("throws 413 for a request body exceeding the same size cap real webhook deliveries are held to", async () => {
     stubSource({ provider: null });
     // MAX_WEBHOOK_BODY_BYTES is 1 MiB (webhookBodyLimit.ts); a single oversized
     // field comfortably clears it once JSON-stringified.
-    mockReadBody.mockResolvedValue(
-      buildBody({ payload: { content: "x".repeat(1_100_000) } }),
-    );
+    stubRequestBody({ payload: { content: "x".repeat(1_100_000) } });
 
     await expect(handler(buildEvent(userId))).rejects.toMatchObject({
       statusCode: 413,
+    });
+  });
+
+  it("throws 413 (not 400) for an oversized body that also happens to be invalid JSON — proves size is checked BEFORE JSON.parse runs", async () => {
+    stubSource({ provider: null });
+    // Neither valid JSON nor small — if parseRequestBody ever regressed to
+    // parsing first, this would 400 on the malformed JSON instead of 413 on
+    // the size, silently reintroducing "read + parse an arbitrarily large
+    // body before any size check runs" for a body that's also malformed.
+    mockReadRawBody.mockResolvedValue("{not valid json,".repeat(100_000));
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 413,
+    });
+  });
+
+  it("throws 400 for a small request body that is not valid JSON at all", async () => {
+    stubSource({ provider: null });
+    mockReadRawBody.mockResolvedValue("{not valid json");
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(mockCreateError).toHaveBeenCalledWith({
+      statusCode: 400,
+      data: {
+        errors: [
+          expect.objectContaining({
+            detail: expect.stringContaining("must be valid JSON"),
+          }),
+        ],
+      },
     });
   });
 

@@ -76,6 +76,27 @@ describe("TestEventModal", () => {
     ).toContain("Test event from markpost");
   });
 
+  it("does NOT reset its edited payload when props swap to a different source in place (documents why the page must :key this component by source uuid)", async () => {
+    const wrapper = mount(TestEventModal, {
+      ...globalConfig,
+      props: { testEventState: stateFor({ source: { uuid: "a", name: "A" } }) },
+    });
+    await payloadTextarea(wrapper).setValue('{"title": "edited for A"}');
+
+    // Swaps the prop on the SAME instance (no remount) — this is what a
+    // component update without a :key does. payloadText is seeded once in a
+    // plain ref() with no watcher, so it does not re-seed here; the page
+    // (sources.vue) must force a fresh instance via :key="source.uuid" for a
+    // retarget to actually reset the editor.
+    await wrapper.setProps({
+      testEventState: stateFor({ source: { uuid: "b", name: "B" } }),
+    });
+
+    expect(
+      (payloadTextarea(wrapper).element as HTMLTextAreaElement).value,
+    ).toContain("edited for A");
+  });
+
   it("emits send with the parsed JSON payload", async () => {
     const wrapper = mount(TestEventModal, {
       ...globalConfig,
@@ -136,14 +157,20 @@ describe("TestEventModal", () => {
         props: {
           testEventState: stateFor(
             {},
-            makeResult({ signatureCheck: { status, message: "details" } }),
+            makeResult({
+              // A sentinel that can't collide with the modal's own static
+              // copy (the always-rendered "What this does" alert happens to
+              // contain the word "details") — otherwise this assertion could
+              // pass even if the server's message were never rendered.
+              signatureCheck: { status, message: "SIG_MESSAGE_SENTINEL" },
+            }),
           ),
         },
       });
       const alert = wrapper.findAll(".alert").at(-1);
       expect(alert?.classes()).toContain(tone);
-      expect(wrapper.text()).toContain(title);
-      expect(wrapper.text()).toContain("details");
+      expect(alert?.text()).toContain(title);
+      expect(alert?.text()).toContain("SIG_MESSAGE_SENTINEL");
     },
   );
 

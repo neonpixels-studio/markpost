@@ -141,7 +141,7 @@ import {
   SHARED_SECRET_PROVIDER_IDS,
 } from "#shared/utils/webhookSecrets";
 import { isSourceMappable } from "#shared/utils/fieldMapping";
-import { EMAIL_SOURCE_TYPE } from "#shared/utils/sourceTypes";
+import { isSourceTestable } from "#shared/utils/sourceTypes";
 
 const ICON_BY_TYPE: Record<string, string> = {
   webhook: "zap",
@@ -200,15 +200,11 @@ const isRotatable = computed(() =>
   isRotatableProvider(props.source.attributes.provider ?? ""),
 );
 
-// A test event exercises applyFieldMapping and the hooks endpoint's signature
-// dispatch (server/api/sources/[uuid]/test.post.ts) — both of which only ever
-// run for the JSON webhook ingest path. Email sources ingest through a
-// separate path (parseEmailPayload, via the direct record-create API) that
-// never reads a field mapping or checks a signature, so there is nothing for
-// this action to test there. Mirrors EMAIL_SOURCE_TYPE's carve-out for
-// isSourceMappable above.
-const isTestable = computed(
-  () => props.source.attributes.type !== EMAIL_SOURCE_TYPE,
+// See isSourceTestable's own comment (shared/utils/sourceTypes.ts) for why
+// this carve-out exists and why it's centralized rather than a local
+// `!== EMAIL_SOURCE_TYPE` comparison.
+const isTestable = computed(() =>
+  isSourceTestable(props.source.attributes.type),
 );
 
 const isMappable = computed(() =>

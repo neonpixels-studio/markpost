@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import type { H3Event } from "h3";
 import { getDb } from "../../../db";
 import { sources } from "../../../db/schema";
 import type { ApiRequest, ApiResponse } from "../../../types/api.types";
@@ -11,7 +12,7 @@ import {
   buildStripeSignatureHeader,
   GITHUB_PROVIDER,
   GITHUB_SIGNATURE_HEADER,
-  isSharedSecretProvider,
+  isHashedStorageProvider,
   normalizeProvider,
   STRIPE_PROVIDER,
   STRIPE_SIGNATURE_HEADER,
@@ -21,7 +22,7 @@ import { fetchFilenameTemplate } from "../../../utils/userSettings";
 import { sourceNotFoundError } from "../../../utils/sourceErrors";
 import { invalidUuidError, isValidUuid } from "../../../utils/uuid";
 import { assertBodyWithinLimit } from "../../../utils/webhookBodyLimit";
-import { EMAIL_SOURCE_TYPE } from "#shared/utils/sourceTypes";
+import { isSourceTestable } from "#shared/utils/sourceTypes";
 import { buildTestEventSamplePayload } from "#shared/utils/testEventSamplePayload";
 
 type SourceRow = {
@@ -94,6 +95,19 @@ function invalidPayloadError(): ApiError {
   );
 }
 
+function malformedRequestBodyError(): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "400",
+        title: "Bad Request",
+        detail: "Request body must be valid JSON.",
+      },
+    ],
+    400,
+  );
+}
+
 function notTestableSourceError(): ApiError {
   return new ApiError(
     [
@@ -128,6 +142,31 @@ async function findUserSource(
     .limit(1);
 
   return row ?? null;
+}
+
+// Reads and parses the request body manually (readRawBody, not readBody)
+// so the size cap below runs against the raw bytes BEFORE they are parsed —
+// mirroring server/api/hooks/[slug].post.ts's own ordering (Content-Length
+// pre-check, then assertBodyWithinLimit right after readRawBody, before any
+// JSON.parse). readBody would parse an arbitrarily large body first and only
+// let a cap on the re-serialized payload catch it afterwards, by which point
+// the expensive part (reading + parsing) already happened on an
+// authenticated endpoint with no size ceiling of its own.
+async function parseRequestBody(
+  event: H3Event,
+): Promise<TestEventRequestBody | undefined> {
+  const rawRequestBody = (await readRawBody(event)) ?? "";
+  assertBodyWithinLimit(rawRequestBody);
+
+  if (!rawRequestBody) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(rawRequestBody) as TestEventRequestBody;
+  } catch {
+    throw malformedRequestBodyError();
+  }
 }
 
 function resolveTestPayload(
@@ -206,7 +245,14 @@ function buildSignatureCheck(
     };
   }
 
-  if (isSharedSecretProvider(provider)) {
+  // isHashedStorageProvider (not isSharedSecretProvider): the reason this
+  // can't be re-signed is a STORAGE fact (only a hash is persisted), not an
+  // auth-scheme fact (shared-secret vs HMAC). The two sets happen to coincide
+  // today, but branching on the storage predicate means a future
+  // shared-secret provider that stores plaintext would correctly fall through
+  // to the HMAC/verify path below instead of being wrongly told it can't be
+  // checked.
+  if (isHashedStorageProvider(provider)) {
     return {
       status: "not_verifiable",
       message: `${provider} authenticates with a shared secret that markpost stores only as a one-way hash, so it can't be re-signed from the server to test here. Copy the current secret from this source's card into ${provider} to confirm delivery for real. Field mapping below was still tested against your sample payload.`,
@@ -275,19 +321,16 @@ export default defineEventHandler(
         throw sourceNotFoundError();
       }
 
-      if (source.type === EMAIL_SOURCE_TYPE) {
+      if (!isSourceTestable(source.type)) {
         throw notTestableSourceError();
       }
 
-      const body = (await readBody(event)) as TestEventRequestBody | undefined;
+      // parseRequestBody enforces the same size cap a real delivery is held
+      // to (webhookBodyLimit.ts) against the raw request bytes BEFORE
+      // parsing — see its own comment for why that ordering matters.
+      const body = await parseRequestBody(event);
       const payload = resolveTestPayload(body);
       const rawBody = JSON.stringify(payload);
-      // A caller-supplied payload should be held to the same cap a real
-      // delivery is (webhookBodyLimit.ts) — otherwise this reports "verified"
-      // for a payload real ingest would 413 on, and leaves an authenticated
-      // endpoint accepting unbounded JSON into applyFieldMapping/
-      // parseWebhookPayload with no size ceiling.
-      assertBodyWithinLimit(rawBody);
       const provider = normalizeProvider(source.provider);
 
       const signatureCheck = buildSignatureCheck(
