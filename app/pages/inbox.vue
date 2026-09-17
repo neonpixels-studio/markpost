@@ -193,6 +193,7 @@
                 <InputCheckbox
                   :model-value="isAllVisibleSelected"
                   :aria-label="selectAllLabel"
+                  :disabled="isBulkActionInFlight"
                   @update:model-value="toggleSelectAllVisible"
                 />
               </span>

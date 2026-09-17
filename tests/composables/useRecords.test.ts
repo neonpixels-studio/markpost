@@ -447,6 +447,133 @@ describe("useRecords selection", () => {
     expect(selectedCount.value).toBe(0);
   });
 
+  // Regression guard for #278: a partial-failure bulk action leaves the
+  // still-failed uuids selected for retry, alongside an actionError
+  // describing the failure. If clearSelection ran anyway while that request
+  // was still in flight, it would wipe both out from under it, stranding the
+  // eventual result with nothing selected to retry. The toolbar's "clear"
+  // button is disabled during this window too, but the guard lives here
+  // because clearSelection has a second caller — toggleSelectAllVisible,
+  // reached via the header "select all" checkbox — that has no disabled
+  // state of its own.
+  it("does not clear the selection while a bulk action is in flight", async () => {
+    let resolveDelete!: (value: { meta: { deleted: number } }) => void;
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+
+    const {
+      selectedCount,
+      actionError,
+      toggleSelection,
+      clearSelection,
+      deleteRecords,
+    } = useRecords("all");
+    toggleSelection("uuid-1");
+
+    const pendingDelete = deleteRecords(["uuid-1"]);
+    clearSelection();
+    expect(selectedCount.value).toBe(1);
+    // Fails loud, matching every other rejection in this file, rather than
+    // silently dropping the click.
+    expect(actionError.value).toBe(
+      "Another bulk action is still running. Please wait.",
+    );
+
+    resolveDelete({ meta: { deleted: 1 } });
+    await pendingDelete;
+
+    // The action's own completion (pruneSelection) already empties the
+    // selection here, so re-select something unrelated first — otherwise
+    // this assertion would pass even if the guard never released.
+    toggleSelection("uuid-2");
+    expect(selectedCount.value).toBe(1);
+
+    clearSelection();
+    expect(selectedCount.value).toBe(0);
+  });
+
+  it("does not clear the selection via the header select-all toggle while a bulk action is in flight", async () => {
+    mockFetch.mockResolvedValueOnce({
+      data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+      meta: { hasMore: false },
+    });
+
+    const {
+      selectedCount,
+      actionError,
+      loadRecords,
+      toggleSelectAllVisible,
+      deleteRecords,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(2);
+
+    let resolveDelete!: (value: { meta: { deleted: number } }) => void;
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+    const pendingDelete = deleteRecords(["uuid-1", "uuid-2"]);
+
+    // isAllVisibleSelected is still true, so this reaches the clearSelection
+    // branch of toggleSelectAllVisible — the exact path the toolbar's
+    // disabled "clear" button doesn't cover.
+    toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(2);
+    expect(actionError.value).toBe(
+      "Another bulk action is still running. Please wait.",
+    );
+
+    resolveDelete({ meta: { deleted: 2 } });
+    await pendingDelete;
+  });
+
+  it("does not grow the selection via the header select-all toggle's select branch while a bulk action is in flight", async () => {
+    // Distinct from the test above: with fewer than all visible records
+    // selected, isAllVisibleSelected is false, so toggleSelectAllVisible
+    // takes its other branch (setSelection with every visible uuid) instead
+    // of routing through clearSelection. That branch needs its own guard —
+    // it mutates selectedUuids exactly as clearSelection does.
+    mockFetch.mockResolvedValueOnce({
+      data: [makeRecordResource("uuid-1"), makeRecordResource("uuid-2")],
+      meta: { hasMore: false },
+    });
+
+    const {
+      selectedCount,
+      actionError,
+      loadRecords,
+      toggleSelection,
+      toggleSelectAllVisible,
+      deleteRecords,
+    } = useRecords("all");
+    await loadRecords();
+    toggleSelection("uuid-1");
+    expect(selectedCount.value).toBe(1);
+
+    let resolveDelete!: (value: { meta: { deleted: number } }) => void;
+    mockFetch.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+    const pendingDelete = deleteRecords(["uuid-1"]);
+
+    toggleSelectAllVisible();
+    expect(selectedCount.value).toBe(1);
+    expect(actionError.value).toBe(
+      "Another bulk action is still running. Please wait.",
+    );
+
+    resolveDelete({ meta: { deleted: 1 } });
+    await pendingDelete;
+  });
+
   it("caps selection at BULK_ACTION_MAX_BATCH_SIZE and surfaces an error on the next attempt", () => {
     const { selectedCount, actionError, toggleSelection } = useRecords("all");
 
