@@ -161,7 +161,7 @@ function buildFilterConditions(
   userId: string,
   cursor: CursorPosition | null,
   filters: EventFilters,
-) {
+): SQL | undefined {
   const conditions: (SQL | undefined)[] = [eq(events.userId, userId)];
 
   if (filters.kind) {
@@ -265,7 +265,7 @@ export default defineEventHandler(
       return {
         data,
         meta: paginationMeta({ total, size, hasMore }),
-        links: eventPaginationLinks({ afterCursor, size, hasMore }),
+        links: eventPaginationLinks({ afterCursor, size, hasMore, filters }),
       };
     } catch (error) {
       return apiErrorHandler(error);

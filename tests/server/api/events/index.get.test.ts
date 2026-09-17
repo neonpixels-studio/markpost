@@ -281,13 +281,20 @@ describe("GET /api/events", () => {
     });
 
     it("takes the first value when filter[kind] is repeated", async () => {
-      const rows = [makeEventRow(1, { kind: "err" })];
-      stubSelectChain(rows, 1);
+      const { pageWhereFn } = stubSelectChain(
+        [makeEventRow(1, { kind: "err" })],
+        1,
+      );
       mockGetQuery.mockReturnValue({ "filter[kind]": ["err", "warn"] });
 
-      const response = await handler(buildEvent(userId));
+      await handler(buildEvent(userId));
 
-      expect(response.data).toHaveLength(1);
+      expect(pageWhereFn).toHaveBeenCalledWith({
+        conditions: [
+          { column: events.userId, value: userId },
+          { column: events.kind, value: "err" },
+        ],
+      });
     });
 
     it("throws 400 for an unrecognized kind", async () => {
@@ -344,15 +351,22 @@ describe("GET /api/events", () => {
     });
 
     it("takes the first value when filter[sourceId] is repeated", async () => {
-      const rows = [makeEventRow(1, { sourceId })];
-      stubSelectChain(rows, 1);
+      const { pageWhereFn } = stubSelectChain(
+        [makeEventRow(1, { sourceId })],
+        1,
+      );
       mockGetQuery.mockReturnValue({
         "filter[sourceId]": [sourceId, "550e8400-e29b-41d4-a716-446655440099"],
       });
 
-      const response = await handler(buildEvent(userId));
+      await handler(buildEvent(userId));
 
-      expect(response.data).toHaveLength(1);
+      expect(pageWhereFn).toHaveBeenCalledWith({
+        conditions: [
+          { column: events.userId, value: userId },
+          { column: events.sourceId, value: sourceId },
+        ],
+      });
     });
 
     it("returns an empty page when the source matches nothing, without erroring", async () => {
@@ -406,6 +420,10 @@ describe("GET /api/events", () => {
     ).toBe(true);
     expect(response.meta?.hasMore).toBe(true);
     expect(response.links?.next).toContain("page%5Bafter%5D=id-2");
+    // The filter must carry into the next link — otherwise a client that
+    // blindly follows links.next (see app/composables/useEvents.ts) falls
+    // back to the unfiltered feed as soon as it crosses a page boundary.
+    expect(response.links?.next).toContain("filter%5Bkind%5D=err");
   });
 
   it("applies filter[kind] and filter[sourceId] together with cursor pagination", async () => {

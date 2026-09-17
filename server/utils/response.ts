@@ -313,6 +313,13 @@ type EventPaginationLinksOptions = {
   afterCursor: string | null;
   size: number;
   hasMore: boolean;
+  // Carried into the next link so a caller following it keeps paging
+  // through the same filtered view instead of falling back to the
+  // unfiltered feed once the cursor crosses a page boundary.
+  filters?: {
+    kind?: string;
+    sourceId?: string;
+  };
 };
 
 type EventPaginationLinks = ApiResponseLinks & { next: string | null };
@@ -334,6 +341,14 @@ function buildEventNextLink(
     "page[after]": options.afterCursor,
     "page[size]": String(options.size),
   });
+
+  if (options.filters?.kind) {
+    params.set("filter[kind]", options.filters.kind);
+  }
+
+  if (options.filters?.sourceId) {
+    params.set("filter[sourceId]", options.filters.sourceId);
+  }
 
   return `/api/events?${params.toString()}`;
 }

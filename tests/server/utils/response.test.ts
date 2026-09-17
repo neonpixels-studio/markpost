@@ -5,6 +5,7 @@ import {
   userSettingsSerializer,
   paginationMeta,
   paginationLinks,
+  eventPaginationLinks,
 } from "../../../server/utils/response";
 
 const baseRecord = {
@@ -243,6 +244,56 @@ describe("paginationLinks", () => {
     });
 
     expect(result.prev).toBeNull();
+  });
+});
+
+describe("eventPaginationLinks", () => {
+  it("builds a next link with no filters", () => {
+    const result = eventPaginationLinks({
+      afterCursor: "some-uuid",
+      size: 10,
+      hasMore: true,
+    });
+
+    expect(result.next).toBe(
+      "/api/events?page%5Bafter%5D=some-uuid&page%5Bsize%5D=10",
+    );
+  });
+
+  it("carries filter[kind] and filter[sourceId] into the next link", () => {
+    const result = eventPaginationLinks({
+      afterCursor: "some-uuid",
+      size: 10,
+      hasMore: true,
+      filters: { kind: "err", sourceId: "source-uuid" },
+    });
+
+    expect(result.next).toBe(
+      "/api/events?page%5Bafter%5D=some-uuid&page%5Bsize%5D=10&filter%5Bkind%5D=err&filter%5BsourceId%5D=source-uuid",
+    );
+  });
+
+  it("omits a filter param that was not set", () => {
+    const result = eventPaginationLinks({
+      afterCursor: "some-uuid",
+      size: 10,
+      hasMore: true,
+      filters: { kind: "err" },
+    });
+
+    expect(result.next).toContain("filter%5Bkind%5D=err");
+    expect(result.next).not.toContain("sourceId");
+  });
+
+  it("returns null for next when hasMore is false, even with filters set", () => {
+    const result = eventPaginationLinks({
+      afterCursor: "some-uuid",
+      size: 10,
+      hasMore: false,
+      filters: { kind: "err" },
+    });
+
+    expect(result.next).toBeNull();
   });
 });
 
