@@ -20,6 +20,7 @@ import {
 import { fetchFilenameTemplate } from "../../../utils/userSettings";
 import { sourceNotFoundError } from "../../../utils/sourceErrors";
 import { invalidUuidError, isValidUuid } from "../../../utils/uuid";
+import { assertBodyWithinLimit } from "../../../utils/webhookBodyLimit";
 import { EMAIL_SOURCE_TYPE } from "#shared/utils/sourceTypes";
 import { buildTestEventSamplePayload } from "#shared/utils/testEventSamplePayload";
 
@@ -281,6 +282,12 @@ export default defineEventHandler(
       const body = (await readBody(event)) as TestEventRequestBody | undefined;
       const payload = resolveTestPayload(body);
       const rawBody = JSON.stringify(payload);
+      // A caller-supplied payload should be held to the same cap a real
+      // delivery is (webhookBodyLimit.ts) — otherwise this reports "verified"
+      // for a payload real ingest would 413 on, and leaves an authenticated
+      // endpoint accepting unbounded JSON into applyFieldMapping/
+      // parseWebhookPayload with no size ceiling.
+      assertBodyWithinLimit(rawBody);
       const provider = normalizeProvider(source.provider);
 
       const signatureCheck = buildSignatureCheck(

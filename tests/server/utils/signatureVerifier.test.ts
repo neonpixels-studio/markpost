@@ -11,6 +11,8 @@ import {
   isSecretBackedProvider,
   isManualSecretProvider,
   isHashedStorageProvider,
+  buildStripeSignatureHeader,
+  buildGithubSignatureHeader,
   SECRET_BACKED_PROVIDERS,
   MANUAL_SECRET_PROVIDERS,
   type VerificationResult,
@@ -417,4 +419,57 @@ describe("isHashedStorageProvider", () => {
       expect(isHashedStorageProvider(provider)).toBe(false);
     },
   );
+});
+
+describe("buildStripeSignatureHeader / buildGithubSignatureHeader", () => {
+  // Pinned against the independent fixtures in tests/server/helpers.ts (a
+  // hand-transcribed re-implementation of each provider's published signing
+  // scheme, deliberately NOT sharing code with signatureVerifier.ts — see that
+  // file's comment). These builders share their HMAC computation with
+  // verifyStripeSignature/verifyGithubSignature above, so nothing in this
+  // suite can catch signing and verifying drifting onto the same wrong
+  // algorithm together; this cross-check against an independent oracle is
+  // what closes that gap. If either provider's signing scheme is broken here
+  // (wrong delimiter, wrong hash algorithm), this is the assertion that fails.
+  it("produces the same Stripe-Signature header as an independent HMAC transcription", () => {
+    const body = JSON.stringify({ id: "evt_test" });
+    const secret = "whsec_pin_test";
+    const timestamp = 1_700_000_000;
+
+    expect(buildStripeSignatureHeader(body, secret, timestamp)).toBe(
+      buildValidStripeHeader(body, secret, timestamp),
+    );
+  });
+
+  it("produces the same X-Hub-Signature-256 header as an independent HMAC transcription", () => {
+    const body = JSON.stringify({ zen: "test" });
+    const secret = "gh_pin_test";
+
+    expect(buildGithubSignatureHeader(body, secret)).toBe(
+      buildValidGithubHeader(body, secret),
+    );
+  });
+
+  it("round-trips through the real verify functions (not just against the fixture)", () => {
+    const body = JSON.stringify({ ok: true });
+    const secret = "shared-pin-secret";
+    // No fixed timestamp here (unlike the pinned header-format tests above):
+    // verifyStripeSignature also enforces a freshness window against the
+    // current clock, so this must sign with "now" for the round trip to pass.
+
+    expect(
+      verifyStripeSignature(
+        buildStripeSignatureHeader(body, secret),
+        body,
+        secret,
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      verifyGithubSignature(
+        buildGithubSignatureHeader(body, secret),
+        body,
+        secret,
+      ),
+    ).toEqual({ ok: true });
+  });
 });

@@ -213,14 +213,24 @@ const SIGNATURE_TITLE = {
   not_verifiable: "Signature check not verifiable",
 } as const;
 
+// Falls back rather than rendering an untitled/untoned alert if the server
+// ever reports a status this lookup doesn't know about (e.g. a new status
+// added server-side before this component is updated for it) — fail
+// noticeably, not silently blank.
 const signatureTone = computed(() => {
   const status = testResult.value?.signatureCheck.status;
-  return status ? SIGNATURE_TONE[status] : "info";
+  if (!status) {
+    return "info";
+  }
+  return SIGNATURE_TONE[status] ?? "warn";
 });
 
 const signatureTitle = computed(() => {
   const status = testResult.value?.signatureCheck.status;
-  return status ? SIGNATURE_TITLE[status] : "";
+  if (!status) {
+    return "";
+  }
+  return SIGNATURE_TITLE[status] ?? "Signature check";
 });
 
 function handleSend(): void {

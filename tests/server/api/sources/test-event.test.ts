@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { H3Event } from "h3";
-import {
-  buildStripeSignatureHeader,
-  hashSharedSecret,
-} from "../../../../server/utils/signatureVerifier";
+import { hashSharedSecret } from "../../../../server/utils/signatureVerifier";
 
 const selectMock = vi.fn();
 
@@ -162,6 +159,9 @@ describe("POST /api/sources/:uuid/test", () => {
 
     const attributes = attributesOf(response);
     expect(attributes.signatureCheck.status).toBe("verified");
+    // The stored secret must never leak into the response body — only the
+    // fact that it produced a valid signature is reportable.
+    expect(JSON.stringify(response)).not.toContain("gh-secret-value");
   });
 
   it("reports failed for a github source with no configured secret", async () => {
@@ -183,6 +183,7 @@ describe("POST /api/sources/:uuid/test", () => {
 
     const attributes = attributesOf(response);
     expect(attributes.signatureCheck.status).toBe("verified");
+    expect(JSON.stringify(response)).not.toContain("whsec_test_value");
   });
 
   it.each(["zapier", "shortcuts"])(
@@ -259,6 +260,19 @@ describe("POST /api/sources/:uuid/test", () => {
     });
   });
 
+  it("throws 413 for a payload exceeding the same size cap real webhook deliveries are held to", async () => {
+    stubSource({ provider: null });
+    // MAX_WEBHOOK_BODY_BYTES is 1 MiB (webhookBodyLimit.ts); a single oversized
+    // field comfortably clears it once JSON-stringified.
+    mockReadBody.mockResolvedValue(
+      buildBody({ payload: { content: "x".repeat(1_100_000) } }),
+    );
+
+    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+      statusCode: 413,
+    });
+  });
+
   it("throws 422 for an email source (never ingests via the JSON webhook path)", async () => {
     stubSource({ type: "email", provider: null });
 
@@ -310,11 +324,5 @@ describe("POST /api/sources/:uuid/test", () => {
 
     const whereArg = where.mock.calls[0]?.[0];
     expect(serializeSql(whereArg)).toContain(userId);
-  });
-
-  it("signs stripe with a fresh, valid-format Stripe-Signature header (sanity check on the shared builder)", () => {
-    const header = buildStripeSignatureHeader("{}", "whsec_abc", 1_700_000_000);
-    expect(header).toBe(`t=1700000000,v1=${header.split("v1=")[1]}`);
-    expect(header).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
   });
 });
