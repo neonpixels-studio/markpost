@@ -368,13 +368,12 @@ async function markRecordError(
     );
 }
 
-// Heal a record left in `error` by an earlier failed confirmation write, once a
-// later delivery (fresh insert's own retry, or a redelivery landing on the
-// alreadyIngested path) successfully writes the ok event. Status-guarded to
-// `error` only: a record still `pending` (never failed) is untouched — the
-// UPDATE is simply a no-op — and `synced` is never a possible input here since
-// markRecordError itself never writes past pending/error (see its guard above),
-// so this can't regress a `synced` record either.
+// Heal a record left in `error` by an earlier failed confirmation write. Called
+// only by writeOkEventAndHeal below, and only once that caller has confirmed
+// this request is the one that just inserted this record's ok event for the
+// first time — see its comment for why that specific gating (not merely "the
+// write didn't throw") matters. Status-guarded to `error` only: a record still
+// `pending` (nothing to heal) is untouched — the UPDATE is simply a no-op.
 //
 // Reconciles to `pending`, not `synced`. `synced` means the CLI has already
 // pulled this record and written it to the user's vault (see
@@ -385,9 +384,14 @@ async function markRecordError(
 // have carried all along had the original confirmation not failed, so the CLI
 // picks it up on its next sync pass like any other pending record.
 //
-// Best-effort — swallows its own failure (via the caller's .catch) so a heal
-// that can't land yet is simply retried on the next delivery, and never turns
-// an already-served 202 into a 500.
+// Best-effort — swallows its own failure (via the caller's .catch) so it never
+// turns an already-served 202 into a 500. Unlike the event write itself,
+// though, a failure here is NOT retried by a later delivery: the ok event this
+// heal is gated on can only ever be inserted once per record (the partial
+// unique index), so once that has happened, no future request will see
+// "inserted" again for this record. A heal that fails on its one shot leaves
+// the record stuck in `error` with a stale message until fixed some other way
+// (tracked as a follow-up rather than solved here — see the PR).
 async function markRecordHealed(recordUuid: string): Promise<void> {
   const db = getDb();
   await db
@@ -699,9 +703,9 @@ function buildDeliveryHeaders(
 // defeat the "don't roll back the 202 response" guarantee.
 //
 // The inverse heal — a record left in `error` by a failed confirmation, then
-// reconciled once a later retry's ok event write finally succeeds — is handled
-// by markRecordHealed, called from writeIngestSideEffects alongside this
-// function rather than from here (this function only ever runs on failure).
+// reconciled once a later retry's ok event write actually lands — is handled
+// by markRecordHealed, invoked from the writeOkEventAndHeal writer (below)
+// rather than from here (this function only ever runs on failure).
 async function recordIngestEventFailure(
   source: SourceRow,
   record: { uuid: string; title: string },
@@ -808,12 +812,42 @@ async function writeIngestSideEffects(
 // the two call sites where the record could pre-date this request: an
 // already-ingested retry and a concurrent insert's race loser.
 //
+// Gated strictly on the "inserted" outcome — not merely "did not throw" — for
+// two reasons:
+//
+// 1. writeEventOncePerRecord fails CLOSED (see its own comment): a transient
+//    DB blip swallows the failure and still resolves normally. Treating any
+//    non-throwing result as "the ok event landed" would heal the record even
+//    when it demonstrably did not, silently destroying the error status and
+//    message that were the only record of the still-missing confirmation.
+// 2. "deduped" means an ok event for this record already existed — i.e. this
+//    request's own confirmation write is not what just landed. A record can
+//    independently be `error` at that point because the CLI reported a real
+//    vault-write failure via PATCH (see recordErrors.ts's statusInvalidError
+//    callers), a status this handler must never clear. Healing only on a
+//    genuine "inserted" ties the reconciliation to the one event that
+//    actually represents "this handler's own confirmation just succeeded for
+//    the first time in this record's life" (the partial unique index on
+//    (record_uuid, kind) guarantees that happens at most once), which cannot
+//    coincide with a later, unrelated CLI-reported error.
+//
+// One residual gap, narrower than the one this function closes: an "inserted"
+// heal firing in the same instant a client PATCH marks the record `error` for
+// an unrelated reason is not further disambiguated — accepted the same way
+// applyStatsBump documents its own single-statement race window, rather than
+// threading a "this is MY failure" marker through the record row.
+//
 // markRecordHealed's failure is swallowed here, not left to propagate into
 // writeIngestSideEffects's own `.catch` — a heal that can't land must never be
 // mistaken for the ok event write itself failing, which would wrongly
 // re-mark a just-healed record `error` and stomp its cleared message.
 const writeOkEventAndHeal: OkEventWriter = async (input) => {
-  await writeEventOncePerRecord(input);
+  const outcome = await writeEventOncePerRecord(input);
+
+  if (outcome !== "inserted") {
+    return;
+  }
+
   await markRecordHealed(input.recordUuid).catch(logHealError);
 };
 

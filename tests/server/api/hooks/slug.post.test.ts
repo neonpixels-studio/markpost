@@ -309,7 +309,11 @@ beforeEach(() => {
   mockWriteEvent.mockReset();
   mockWriteEvent.mockResolvedValue(undefined);
   mockWriteEventOncePerRecord.mockReset();
-  mockWriteEventOncePerRecord.mockResolvedValue(undefined);
+  // "inserted" is the default so existing dedup-path tests keep exercising the
+  // heal attempt as they did when the mock resolved to undefined (pre-
+  // markpost#277); tests that specifically need a "deduped" or "failed"
+  // outcome override this.
+  mockWriteEventOncePerRecord.mockResolvedValue("inserted");
   mockAssertWithinRecordLimit.mockReset();
   mockAssertWithinRecordLimit.mockResolvedValue(undefined);
   mockRecordWebhookHit.mockReset();
@@ -1862,10 +1866,16 @@ describe("POST /api/hooks/[slug]", () => {
         ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
       );
       expect(bumped).toBe(false);
-      const lastCall = (
-        statsSet.mock.calls.at(-1) as [Record<string, unknown>]
-      )[0];
-      expect(lastCall).toHaveProperty("lastHitAt");
+      // Looked up by shape, not `.at(-1)`: the claim, the lastHitAt touch, and
+      // the heal attempt (markRecordHealed; markpost#277, default-mocked as
+      // "inserted") are three independently-scheduled db.update calls, and
+      // their relative order is a microtask-timing artifact, not a
+      // contract — asserting position would make this test fragile to an
+      // unrelated await added anywhere in that chain.
+      const lastHitAtCall = statsSet.mock.calls.find(([set]) =>
+        Object.prototype.hasOwnProperty.call(set as object, "lastHitAt"),
+      )?.[0] as Record<string, unknown> | undefined;
+      expect(lastHitAtCall).toHaveProperty("lastHitAt");
     });
 
     // Debounce boundary (inside the window), in-memory fast path: a retry
@@ -2108,9 +2118,10 @@ describe("POST /api/hooks/[slug]", () => {
       const { set: updateSet, where: updateWhere } = stubUpdateStats(false);
       mockReadRawBody.mockResolvedValue(rawBody);
       stubStripeHeader(rawBody);
-      // The ok event write succeeds this time — the earlier delivery's write
-      // is what left the record in `error`.
-      mockWriteEventOncePerRecord.mockResolvedValue(undefined);
+      // "inserted": this request's ok-event write is the one that just landed
+      // for the first time in this record's life — the earlier delivery's
+      // write is what left the record in `error`.
+      mockWriteEventOncePerRecord.mockResolvedValue("inserted");
 
       const response = await handler(buildEvent());
 
@@ -2140,6 +2151,65 @@ describe("POST /api/hooks/[slug]", () => {
           expect.objectContaining({ column: records.status, value: "error" }),
         ]),
       );
+    });
+
+    // writeEventOncePerRecord fails CLOSED (server/utils/eventWriter.ts): a
+    // transient DB blip on the ok-event insert is swallowed and the write
+    // still resolves without throwing. Healing must be gated on the
+    // "inserted" outcome specifically, not merely "the write didn't reject" —
+    // otherwise this exact scenario would wrongly clear the record's error
+    // status/message even though the activity log still has no ok event.
+    it("does not heal when the ok event write fails (swallowed, not thrown)", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_heal_write_failed",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      const { set: updateSet } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      mockWriteEventOncePerRecord.mockResolvedValue("failed");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      const healCalls = updateSet.mock.calls.filter(
+        ([set]) => (set as { status?: string }).status === "pending",
+      );
+      expect(healCalls).toHaveLength(0);
+    });
+
+    // A "deduped" outcome means an ok event for this record already existed —
+    // this request's write is not what just landed, so the record's current
+    // `error` (if any) cannot be attributed to this confirmation. This is the
+    // ordinary case where the CLI itself reported a real vault-write failure
+    // via PATCH (status=error, a real errorMessage) sometime after the
+    // original successful ingest, and a later, unrelated provider redelivery
+    // of the same delivery id (Stripe retries for days) must not clear it.
+    it("does not heal a CLI-reported error when the ok event was already recorded (deduped, not inserted)", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_already_synced_then_cli_errored",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+      );
+      const { set: updateSet } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      mockWriteEventOncePerRecord.mockResolvedValue("deduped");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      const healCalls = updateSet.mock.calls.filter(
+        ([set]) => (set as { status?: string }).status === "pending",
+      );
+      expect(healCalls).toHaveLength(0);
     });
 
     // The heal stats write is best-effort too: a retry still returns 202 even if
@@ -2378,10 +2448,15 @@ describe("POST /api/hooks/[slug]", () => {
         ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
       );
       expect(bumped).toBe(false);
-      const lastCall = (
-        updateSet.mock.calls.at(-1) as [Record<string, unknown>]
-      )[0];
-      expect(lastCall).toHaveProperty("lastHitAt");
+      // Looked up by shape, not `.at(-1)` — see the same note in "does not
+      // re-bump the counter on an ordinary retry that was already counted"
+      // above: the heal attempt (markpost#277) is an independently-scheduled
+      // db.update call whose relative order versus the lastHitAt touch is a
+      // microtask-timing artifact, not a contract.
+      const lastHitAtCall = updateSet.mock.calls.find(([set]) =>
+        Object.prototype.hasOwnProperty.call(set as object, "lastHitAt"),
+      )?.[0] as Record<string, unknown> | undefined;
+      expect(lastHitAtCall).toHaveProperty("lastHitAt");
     });
 
     // Fail loud, don't fabricate: if the insert returns no row AND the follow-up
