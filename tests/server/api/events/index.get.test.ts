@@ -250,25 +250,14 @@ describe("GET /api/events", () => {
   });
 
   describe("filter[kind]", () => {
-    it("returns events of the requested kind", async () => {
-      const rows = [makeEventRow(1, { kind: "err" })];
-      stubSelectChain(rows, 1);
-      mockGetQuery.mockReturnValue({ "filter[kind]": "err" });
-
-      const response = await handler(buildEvent(userId));
-
-      expect(response.data).toHaveLength(1);
-      expect(response.data[0].attributes.kind).toBe("err");
-    });
-
-    it("adds an events.kind equality condition to both the count and page queries", async () => {
+    it("adds an events.kind equality condition to both the count and page queries, and returns the matching row", async () => {
       const { countWhereFn, pageWhereFn } = stubSelectChain(
         [makeEventRow(1, { kind: "err" })],
         1,
       );
       mockGetQuery.mockReturnValue({ "filter[kind]": "err" });
 
-      await handler(buildEvent(userId));
+      const response = await handler(buildEvent(userId));
 
       const expectedConditions = {
         conditions: [
@@ -278,6 +267,19 @@ describe("GET /api/events", () => {
       };
       expect(pageWhereFn).toHaveBeenCalledWith(expectedConditions);
       expect(countWhereFn).toHaveBeenCalledWith(expectedConditions);
+      expect(response.data).toHaveLength(1);
+      expect(response.data[0].attributes.kind).toBe("err");
+    });
+
+    it("ignores an empty filter[kind] and scopes the query to the owner only", async () => {
+      const { pageWhereFn } = stubSelectChain([], 0);
+      mockGetQuery.mockReturnValue({ "filter[kind]": "" });
+
+      await handler(buildEvent(userId));
+
+      expect(pageWhereFn).toHaveBeenCalledWith({
+        conditions: [{ column: events.userId, value: userId }],
+      });
     });
 
     it("takes the first value when filter[kind] is repeated", async () => {
@@ -320,25 +322,14 @@ describe("GET /api/events", () => {
   describe("filter[sourceId]", () => {
     const sourceId = "550e8400-e29b-41d4-a716-446655440010";
 
-    it("returns events attributed to the requested source", async () => {
-      const rows = [makeEventRow(1, { sourceId })];
-      stubSelectChain(rows, 1);
-      mockGetQuery.mockReturnValue({ "filter[sourceId]": sourceId });
-
-      const response = await handler(buildEvent(userId));
-
-      expect(response.data).toHaveLength(1);
-      expect(response.data[0].attributes.sourceId).toBe(sourceId);
-    });
-
-    it("adds an events.sourceId equality condition to both the count and page queries", async () => {
+    it("adds an events.sourceId equality condition to both the count and page queries, and returns the matching row", async () => {
       const { countWhereFn, pageWhereFn } = stubSelectChain(
         [makeEventRow(1, { sourceId })],
         1,
       );
       mockGetQuery.mockReturnValue({ "filter[sourceId]": sourceId });
 
-      await handler(buildEvent(userId));
+      const response = await handler(buildEvent(userId));
 
       const expectedConditions = {
         conditions: [
@@ -348,6 +339,19 @@ describe("GET /api/events", () => {
       };
       expect(pageWhereFn).toHaveBeenCalledWith(expectedConditions);
       expect(countWhereFn).toHaveBeenCalledWith(expectedConditions);
+      expect(response.data).toHaveLength(1);
+      expect(response.data[0].attributes.sourceId).toBe(sourceId);
+    });
+
+    it("ignores an empty filter[sourceId] and scopes the query to the owner only", async () => {
+      const { pageWhereFn } = stubSelectChain([], 0);
+      mockGetQuery.mockReturnValue({ "filter[sourceId]": "" });
+
+      await handler(buildEvent(userId));
+
+      expect(pageWhereFn).toHaveBeenCalledWith({
+        conditions: [{ column: events.userId, value: userId }],
+      });
     });
 
     it("takes the first value when filter[sourceId] is repeated", async () => {
@@ -371,11 +375,20 @@ describe("GET /api/events", () => {
 
     it("returns an empty page when the source matches nothing, without erroring", async () => {
       const otherUsersSourceId = "550e8400-e29b-41d4-a716-446655440020";
-      stubSelectChain([], 0);
+      const { pageWhereFn } = stubSelectChain([], 0);
       mockGetQuery.mockReturnValue({ "filter[sourceId]": otherUsersSourceId });
 
       const response = await handler(buildEvent(userId));
 
+      // Confirms the empty result reflects a real (non-matching) filter
+      // condition reaching the query, not a stub that would return the
+      // same empty page regardless of what was asked for.
+      expect(pageWhereFn).toHaveBeenCalledWith({
+        conditions: [
+          { column: events.userId, value: userId },
+          { column: events.sourceId, value: otherUsersSourceId },
+        ],
+      });
       expect(response.data).toEqual([]);
       expect(response.meta).toEqual({ total: 0, size: 100, hasMore: false });
     });
@@ -442,6 +455,7 @@ describe("GET /api/events", () => {
 
     let callCount = 0;
     let pageWhereArg: unknown;
+    let countWhereArg: unknown;
     selectMock.mockImplementation(() => {
       const callIndex = callCount;
       callCount++;
@@ -458,7 +472,10 @@ describe("GET /api/events", () => {
 
       if (callIndex === 1) {
         // countFilteredEvents: select().from().where()
-        const whereFn = vi.fn(() => Promise.resolve([{ value: 5 }]));
+        const whereFn = vi.fn((arg: unknown) => {
+          countWhereArg = arg;
+          return Promise.resolve([{ value: 5 }]);
+        });
         const fromFn = vi.fn(() => ({ where: whereFn }));
         return { from: fromFn };
       }
@@ -480,6 +497,17 @@ describe("GET /api/events", () => {
     expect(response.data[0].attributes.kind).toBe("warn");
     expect(response.data[0].attributes.sourceId).toBe(sourceId);
     expect(response.meta?.total).toBe(5);
+    // meta.total is the count of ALL events matching the filters (mirroring
+    // the pre-existing, cursor-agnostic countUserEvents semantics), not the
+    // count remaining after the cursor — so its where() call carries the
+    // same owner/kind/sourceId conditions but no cursor range condition.
+    expect(countWhereArg).toEqual({
+      conditions: [
+        { column: events.userId, value: userId },
+        { column: events.kind, value: "warn" },
+        { column: events.sourceId, value: sourceId },
+      ],
+    });
     // Both filters and the cursor range condition are all still present
     // alongside the owner scope — filtering doesn't drop keyset pagination.
     expect(pageWhereArg).toEqual({
