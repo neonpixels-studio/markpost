@@ -2175,7 +2175,10 @@ describe("POST /api/hooks/[slug]", () => {
       });
       stubSourceThenDelivery(
         [stripeSource],
-        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+        // status: "error" is what makes selectOkEventWriter choose
+        // writeOkEventAndHeal in the first place — see the writer-selection
+        // tests below for the case where it's anything else.
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "error" }],
       );
       const { set: updateSet, where: updateWhere } = stubUpdateStats(false);
       mockReadRawBody.mockResolvedValue(rawBody);
@@ -2206,7 +2209,7 @@ describe("POST /api/hooks/[slug]", () => {
       });
       stubSourceThenDelivery(
         [stripeSource],
-        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "error" }],
       );
       const { set: updateSet, where: updateWhere } = stubUpdateStats(false);
       mockReadRawBody.mockResolvedValue(rawBody);
@@ -2232,7 +2235,7 @@ describe("POST /api/hooks/[slug]", () => {
       });
       stubSourceThenDelivery(
         [stripeSource],
-        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "error" }],
       );
       const { set: updateSet } = stubUpdateStats(false);
       mockReadRawBody.mockResolvedValue(rawBody);
@@ -2248,33 +2251,35 @@ describe("POST /api/hooks/[slug]", () => {
       expect(healCalls).toHaveLength(0);
     });
 
-    // The safety net against clobbering a CLI-reported vault-write error
-    // (status=error set via the single-record PATCH endpoint, unrelated to
-    // this handler) is markRecordHealed's own WHERE guard — the
-    // CONFIRMATION_FAILURE_PREFIX match — not the outcome check, since both
-    // "inserted" and "deduped" now attempt the heal UPDATE. This test can
-    // only exercise the query this handler issues (see expectHealGuard),
-    // which is the same UPDATE issued in the "reconciles…" tests above; a
-    // real Postgres WHERE clause is what actually excludes a row whose
-    // errorMessage does not start with that prefix.
-    it("still issues the heal attempt on a deduped retry, guarded by the confirmation-error prefix so an unrelated CLI-reported error can never match", async () => {
+    // selectOkEventWriter's whole reason to exist: the overwhelming majority
+    // of redeliveries hit a healthy record (`pending`/`synced`), and for
+    // those, markRecordHealed's guarded UPDATE would always be a no-op — so
+    // the writer is chosen from the record already read by
+    // findAlreadyIngested/findRecordByDelivery, and writeOkEventOnly is
+    // picked instead, skipping that round trip entirely rather than relying
+    // on the WHERE guard to make it a no-op. The event write itself still
+    // happens as normal.
+    it("does not attempt a heal UPDATE on an ordinary retry whose record is not currently in error", async () => {
       const rawBody = JSON.stringify({
-        id: "evt_already_synced_then_cli_errored",
+        id: "evt_ordinary_retry",
         type: "charge.succeeded",
       });
       stubSourceThenDelivery(
         [stripeSource],
-        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "pending" }],
       );
-      const { set: updateSet, where: updateWhere } = stubUpdateStats(false);
+      const { set: updateSet } = stubUpdateStats(false);
       mockReadRawBody.mockResolvedValue(rawBody);
       stubStripeHeader(rawBody);
-      mockWriteEventOncePerRecord.mockResolvedValue("deduped");
 
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-      expectHealGuard(updateSet, updateWhere);
+      expect(mockWriteEventOncePerRecord).toHaveBeenCalled();
+      const healCalls = updateSet.mock.calls.filter(
+        ([set]) => (set as { status?: string }).status === "pending",
+      );
+      expect(healCalls).toHaveLength(0);
     });
 
     // Hot-path guard: a fresh insert (this record did not exist before this
@@ -2302,7 +2307,8 @@ describe("POST /api/hooks/[slug]", () => {
     // The other writeOkEventAndHeal call site: a concurrent insert that lost
     // the unique-index race also resolves through the record-deduped writer
     // (deduped=true), so it must attempt the heal exactly like the
-    // already-ingested retry path above.
+    // already-ingested retry path above, once the record it resolved to is
+    // itself read back as `error`.
     it("also attempts a heal on the concurrent-race dedup-hit path", async () => {
       const rawBody = JSON.stringify({
         id: "evt_race_heal",
@@ -2315,7 +2321,7 @@ describe("POST /api/hooks/[slug]", () => {
       ]);
       const collisionChain = makeWhereResolvingChain([]);
       const raceLookupChain = makeSelectChain([
-        { uuid: sampleRecord.uuid, title: "Charge" },
+        { uuid: sampleRecord.uuid, title: "Charge", status: "error" },
       ]);
       selectMock
         .mockReturnValueOnce({ from: sourceChain.from })
@@ -2385,7 +2391,10 @@ describe("POST /api/hooks/[slug]", () => {
       );
       stubSourceThenDelivery(
         [{ ...stripeSource, lastHitAt: freshLastHitAt }],
-        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+        // status: "error" so selectOkEventWriter still attempts the heal
+        // (via writeOkEventAndHeal) here — this test's whole point is that
+        // heal attempt also failing, under the same failing update stub.
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "error" }],
       );
       stubFailingStatsUpdate();
       mockReadRawBody.mockResolvedValue(rawBody);
