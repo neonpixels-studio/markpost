@@ -1,6 +1,6 @@
 import { and, count, desc, eq, lt, or } from "drizzle-orm";
 import { getDb } from "../../db";
-import { events } from "../../db/schema";
+import { events, EVENT_KINDS, type EventKind } from "../../db/schema";
 import { requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import { parsePageSize } from "../../utils/pagination";
@@ -18,6 +18,97 @@ type CursorPosition = {
   ts: Date;
   id: string;
 };
+
+// filter[kind] narrows to a single EVENT_KINDS value; filter[source] narrows
+// to events attributed to one sources.uuid (the FK events.sourceId points
+// at), letting a caller debugging one failing integration skip every
+// unrelated event instead of paging through the whole 90-day feed.
+type EventFilters = {
+  kind?: EventKind;
+  sourceId?: string;
+};
+
+function isEventKind(value: string): value is EventKind {
+  return (EVENT_KINDS as readonly string[]).includes(value);
+}
+
+// h3's getQuery() returns a string[] when a query key is repeated (e.g.
+// ?filter[kind]=err&filter[kind]=warn). Take the first value, the same
+// "duplicate key" convention GET /api/records uses for filter[source].
+function firstQueryValue(
+  value: string | string[] | undefined,
+): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+// 400 (not 422) because these validate query parameters, not body
+// attributes — matching the "Invalid cursor" 400 below rather than the 422s
+// used for request-body validation elsewhere in the API.
+function invalidKindFilterError(): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "400",
+        title: "Invalid filter[kind]",
+        detail: `filter[kind] must be one of: ${EVENT_KINDS.join(", ")}`,
+        source: { parameter: "filter[kind]" },
+      },
+    ],
+    400,
+  );
+}
+
+function invalidSourceFilterError(): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "400",
+        title: "Invalid filter[source]",
+        detail: "filter[source] must be a valid source uuid",
+        source: { parameter: "filter[source]" },
+      },
+    ],
+    400,
+  );
+}
+
+function validateKindFilter(
+  rawFilterKind: string | string[] | undefined,
+): EventKind | undefined {
+  const filterKind = firstQueryValue(rawFilterKind);
+
+  if (!filterKind) {
+    return undefined;
+  }
+
+  if (!isEventKind(filterKind)) {
+    throw invalidKindFilterError();
+  }
+
+  return filterKind;
+}
+
+// Unlike page[after], an unrecognized-but-well-formed uuid is not an error —
+// it just matches no events (the source may belong to another user or have
+// since been deleted, and events.sourceId already scopes by events.userId,
+// so it can't leak another tenant's data). Only a malformed value is
+// rejected, the same way filter[source] on GET /api/records rejects an
+// unrecognized SourceType rather than silently ignoring it.
+function validateSourceFilter(
+  rawFilterSource: string | string[] | undefined,
+): string | undefined {
+  const filterSource = firstQueryValue(rawFilterSource);
+
+  if (!filterSource) {
+    return undefined;
+  }
+
+  if (!isValidUuid(filterSource)) {
+    throw invalidSourceFilterError();
+  }
+
+  return filterSource;
+}
 
 async function findCursorPosition(
   db: Database,
@@ -60,26 +151,42 @@ async function resolveCursor(
   return cursor;
 }
 
-function buildCursorFilter(userId: string, cursor: CursorPosition | null) {
-  const ownerFilter = eq(events.userId, userId);
+function buildFilterConditions(
+  userId: string,
+  cursor: CursorPosition | null,
+  filters: EventFilters,
+) {
+  const conditions = [eq(events.userId, userId)];
 
-  if (!cursor) {
-    return ownerFilter;
+  if (filters.kind) {
+    conditions.push(eq(events.kind, filters.kind));
   }
 
-  const beforeCursor = or(
-    lt(events.ts, cursor.ts),
-    and(eq(events.ts, cursor.ts), lt(events.id, cursor.id)),
-  );
+  if (filters.sourceId) {
+    conditions.push(eq(events.sourceId, filters.sourceId));
+  }
 
-  return and(ownerFilter, beforeCursor);
+  if (cursor) {
+    conditions.push(
+      or(
+        lt(events.ts, cursor.ts),
+        and(eq(events.ts, cursor.ts), lt(events.id, cursor.id)),
+      ),
+    );
+  }
+
+  return and(...conditions);
 }
 
-async function countUserEvents(db: Database, userId: string): Promise<number> {
+async function countFilteredEvents(
+  db: Database,
+  userId: string,
+  filters: EventFilters,
+): Promise<number> {
   const [totalRow] = await db
     .select({ value: count() })
     .from(events)
-    .where(eq(events.userId, userId));
+    .where(buildFilterConditions(userId, null, filters));
 
   return totalRow?.value ?? 0;
 }
@@ -89,11 +196,12 @@ function fetchEventsPage(
   userId: string,
   cursor: CursorPosition | null,
   size: number,
+  filters: EventFilters,
 ) {
   return db
     .select()
     .from(events)
-    .where(buildCursorFilter(userId, cursor))
+    .where(buildFilterConditions(userId, cursor, filters))
     .orderBy(desc(events.ts), desc(events.id))
     .limit(size + 1);
 }
@@ -122,11 +230,20 @@ export default defineEventHandler(
         );
       }
 
+      const filters: EventFilters = {
+        kind: validateKindFilter(
+          query["filter[kind]"] as string | string[] | undefined,
+        ),
+        sourceId: validateSourceFilter(
+          query["filter[source]"] as string | string[] | undefined,
+        ),
+      };
+
       const cursor = await resolveCursor(db, userId, afterId);
 
       const [total, pageEvents] = await Promise.all([
-        countUserEvents(db, userId),
-        fetchEventsPage(db, userId, cursor, size),
+        countFilteredEvents(db, userId, filters),
+        fetchEventsPage(db, userId, cursor, size, filters),
       ]);
 
       const hasMore = pageEvents.length > size;
