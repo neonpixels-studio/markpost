@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { H3Event } from "h3";
+import { events, type EventKind } from "../../../../server/db/schema";
 
 const selectMock = vi.fn();
 
@@ -37,7 +38,7 @@ function buildEvent(contextUserId: string | undefined): H3Event {
 
 function makeEventRow(
   index: number,
-  overrides: { kind?: string; sourceId?: string | null } = {},
+  overrides: { kind?: EventKind; sourceId?: string | null } = {},
 ) {
   return {
     id: `id-${index}`,
@@ -50,20 +51,24 @@ function makeEventRow(
   };
 }
 
+// Returns the `where()` spies from both branches of the Promise.all in the
+// handler (the count query and the page query) so tests can assert on the
+// actual filter conditions built, not just on the canned rows/count the
+// mock hands back regardless of what was queried.
 function stubSelectChain(rows: unknown[], countValue = 0) {
   let callCount = 0;
+
+  const countWhereFn = vi.fn(() => Promise.resolve([{ value: countValue }]));
+  const fromForCount = vi.fn(() => ({ where: countWhereFn }));
+
+  const limitFn = vi.fn(() => Promise.resolve(rows));
+  const orderByFn = vi.fn(() => ({ limit: limitFn }));
+  const pageWhereFn = vi.fn(() => ({ orderBy: orderByFn }));
+  const fromFn = vi.fn(() => ({ where: pageWhereFn }));
 
   selectMock.mockImplementation(() => {
     const callIndex = callCount;
     callCount++;
-
-    const whereForCount = vi.fn(() => Promise.resolve([{ value: countValue }]));
-    const fromForCount = vi.fn(() => ({ where: whereForCount }));
-
-    const limitFn = vi.fn(() => Promise.resolve(rows));
-    const orderByFn = vi.fn(() => ({ limit: limitFn }));
-    const whereFn = vi.fn(() => ({ orderBy: orderByFn }));
-    const fromFn = vi.fn(() => ({ where: whereFn }));
 
     if (callIndex === 0) {
       return { from: fromForCount };
@@ -71,6 +76,8 @@ function stubSelectChain(rows: unknown[], countValue = 0) {
 
     return { from: fromFn };
   });
+
+  return { countWhereFn, pageWhereFn };
 }
 
 beforeEach(() => {
@@ -109,6 +116,18 @@ describe("GET /api/events", () => {
     expect(response.data).toEqual([]);
     expect(response.meta).toEqual({ total: 0, size: 100, hasMore: false });
     expect(response.links?.next).toBeNull();
+  });
+
+  it("scopes the query to the owner only when no filters are applied", async () => {
+    const { countWhereFn, pageWhereFn } = stubSelectChain([], 0);
+
+    await handler(buildEvent(userId));
+
+    const expectedConditions = {
+      conditions: [{ column: events.userId, value: userId }],
+    };
+    expect(pageWhereFn).toHaveBeenCalledWith(expectedConditions);
+    expect(countWhereFn).toHaveBeenCalledWith(expectedConditions);
   });
 
   it("returns serialized events newest first", async () => {
@@ -161,7 +180,7 @@ describe("GET /api/events", () => {
       }
 
       if (callIndex === 1) {
-        // countUserEvents: select().from().where()
+        // countFilteredEvents: select().from().where()
         const whereFn = vi.fn(() => Promise.resolve([{ value: 10 }]));
         const fromFn = vi.fn(() => ({ where: whereFn }));
         return { from: fromFn };
@@ -242,6 +261,25 @@ describe("GET /api/events", () => {
       expect(response.data[0].attributes.kind).toBe("err");
     });
 
+    it("adds an events.kind equality condition to both the count and page queries", async () => {
+      const { countWhereFn, pageWhereFn } = stubSelectChain(
+        [makeEventRow(1, { kind: "err" })],
+        1,
+      );
+      mockGetQuery.mockReturnValue({ "filter[kind]": "err" });
+
+      await handler(buildEvent(userId));
+
+      const expectedConditions = {
+        conditions: [
+          { column: events.userId, value: userId },
+          { column: events.kind, value: "err" },
+        ],
+      };
+      expect(pageWhereFn).toHaveBeenCalledWith(expectedConditions);
+      expect(countWhereFn).toHaveBeenCalledWith(expectedConditions);
+    });
+
     it("takes the first value when filter[kind] is repeated", async () => {
       const rows = [makeEventRow(1, { kind: "err" })];
       stubSelectChain(rows, 1);
@@ -272,13 +310,13 @@ describe("GET /api/events", () => {
     });
   });
 
-  describe("filter[source]", () => {
+  describe("filter[sourceId]", () => {
     const sourceId = "550e8400-e29b-41d4-a716-446655440010";
 
     it("returns events attributed to the requested source", async () => {
       const rows = [makeEventRow(1, { sourceId })];
       stubSelectChain(rows, 1);
-      mockGetQuery.mockReturnValue({ "filter[source]": sourceId });
+      mockGetQuery.mockReturnValue({ "filter[sourceId]": sourceId });
 
       const response = await handler(buildEvent(userId));
 
@@ -286,8 +324,50 @@ describe("GET /api/events", () => {
       expect(response.data[0].attributes.sourceId).toBe(sourceId);
     });
 
-    it("throws 400 when filter[source] is not a valid uuid", async () => {
-      mockGetQuery.mockReturnValue({ "filter[source]": "not-a-uuid" });
+    it("adds an events.sourceId equality condition to both the count and page queries", async () => {
+      const { countWhereFn, pageWhereFn } = stubSelectChain(
+        [makeEventRow(1, { sourceId })],
+        1,
+      );
+      mockGetQuery.mockReturnValue({ "filter[sourceId]": sourceId });
+
+      await handler(buildEvent(userId));
+
+      const expectedConditions = {
+        conditions: [
+          { column: events.userId, value: userId },
+          { column: events.sourceId, value: sourceId },
+        ],
+      };
+      expect(pageWhereFn).toHaveBeenCalledWith(expectedConditions);
+      expect(countWhereFn).toHaveBeenCalledWith(expectedConditions);
+    });
+
+    it("takes the first value when filter[sourceId] is repeated", async () => {
+      const rows = [makeEventRow(1, { sourceId })];
+      stubSelectChain(rows, 1);
+      mockGetQuery.mockReturnValue({
+        "filter[sourceId]": [sourceId, "550e8400-e29b-41d4-a716-446655440099"],
+      });
+
+      const response = await handler(buildEvent(userId));
+
+      expect(response.data).toHaveLength(1);
+    });
+
+    it("returns an empty page when the source matches nothing, without erroring", async () => {
+      const otherUsersSourceId = "550e8400-e29b-41d4-a716-446655440020";
+      stubSelectChain([], 0);
+      mockGetQuery.mockReturnValue({ "filter[sourceId]": otherUsersSourceId });
+
+      const response = await handler(buildEvent(userId));
+
+      expect(response.data).toEqual([]);
+      expect(response.meta).toEqual({ total: 0, size: 100, hasMore: false });
+    });
+
+    it("throws 400 when filter[sourceId] is not a valid uuid", async () => {
+      mockGetQuery.mockReturnValue({ "filter[sourceId]": "not-a-uuid" });
 
       await expect(handler(buildEvent(userId))).rejects.toMatchObject({
         statusCode: 400,
@@ -297,7 +377,7 @@ describe("GET /api/events", () => {
           statusCode: 400,
           data: {
             errors: [
-              expect.objectContaining({ title: "Invalid filter[source]" }),
+              expect.objectContaining({ title: "Invalid filter[sourceId]" }),
             ],
           },
         }),
@@ -306,7 +386,29 @@ describe("GET /api/events", () => {
     });
   });
 
-  it("applies filter[kind] and filter[source] together with cursor pagination", async () => {
+  it("returns a next cursor link when a filtered page has more results", async () => {
+    const rows = [
+      makeEventRow(3, { kind: "err" }),
+      makeEventRow(2, { kind: "err" }),
+      makeEventRow(1, { kind: "err" }),
+    ];
+    stubSelectChain(rows, 10);
+    mockGetQuery.mockReturnValue({
+      "page[size]": "2",
+      "filter[kind]": "err",
+    });
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data).toHaveLength(2);
+    expect(
+      response.data.every((resource) => resource.attributes.kind === "err"),
+    ).toBe(true);
+    expect(response.meta?.hasMore).toBe(true);
+    expect(response.links?.next).toContain("page%5Bafter%5D=id-2");
+  });
+
+  it("applies filter[kind] and filter[sourceId] together with cursor pagination", async () => {
     const sourceId = "550e8400-e29b-41d4-a716-446655440011";
     const cursorId = "550e8400-e29b-41d4-a716-446655440003";
     const rows = [
@@ -317,10 +419,11 @@ describe("GET /api/events", () => {
       "page[after]": cursorId,
       "page[size]": "2",
       "filter[kind]": "warn",
-      "filter[source]": sourceId,
+      "filter[sourceId]": sourceId,
     });
 
     let callCount = 0;
+    let pageWhereArg: unknown;
     selectMock.mockImplementation(() => {
       const callIndex = callCount;
       callCount++;
@@ -345,7 +448,10 @@ describe("GET /api/events", () => {
       // fetchEventsPage: select().from().where().orderBy().limit()
       const limitFn = vi.fn(() => Promise.resolve(rows));
       const orderByFn = vi.fn(() => ({ limit: limitFn }));
-      const whereFn = vi.fn(() => ({ orderBy: orderByFn }));
+      const whereFn = vi.fn((arg: unknown) => {
+        pageWhereArg = arg;
+        return { orderBy: orderByFn };
+      });
       const fromFn = vi.fn(() => ({ where: whereFn }));
       return { from: fromFn };
     });
@@ -356,5 +462,25 @@ describe("GET /api/events", () => {
     expect(response.data[0].attributes.kind).toBe("warn");
     expect(response.data[0].attributes.sourceId).toBe(sourceId);
     expect(response.meta?.total).toBe(5);
+    // Both filters and the cursor range condition are all still present
+    // alongside the owner scope — filtering doesn't drop keyset pagination.
+    expect(pageWhereArg).toEqual({
+      conditions: [
+        { column: events.userId, value: userId },
+        { column: events.kind, value: "warn" },
+        { column: events.sourceId, value: sourceId },
+        {
+          or: [
+            { lt: { column: events.ts, value: expect.any(Date) } },
+            {
+              conditions: [
+                { column: events.ts, value: expect.any(Date) },
+                { lt: { column: events.id, value: cursorId } },
+              ],
+            },
+          ],
+        },
+      ],
+    });
   });
 });

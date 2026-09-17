@@ -1,4 +1,4 @@
-import { and, count, desc, eq, lt, or } from "drizzle-orm";
+import { and, count, desc, eq, lt, or, type SQL } from "drizzle-orm";
 import { getDb } from "../../db";
 import { events, EVENT_KINDS, type EventKind } from "../../db/schema";
 import { requireUser } from "../../utils/auth";
@@ -19,10 +19,16 @@ type CursorPosition = {
   id: string;
 };
 
-// filter[kind] narrows to a single EVENT_KINDS value; filter[source] narrows
-// to events attributed to one sources.uuid (the FK events.sourceId points
-// at), letting a caller debugging one failing integration skip every
+// filter[kind] narrows to a single EVENT_KINDS value; filter[sourceId]
+// narrows to events attributed to one sources.uuid (the FK events.sourceId
+// points at), letting a caller debugging one failing integration skip every
 // unrelated event instead of paging through the whole 90-day feed.
+//
+// Named filter[sourceId] rather than filter[source] specifically to avoid
+// colliding with GET /api/records's filter[source], which takes a
+// SourceType (e.g. "webhook") rather than a sources.uuid — same word, two
+// different shapes, so the events and records filters can never be confused
+// for one another.
 type EventFilters = {
   kind?: EventKind;
   sourceId?: string;
@@ -58,14 +64,14 @@ function invalidKindFilterError(): ApiError {
   );
 }
 
-function invalidSourceFilterError(): ApiError {
+function invalidSourceIdFilterError(): ApiError {
   return new ApiError(
     [
       {
         status: "400",
-        title: "Invalid filter[source]",
-        detail: "filter[source] must be a valid source uuid",
-        source: { parameter: "filter[source]" },
+        title: "Invalid filter[sourceId]",
+        detail: "filter[sourceId] must be a valid source uuid",
+        source: { parameter: "filter[sourceId]" },
       },
     ],
     400,
@@ -94,20 +100,20 @@ function validateKindFilter(
 // so it can't leak another tenant's data). Only a malformed value is
 // rejected, the same way filter[source] on GET /api/records rejects an
 // unrecognized SourceType rather than silently ignoring it.
-function validateSourceFilter(
-  rawFilterSource: string | string[] | undefined,
+function validateSourceIdFilter(
+  rawFilterSourceId: string | string[] | undefined,
 ): string | undefined {
-  const filterSource = firstQueryValue(rawFilterSource);
+  const filterSourceId = firstQueryValue(rawFilterSourceId);
 
-  if (!filterSource) {
+  if (!filterSourceId) {
     return undefined;
   }
 
-  if (!isValidUuid(filterSource)) {
-    throw invalidSourceFilterError();
+  if (!isValidUuid(filterSourceId)) {
+    throw invalidSourceIdFilterError();
   }
 
-  return filterSource;
+  return filterSourceId;
 }
 
 async function findCursorPosition(
@@ -156,7 +162,7 @@ function buildFilterConditions(
   cursor: CursorPosition | null,
   filters: EventFilters,
 ) {
-  const conditions = [eq(events.userId, userId)];
+  const conditions: (SQL | undefined)[] = [eq(events.userId, userId)];
 
   if (filters.kind) {
     conditions.push(eq(events.kind, filters.kind));
@@ -234,8 +240,8 @@ export default defineEventHandler(
         kind: validateKindFilter(
           query["filter[kind]"] as string | string[] | undefined,
         ),
-        sourceId: validateSourceFilter(
-          query["filter[source]"] as string | string[] | undefined,
+        sourceId: validateSourceIdFilter(
+          query["filter[sourceId]"] as string | string[] | undefined,
         ),
       };
 
