@@ -30,7 +30,8 @@ type Scope = {
 //   records:read   GET /records, /records/{uuid}, /records/export, /records/stats
 //   records:write  POST/DELETE /records, PATCH /records/{uuid}
 //   sources:read   GET /sources
-//   sources:write  POST /sources, PATCH/DELETE /sources/{uuid}, rotate-secret
+//   sources:write  POST /sources, PATCH/DELETE /sources/{uuid}, rotate-secret,
+//                  test
 //   events:read    GET /events, /events/export
 //   tokens:read    GET /tokens
 //   tokens:write   POST /tokens, DELETE /tokens/{id}
@@ -45,7 +46,8 @@ export const SCOPES = [
   { name: "sources:read", description: "List connected sources." },
   {
     name: "sources:write",
-    description: "Create, update, delete, and rotate secrets for sources.",
+    description:
+      "Create, update, delete, test, and rotate secrets for sources.",
   },
   { name: "events:read", description: "Read the activity event log." },
   { name: "tokens:read", description: "List API tokens." },

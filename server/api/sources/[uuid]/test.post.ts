@@ -3,7 +3,7 @@ import type { H3Event } from "h3";
 import { getDb } from "../../../db";
 import { sources } from "../../../db/schema";
 import type { ApiRequest, ApiResponse } from "../../../types/api.types";
-import { requireUser } from "../../../utils/auth";
+import { requireScope, requireUser } from "../../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../../utils/errors";
 import { applyFieldMapping, isPlainObject } from "../../../utils/fieldMapper";
 import { parseWebhookPayload } from "../../../utils/markdown";
@@ -309,6 +309,12 @@ export default defineEventHandler(
   async (event): Promise<TestEventApiResponse> => {
     try {
       const userId = requireUser(event);
+      // sources:write, not sources:read: this signs a payload with the
+      // source's stored providerSecret and reports whether it verifies, so a
+      // read-only token must not be able to probe secret health. A
+      // sources:write token can already rotate that secret, so gating here
+      // grants it nothing it didn't have.
+      requireScope(event, "sources:write");
       const sourceUuid = getRouterParam(event, "uuid");
 
       if (!isValidUuid(sourceUuid)) {
