@@ -72,6 +72,15 @@
           <AppIcon name="refresh" :size="16" />
         </button>
         <button
+          v-if="isTestable"
+          class="icon-btn"
+          title="Send test event"
+          style="color: var(--ink-3)"
+          @click="emit('test-event', source.attributes.uuid)"
+        >
+          <AppIcon name="activity" :size="16" />
+        </button>
+        <button
           class="icon-btn"
           title="Remove source"
           style="color: var(--ink-3)"
@@ -132,6 +141,7 @@ import {
   SHARED_SECRET_PROVIDER_IDS,
 } from "#shared/utils/webhookSecrets";
 import { isSourceMappable } from "#shared/utils/fieldMapping";
+import { isSourceTestable } from "#shared/utils/sourceTypes";
 
 const ICON_BY_TYPE: Record<string, string> = {
   webhook: "zap",
@@ -181,12 +191,20 @@ const emit = defineEmits<{
   remove: [uuid: string];
   rotate: [uuid: string];
   "configure-mapping": [uuid: string];
+  "test-event": [uuid: string];
 }>();
 
 // Only provider-backed sources have a rotatable secret; a plain webhook or
 // email-in source has none, so the action is hidden for them.
 const isRotatable = computed(() =>
   isRotatableProvider(props.source.attributes.provider ?? ""),
+);
+
+// See isSourceTestable's own comment (shared/utils/sourceTypes.ts) for why
+// this carve-out exists and why it's centralized rather than a local
+// `!== EMAIL_SOURCE_TYPE` comparison.
+const isTestable = computed(() =>
+  isSourceTestable(props.source.attributes.type),
 );
 
 const isMappable = computed(() =>

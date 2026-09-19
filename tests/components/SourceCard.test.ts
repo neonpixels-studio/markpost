@@ -383,6 +383,38 @@ describe("SourceCard", () => {
     expect(webhookWrapper.text()).not.toContain("x-markpost-secret");
   });
 
+  it.each(["webhook", "stripe", "github", "zapier", "shortcuts"])(
+    "shows a send-test-event button for source types that ingest via the JSON webhook path (%s)",
+    (type) => {
+      const wrapper = mount(SourceCard, {
+        ...globalConfig,
+        props: { source: makeSource({ type }) },
+      });
+      expect(wrapper.find("button[title='Send test event']").exists()).toBe(
+        true,
+      );
+    },
+  );
+
+  it("hides the send-test-event button for an email source (never ingests via the JSON webhook path)", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource({ type: "email" }) },
+    });
+    expect(wrapper.find("button[title='Send test event']").exists()).toBe(
+      false,
+    );
+  });
+
+  it("emits test-event with the source uuid when the test-event button is clicked", async () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource() },
+    });
+    await wrapper.find("button[title='Send test event']").trigger("click");
+    expect(wrapper.emitted("test-event")?.[0]).toEqual(["test-uuid-1"]);
+  });
+
   it("does not duplicate the slug — endpointSlug appears exactly once in code body", () => {
     const wrapper = mount(SourceCard, {
       ...globalConfig,
