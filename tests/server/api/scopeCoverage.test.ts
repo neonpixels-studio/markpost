@@ -46,6 +46,7 @@ const EXPECTED_HANDLER_SCOPES: Record<string, string> = {
   "sources/[uuid].get.ts": "sources:read",
   "sources/[uuid].patch.ts": "sources:write",
   "sources/[uuid]/rotate-secret.post.ts": "sources:write",
+  "sources/[uuid]/test.post.ts": "sources:write",
   "sources/index.get.ts": "sources:read",
   "sources/index.post.ts": "sources:write",
   "tokens/[id].delete.ts": "tokens:write",
