@@ -224,7 +224,7 @@ describe("writeEventOncePerRecord", () => {
       { id: "new-event" },
     ]);
 
-    await writeEventOncePerRecord({
+    const outcome = await writeEventOncePerRecord({
       userId: "user_abc",
       kind: "ok",
       message: "Webhook received: Deploy",
@@ -232,6 +232,10 @@ describe("writeEventOncePerRecord", () => {
       sourceId: "src-uuid",
     });
 
+    // "inserted" is the outcome a caller (e.g. writeOkEventAndHeal in
+    // server/api/hooks/[slug].post.ts) relies on to distinguish a genuine
+    // first-time write from a "deduped" no-op or a swallowed "failed" insert.
+    expect(outcome).toBe("inserted");
     expect(insertMock).toHaveBeenCalledOnce();
     expect(values).toHaveBeenCalledWith({
       userId: "user_abc",
@@ -320,7 +324,7 @@ describe("writeEventOncePerRecord", () => {
         recordUuid: "rec-uuid",
         sourceId: "src-uuid",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("deduped");
 
     expect(returning).toHaveBeenCalledOnce();
     expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
@@ -346,7 +350,7 @@ describe("writeEventOncePerRecord", () => {
         recordUuid: "rec-uuid",
         sourceId: "src-uuid",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("failed");
 
     expect(maybePruneEventsForUserMock).not.toHaveBeenCalled();
     expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -383,7 +387,7 @@ describe("writeEventOncePerRecord", () => {
         recordUuid: "rec-uuid",
         sourceId: "src-uuid",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("failed");
 
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       expect.stringContaining("migration 0025 not applied"),
