@@ -1,4 +1,5 @@
 import type { ApiResourceObject, ApiResponse } from "../types/api.types";
+import type { EventKind } from "../db/schema";
 
 export const CONFLICT_STRATEGIES = ["suffix", "overwrite", "skip"] as const;
 export type ConflictStrategy = (typeof CONFLICT_STRATEGIES)[number];
@@ -309,6 +310,14 @@ export function eventSerializer(
   };
 }
 
+// Shared with the route handler (server/api/events/index.get.ts) so a
+// validated EventKind can't be widened to an arbitrary string on its way
+// into the next link.
+export type EventFilters = {
+  kind?: EventKind;
+  sourceId?: string;
+};
+
 type EventPaginationLinksOptions = {
   afterCursor: string | null;
   size: number;
@@ -316,10 +325,7 @@ type EventPaginationLinksOptions = {
   // Carried into the next link so a caller following it keeps paging
   // through the same filtered view instead of falling back to the
   // unfiltered feed once the cursor crosses a page boundary.
-  filters?: {
-    kind?: string;
-    sourceId?: string;
-  };
+  filters?: EventFilters;
 };
 
 type EventPaginationLinks = ApiResponseLinks & { next: string | null };

@@ -8,6 +8,7 @@ import {
   eventSerializer,
   eventPaginationLinks,
   paginationMeta,
+  type EventFilters,
   type EventListApiResponse,
 } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
@@ -29,10 +30,10 @@ type CursorPosition = {
 // SourceType (e.g. "webhook") rather than a sources.uuid — same word, two
 // different shapes, so the events and records filters can never be confused
 // for one another.
-type EventFilters = {
-  kind?: EventKind;
-  sourceId?: string;
-};
+//
+// EventFilters itself lives in ../../utils/response, shared with
+// eventPaginationLinks so a validated EventKind can't be widened to an
+// arbitrary string on its way into the next link.
 
 function isEventKind(value: string): value is EventKind {
   return (EVENT_KINDS as readonly string[]).includes(value);
