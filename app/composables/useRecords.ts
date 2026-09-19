@@ -528,7 +528,19 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     setSelection(next);
   }
 
+  // Guarded here too, not just at the toolbar's disabled "clear" button and
+  // the header checkbox's own disabled state (see toggleSelectAllVisible,
+  // which also routes here): this is the backstop so nothing that reaches
+  // clearSelection directly can wipe the selection out from under a
+  // still-running bulk action, which would leave the uuids that action's own
+  // partial-failure handling relies on (deselectUuids keeps the failed ones
+  // selected for retry) cleared before that handling ever runs. Reuses
+  // rejectConcurrentBulkAction rather than a silent no-op, matching this
+  // file's fail-loud convention (see its own comment below).
   function clearSelection(): void {
+    if (rejectConcurrentBulkAction()) {
+      return;
+    }
     setSelection([]);
   }
 
@@ -584,6 +596,14 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
   // than silently selecting fewer records than "select all" implied.
   function toggleSelectAllVisible(): void {
     if (records.value.length === 0) {
+      return;
+    }
+
+    // Guards both branches below, not just the clearSelection one: the
+    // "select" branch also mutates selectedUuids via setSelection, which is
+    // exactly what must not happen while a bulk action is still
+    // reading/writing that same set.
+    if (rejectConcurrentBulkAction()) {
       return;
     }
 

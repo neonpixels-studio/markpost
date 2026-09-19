@@ -203,7 +203,7 @@ const globalConfig = {
       },
       RecordBulkActions: {
         template:
-          '<div class="record-bulk-actions"><span class="bulk-count">{{ selectedCount }} selected</span><button v-for="status in [\'synced\', \'pending\', \'error\']" :key="status" class="mark-btn" :class="`mark-${status}`" :disabled="disabled" @click="$emit(\'mark-status\', status)">mark {{ status }}</button><button class="delete-selected-btn" :disabled="disabled" @click="$emit(\'delete-selected\')">delete selected</button><button class="clear-btn" @click="$emit(\'clear\')">clear</button></div>',
+          '<div class="record-bulk-actions"><span class="bulk-count">{{ selectedCount }} selected</span><button v-for="status in [\'synced\', \'pending\', \'error\']" :key="status" class="mark-btn" :class="`mark-${status}`" :disabled="disabled" @click="$emit(\'mark-status\', status)">mark {{ status }}</button><button class="delete-selected-btn" :disabled="disabled" @click="$emit(\'delete-selected\')">delete selected</button><button class="clear-btn" :disabled="disabled" @click="$emit(\'clear\')">clear</button></div>',
         props: ["selectedCount", "disabled"],
         emits: ["mark-status", "delete-selected", "clear"],
       },
@@ -666,6 +666,43 @@ describe("inbox page", () => {
       await wrapper.find(".clear-btn").trigger("click");
 
       expect(selectedUuidsRef.value.size).toBe(0);
+    });
+
+    it("disables the clear button while a bulk action is in flight, matching the other bulk-action buttons", async () => {
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      await wrapper.find(".row-select").trigger("click");
+
+      isUpdatingStatusRef.value = true;
+      await flushPromises();
+
+      expect(wrapper.find(".clear-btn").attributes("disabled")).toBeDefined();
+    });
+
+    it("disables the header select-all checkbox while a bulk action is in flight", async () => {
+      // #278: the header checkbox reaches clearSelection through
+      // toggleSelectAllVisible when everything visible is already selected —
+      // a second path to the same mutation the toolbar's "clear" button
+      // guards, with no disabled state of its own before this change. The
+      // composable's own guard against the mutation itself (covered in
+      // tests/composables/useRecords.test.ts) is the real backstop; this
+      // test only proves the page wires isBulkActionInFlight into the
+      // control, matching every other bulk-action control on this page.
+      recordsRef.value = [makeRecord({ uuid: "row-uuid" })];
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      expect(
+        wrapper.find(".input-checkbox").attributes("disabled"),
+      ).toBeUndefined();
+
+      isUpdatingStatusRef.value = true;
+      await flushPromises();
+
+      expect(
+        wrapper.find(".input-checkbox").attributes("disabled"),
+      ).toBeDefined();
     });
   });
 
