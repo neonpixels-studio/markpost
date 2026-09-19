@@ -4,6 +4,7 @@ import { events, EVENT_KINDS, type EventKind } from "../../db/schema";
 import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import { parsePageSize } from "../../utils/pagination";
+import { firstQueryValue } from "../../utils/query";
 import {
   eventSerializer,
   eventPaginationLinks,
@@ -37,15 +38,6 @@ type CursorPosition = {
 
 function isEventKind(value: string): value is EventKind {
   return (EVENT_KINDS as readonly string[]).includes(value);
-}
-
-// h3's getQuery() returns a string[] when a query key is repeated (e.g.
-// ?filter[kind]=err&filter[kind]=warn). Take the first value, the same
-// "duplicate key" convention GET /api/records uses for filter[source].
-function firstQueryValue(
-  value: string | string[] | undefined,
-): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
 }
 
 // 400 (not 422) because these validate query parameters, not body
