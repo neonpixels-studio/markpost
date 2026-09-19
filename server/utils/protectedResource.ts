@@ -2,9 +2,11 @@
 //
 // This declares the resource's supported OAuth scopes machine-readably so an
 // agent can learn what named permissions the API recognizes without reading
-// prose. The scopes describe intent per resource + action; enforcement is not
-// yet wired up (today's bearer tokens are all-access), so this metadata is a
-// forward-looking contract, not a claim that requests are currently scoped.
+// prose. The scopes describe intent per resource + action and are enforced:
+// every handler calls server/utils/auth.ts requireScope with the scope from
+// the endpoint mapping below. A token minted with no `scopes` (mint-time
+// default, and every token minted before scoping existed) is full-access —
+// see server/db/schema.ts apiTokens.scopes and requireScope's NULL handling.
 
 // Path segments appended to the configured app URL to form the resource id and
 // its documentation link, per RFC 9728. The caller resolves the app URL so this
@@ -37,7 +39,7 @@ type Scope = {
 //   billing:read   GET /billing/usage
 //   billing:write  POST /billing/checkout, /billing/portal
 //   account:write  DELETE /account
-export const SCOPES: Scope[] = [
+export const SCOPES = [
   { name: "records:read", description: "Read records and record statistics." },
   { name: "records:write", description: "Create, update, and delete records." },
   { name: "sources:read", description: "List connected sources." },
@@ -56,9 +58,42 @@ export const SCOPES: Scope[] = [
     description: "Start checkout and open the billing portal.",
   },
   { name: "account:write", description: "Delete the account." },
-];
+] as const satisfies readonly Scope[];
 
-export const SCOPE_NAMES: string[] = SCOPES.map((scope) => scope.name);
+// Literal union of every recognized scope name, derived from SCOPES so the
+// enforcement side (server/utils/auth.ts requireScope, every handler that
+// calls it) and the mint-time allowlist (server/api/tokens/index.post.ts)
+// can never drift from the RFC 9728 metadata catalog below.
+export type ScopeName = (typeof SCOPES)[number]["name"];
+
+export const SCOPE_NAMES: ScopeName[] = SCOPES.map((scope) => scope.name);
+
+export function isScopeName(value: unknown): value is ScopeName {
+  return SCOPE_NAMES.includes(value as ScopeName);
+}
+
+// Single trust boundary for the persisted `scopes` column (server/db/
+// schema.ts apiTokens.scopes is a plain text[] with no CHECK constraint).
+// Called everywhere a stored value is read back — server/middleware/auth.ts
+// (populating event.context.tokenScopes) and server/api/tokens/index.get.ts
+// and index.post.ts (serializing the resource) — so a scope name later
+// retired from SCOPES can never silently keep working, and a row that is
+// somehow neither NULL nor a valid array can never be misread as full
+// access. NULL stays NULL (full access, the documented default); a
+// non-array or an array containing nothing recognizable comes back as `[]`
+// (an explicit deny, since only a genuine NULL column value means
+// unrestricted); a valid array is de-duplicated.
+export function parseScopes(value: unknown): ScopeName[] | null {
+  if (value == null) {
+    return null;
+  }
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(new Set(value.filter(isScopeName)));
+}
 
 // RFC 9728 §3. `authorization_servers` is intentionally omitted: Markpost does
 // not yet front the API with an OAuth authorization server, and RFC 9728 makes

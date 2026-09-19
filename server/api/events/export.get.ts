@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "../../db";
 import { events } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import {
   ACTIVITY_EXPORT_FILENAME,
@@ -34,6 +34,7 @@ function serializeExportRow(
 export default defineEventHandler(async (event) => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "events:read");
     const db = getDb();
 
     const rows = await db

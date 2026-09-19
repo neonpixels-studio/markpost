@@ -1,9 +1,15 @@
 import { getDb } from "../../db";
 import { apiTokens } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import type { ApiResponse } from "../../types/api.types";
+import {
+  isScopeName,
+  parseScopes,
+  SCOPE_NAMES,
+  type ScopeName,
+} from "../../utils/protectedResource";
 import { apiValidate, type AttributeRule } from "../../utils/validate";
 import {
   computeExpiresAt,
@@ -19,6 +25,7 @@ import {
 type MintTokenAttributes = {
   name?: string;
   expiresInDays?: number;
+  scopes?: string[];
 };
 
 type MintTokenBody = {
@@ -36,6 +43,8 @@ type MintedTokenResource = {
     prefix: string;
     createdAt: Date;
     expiresAt: Date | null;
+    // NULL means full access — see server/db/schema.ts apiTokens.scopes.
+    scopes: ScopeName[] | null;
     token: string;
   };
 };
@@ -95,23 +104,139 @@ function assertValidExpiresInDays(expiresInDays: number | undefined): void {
   }
 }
 
+function invalidScopesError(): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "422",
+        title: "Invalid Attribute",
+        detail: `Scopes must be a non-empty array containing only: ${SCOPE_NAMES.join(", ")}`,
+        source: { pointer: "/data/attributes/scopes" },
+      },
+    ],
+    422,
+  );
+}
+
+// A scoped token minting a token with broader authority than it has itself
+// would let any `tokens:write` scope escalate to full access one request
+// later (mint with `scopes` omitted). Full-access minters (event.context.
+// tokenScopes is null — a Clerk session, or a full-access token) are
+// unrestricted; a scoped minter may only grant a subset of its own scopes,
+// and may not omit `scopes` (which would request full access).
+function exceedsCallerAuthorityError(): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "422",
+        title: "Invalid Attribute",
+        detail:
+          "A scoped token cannot mint a token with scopes it does not itself have.",
+        source: { pointer: "/data/attributes/scopes" },
+      },
+    ],
+    422,
+  );
+}
+
+// Only undefined/null mean "full access requested" (the documented default —
+// see server/db/schema.ts apiTokens.scopes and requireScope in
+// server/utils/auth.ts). Anything else must be a non-empty array of known
+// scope names, or the mint request is rejected rather than silently minting
+// either an unrestricted token from a malformed value or a token scoped to
+// an unrecognized name that can never match a requireScope check.
+function normalizeScopes(scopes: unknown): ScopeName[] | null {
+  if (scopes === undefined || scopes === null) {
+    return null;
+  }
+
+  const isValidScopeList =
+    Array.isArray(scopes) && scopes.length > 0 && scopes.every(isScopeName);
+
+  if (!isValidScopeList) {
+    throw invalidScopesError();
+  }
+
+  // De-duplicated so the persisted column, the 201 response, and every
+  // later GET /api/tokens agree on the same set (parseScopes de-duplicates
+  // on read, so a write-side duplicate would otherwise disagree with what a
+  // client sees a moment later).
+  return Array.from(new Set(scopes));
+}
+
+function assertWithinCallerAuthority(
+  requestedScopes: ScopeName[] | null,
+  callerScopes: ScopeName[] | null | undefined,
+): void {
+  // A full-access caller (Clerk session, or a full-access token) may mint
+  // any scope set, including another full-access token.
+  if (callerScopes == null) {
+    return;
+  }
+
+  // Omitting `scopes` under a scoped caller would mint a full-access
+  // token — broader than the caller's own authority.
+  if (requestedScopes === null) {
+    throw exceedsCallerAuthorityError();
+  }
+
+  const exceedsCallerAuthority = requestedScopes.some(
+    (scope) => !callerScopes.includes(scope),
+  );
+
+  if (exceedsCallerAuthority) {
+    throw exceedsCallerAuthorityError();
+  }
+}
+
+// Bounds a newly minted token's lifetime to the minting token's own lifetime
+// — the expiry half of caller-authority containment, alongside
+// assertWithinCallerAuthority for scopes above. Without this, a short-lived
+// leaked token could mint itself a longer-lived (or permanent, by omitting
+// expiresInDays) replacement, making the short expiry that was supposed to
+// contain a leak worthless once it lapses. A null callerExpiresAt (a Clerk
+// session, which has no token to inherit a lifetime from, or a caller token
+// that itself never expires) means no constraint to inherit.
+//
+// This does NOT make revocation cascade: api_tokens has no parent/child
+// link, so revoking the leaked parent token does not revoke a child it
+// minted — the child still authenticates until its own (now-bounded)
+// expiry. Closing that gap needs a lineage column (e.g. `mintedByTokenId`)
+// and a cascading revoke in server/api/tokens/[id].delete.ts; flagged as a
+// follow-up rather than added here.
+function clampToCallerExpiry(
+  expiresAt: Date | null,
+  callerExpiresAt: Date | null | undefined,
+): Date | null {
+  if (callerExpiresAt == null) {
+    return expiresAt;
+  }
+
+  if (expiresAt === null || expiresAt > callerExpiresAt) {
+    return callerExpiresAt;
+  }
+
+  return expiresAt;
+}
+
 type InsertTokenInput = {
   userId: string;
   name: string;
   rawToken: string;
   expiresAt: Date | null;
+  scopes: ScopeName[] | null;
 };
 
 async function insertToken(
   db: ReturnType<typeof getDb>,
-  { userId, name, rawToken, expiresAt }: InsertTokenInput,
+  { userId, name, rawToken, expiresAt, scopes }: InsertTokenInput,
 ) {
   const prefix = extractTokenPrefix(rawToken);
   const hashedToken = hashToken(rawToken);
 
   const [created] = await db
     .insert(apiTokens)
-    .values({ userId, name, prefix, hashedToken, expiresAt })
+    .values({ userId, name, prefix, hashedToken, expiresAt, scopes })
     .returning();
 
   return created;
@@ -121,6 +246,7 @@ export default defineEventHandler(
   async (event): Promise<MintTokenApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "tokens:write");
       const body = ((await readBody(event)) ?? {}) as MintTokenBody;
 
       apiValidate(body as ApiRequest, VALIDATION_RULES);
@@ -128,18 +254,27 @@ export default defineEventHandler(
       const attributes = (body.data?.attributes ?? {}) as Required<
         Pick<MintTokenAttributes, "name">
       > &
-        Pick<MintTokenAttributes, "expiresInDays">;
+        Pick<MintTokenAttributes, "expiresInDays" | "scopes">;
 
       const expiresInDays = normalizeExpiresInDays(attributes.expiresInDays);
       assertValidExpiresInDays(expiresInDays);
+      const scopes = normalizeScopes(attributes.scopes);
+      assertWithinCallerAuthority(
+        scopes,
+        event.context.tokenScopes as ScopeName[] | null | undefined,
+      );
 
       const rawToken = generateRawToken();
-      const expiresAt = computeExpiresAt(expiresInDays);
+      const expiresAt = clampToCallerExpiry(
+        computeExpiresAt(expiresInDays),
+        event.context.tokenExpiresAt as Date | null | undefined,
+      );
       const record = await insertToken(getDb(), {
         userId,
         name: attributes.name,
         rawToken,
         expiresAt,
+        scopes,
       });
 
       setResponseStatus(event, 201);
@@ -153,6 +288,7 @@ export default defineEventHandler(
             prefix: record.prefix,
             createdAt: record.createdAt,
             expiresAt: record.expiresAt,
+            scopes: parseScopes(record.scopes),
             token: rawToken,
           },
         },

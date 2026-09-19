@@ -229,6 +229,7 @@ export default defineEventHandler(
   async (event): Promise<RecordListApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "records:read");
       const db = getDb();
 
       const query = getQuery(event);

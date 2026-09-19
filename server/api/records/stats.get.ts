@@ -1,7 +1,7 @@
 import { count, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records, RECORD_STATUSES } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import {
   resolveTimeZone,
@@ -76,6 +76,7 @@ async function fetchRecordStats(
 export default defineEventHandler(async (event): Promise<StatsApiResponse> => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "records:read");
     const db = getDb();
     const query = getQuery(event);
     const timeZone = resolveTimeZone(

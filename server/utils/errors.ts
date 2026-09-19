@@ -1,6 +1,7 @@
 import type { ApiError as ApiErrorObject } from "../types/api.types";
 
 const UNAUTHORIZED_STATUS = 401;
+const FORBIDDEN_STATUS = 403;
 const TOO_MANY_REQUESTS_STATUS = 429;
 
 export class ApiError extends Error {
@@ -33,6 +34,24 @@ export function unauthorizedError(): ApiError {
       },
     ],
     UNAUTHORIZED_STATUS,
+  );
+}
+
+// Scope-gated handlers (requireScope in server/utils/auth.ts) share this shape
+// so an under-scoped API token gets the same JSON:API `{ errors: [...] }`
+// envelope as any other rejection, naming the missing scope so an agent can
+// tell the difference between "not authenticated" (401) and "authenticated,
+// but this token wasn't minted with that permission" (403).
+export function forbiddenScopeError(scope: string): ApiError {
+  return new ApiError(
+    [
+      {
+        status: String(FORBIDDEN_STATUS),
+        title: "Forbidden",
+        detail: `This token does not have the required \`${scope}\` scope.`,
+      },
+    ],
+    FORBIDDEN_STATUS,
   );
 }
 
@@ -91,4 +110,10 @@ export function apiErrorHandler(error: unknown): never {
 // and no caller can accidentally throw a raw ApiError that skips apiErrorHandler.
 export function throwUnauthorized(): never {
   apiErrorHandler(unauthorizedError());
+}
+
+// Single throwing entry point for requireScope (server/utils/auth.ts), mirroring
+// throwUnauthorized so every 403 also flows through apiErrorHandler.
+export function throwForbiddenScope(scope: string): never {
+  apiErrorHandler(forbiddenScopeError(scope));
 }

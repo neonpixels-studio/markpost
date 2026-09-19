@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../../db";
 import { apiTokens } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import { isValidUuid } from "../../utils/uuid";
 import type { ApiResponse } from "../../types/api.types";
@@ -55,6 +55,7 @@ export default defineEventHandler(
   async (event): Promise<RevokeTokenApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "tokens:write");
       const tokenId = getRouterParam(event, "id");
 
       if (!isValidUuid(tokenId)) {

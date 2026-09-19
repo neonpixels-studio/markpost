@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import {
   buildRecordExport,
@@ -15,6 +15,7 @@ import {
 export default defineEventHandler(async (event) => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "records:read");
     const db = getDb();
 
     const rows = await db

@@ -161,6 +161,13 @@ function stubRequireUser(returnedUserId: string | undefined) {
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
   vi.stubGlobal("getQuery", mockGetQuery);
+  // This handler relies on Nitro's auto-import for server/utils/auth exports
+  // (no explicit import in production code), so requireScope needs the same
+  // global-stub treatment as requireUser above. A no-op mirrors the
+  // production default (unscoped/full-access token) since none of this
+  // file's tests target scope enforcement — that's covered directly in
+  // tests/server/utils/auth.test.ts and tests/server/api/tokens/revoke.test.ts.
+  vi.stubGlobal("requireScope", () => {});
   stubRequireUser(userId);
   mockCreateError.mockClear();
   selectMock.mockReset();
@@ -710,5 +717,38 @@ describe("GET /api/records", () => {
 
     expect(findSourceIdInArray(countConditions)).toBeDefined();
     expect(hasCursorColumns(countConditions)).toBe(false);
+  });
+
+  // Every other test in this file stubs requireScope as a no-op (see
+  // beforeEach) so it can focus on list/filter/cursor behavior. This test
+  // overrides that stub for one case to prove the real requireScope
+  // rejection (server/utils/auth.ts, exercised end-to-end in
+  // tests/server/utils/auth.test.ts) is actually wired into this handler,
+  // runs before any query fires, and is not just a comment or dead call —
+  // the static check in tests/server/api/scopeCoverage.test.ts cannot prove
+  // that on its own.
+  describe("requireScope enforcement (records:read)", () => {
+    it("throws 403 and never queries the database when the token lacks records:read", async () => {
+      vi.stubGlobal("requireScope", () => {
+        throw mockCreateError({
+          statusCode: 403,
+          data: {
+            errors: [
+              {
+                status: "403",
+                title: "Forbidden",
+                detail:
+                  "This token does not have the required `records:read` scope.",
+              },
+            ],
+          },
+        });
+      });
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 403,
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
   });
 });

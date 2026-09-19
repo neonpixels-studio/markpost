@@ -3,6 +3,8 @@ import {
   PROTECTED_RESOURCE_PATH,
   SCOPE_NAMES,
   buildProtectedResourceMetadata,
+  isScopeName,
+  parseScopes,
 } from "../../../server/utils/protectedResource";
 
 const APP_URL = "https://custom-domain.example.com";
@@ -42,5 +44,59 @@ describe("protectedResource", () => {
     for (const scope of metadata.scopes_supported) {
       expect(scope).toMatch(/^[a-z]+:[a-z]+$/);
     }
+  });
+});
+
+describe("isScopeName", () => {
+  it("is true for every recognized scope", () => {
+    for (const scope of SCOPE_NAMES) {
+      expect(isScopeName(scope)).toBe(true);
+    }
+  });
+
+  it("is false for an unrecognized string", () => {
+    expect(isScopeName("nonsense")).toBe(false);
+  });
+
+  it("is false for a non-string value", () => {
+    expect(isScopeName(42)).toBe(false);
+    expect(isScopeName(null)).toBe(false);
+    expect(isScopeName(undefined)).toBe(false);
+  });
+});
+
+describe("parseScopes", () => {
+  it("returns null for null (full access, the mint-time default)", () => {
+    expect(parseScopes(null)).toBeNull();
+  });
+
+  it("returns null for undefined (a legacy row with no scopes column set)", () => {
+    expect(parseScopes(undefined)).toBeNull();
+  });
+
+  it("returns the array unchanged when every entry is a recognized scope", () => {
+    expect(parseScopes(["records:read", "records:write"])).toEqual([
+      "records:read",
+      "records:write",
+    ]);
+  });
+
+  it("drops unrecognized entries rather than trusting them", () => {
+    expect(parseScopes(["records:read", "nonsense"])).toEqual(["records:read"]);
+  });
+
+  it("de-duplicates repeated scope names", () => {
+    expect(parseScopes(["records:read", "records:read"])).toEqual([
+      "records:read",
+    ]);
+  });
+
+  it("returns an explicit empty array (deny, not full access) when nothing is recognized", () => {
+    expect(parseScopes(["nonsense", "also-nonsense"])).toEqual([]);
+  });
+
+  it("returns an explicit empty array (deny, not full access) for a non-array, non-null value", () => {
+    expect(parseScopes("records:read")).toEqual([]);
+    expect(parseScopes(42)).toEqual([]);
   });
 });

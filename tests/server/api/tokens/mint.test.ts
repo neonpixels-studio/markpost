@@ -24,8 +24,14 @@ const { default: handler } =
 
 const userId = "user_abc123";
 
-function buildEvent(contextUserId: string | undefined): H3Event {
-  return { context: { userId: contextUserId } } as unknown as H3Event;
+function buildEvent(
+  contextUserId: string | undefined,
+  tokenScopes?: string[] | null,
+  tokenExpiresAt?: Date | null,
+): H3Event {
+  return {
+    context: { userId: contextUserId, tokenScopes, tokenExpiresAt },
+  } as unknown as H3Event;
 }
 
 function buildBody(attributes: Record<string, unknown>) {
@@ -39,6 +45,7 @@ function stubInsertResult(record: {
   hashedToken: string;
   createdAt: Date;
   expiresAt?: Date | null;
+  scopes?: string[] | null;
 }) {
   const returning = vi.fn(() => Promise.resolve([record]));
   const values = vi.fn(() => ({ returning }));
@@ -393,6 +400,352 @@ describe("POST /api/tokens", () => {
       await expect(handler(buildEvent(userId))).rejects.toMatchObject({
         statusCode: 422,
       });
+    });
+  });
+
+  describe("scopes", () => {
+    // Shared by every test in this block: stubs the insert chain and hands
+    // back the row that was actually passed to `.values(...)`, so each test
+    // can assert on the scopes drizzle would have persisted.
+    function stubInsertCapturingRow() {
+      let capturedRow: { scopes?: string[] | null } | undefined;
+
+      const returning = vi.fn(async () => [
+        {
+          id: "token-uuid-1",
+          name: "my-token",
+          prefix: "mp_live_abcd",
+          hashedToken: "some-hash",
+          createdAt: new Date(),
+          scopes: capturedRow?.scopes ?? null,
+        },
+      ]);
+      const values = vi.fn((row: { scopes?: string[] | null }) => {
+        capturedRow = row;
+        return { returning };
+      });
+      insertMock.mockReturnValue({ values });
+
+      return () => capturedRow;
+    }
+
+    it("mints a full-access token (scopes: null) when scopes is omitted", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      const response = await handler(buildEvent(userId));
+
+      expect(getCapturedRow()?.scopes).toBeNull();
+      const data = (
+        response as { data: { attributes: { scopes: string[] | null } } }
+      ).data;
+      expect(data.attributes.scopes).toBeNull();
+    });
+
+    it("mints a full-access token (scopes: null) when scopes is explicitly null", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: null }),
+      );
+
+      await handler(buildEvent(userId));
+
+      expect(getCapturedRow()?.scopes).toBeNull();
+    });
+
+    it("persists a valid scope list", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+      const scopes = ["records:read", "records:write"];
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token", scopes }));
+
+      const response = await handler(buildEvent(userId));
+
+      expect(getCapturedRow()?.scopes).toEqual(scopes);
+      const data = (
+        response as { data: { attributes: { scopes: string[] | null } } }
+      ).data;
+      expect(data.attributes.scopes).toEqual(scopes);
+    });
+
+    it("throws 422 when scopes is not an array", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: "records:read" }),
+      );
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 422,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "422",
+              source: { pointer: "/data/attributes/scopes" },
+            }),
+          ],
+        },
+      });
+    });
+
+    it("throws 422 for an empty scopes array (a token scoped to nothing)", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: [] }),
+      );
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+    });
+
+    it("throws 422 when scopes contains an unrecognized scope name", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: ["records:read", "nonsense"] }),
+      );
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+    });
+  });
+
+  // A scoped token minting an unscoped (or broader) token would let any
+  // `tokens:write` scope escalate to full access one request later.
+  describe("privilege escalation guard (caller authority)", () => {
+    it("throws 422 when a scoped caller omits `scopes` (would request full access)", async () => {
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await expect(
+        handler(buildEvent(userId, ["tokens:write"])),
+      ).rejects.toMatchObject({ statusCode: 422 });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 422,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "422",
+              detail:
+                "A scoped token cannot mint a token with scopes it does not itself have.",
+              source: { pointer: "/data/attributes/scopes" },
+            }),
+          ],
+        },
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("throws 422 when a scoped caller requests a scope it does not itself have", async () => {
+      mockReadBody.mockResolvedValue(
+        buildBody({
+          name: "my-token",
+          scopes: ["tokens:write", "account:write"],
+        }),
+      );
+
+      await expect(
+        handler(buildEvent(userId, ["tokens:write"])),
+      ).rejects.toMatchObject({ statusCode: 422 });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("allows a scoped caller to mint a token scoped to a subset of its own scopes", async () => {
+      stubInsertResult({
+        id: "token-uuid-1",
+        name: "my-token",
+        prefix: "mp_live_abcd",
+        hashedToken: "some-hash",
+        createdAt: new Date(),
+      });
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: ["records:read"] }),
+      );
+
+      const response = await handler(
+        buildEvent(userId, ["records:read", "records:write", "tokens:write"]),
+      );
+
+      expect((response as { data: { id: string } }).data.id).toBe(
+        "token-uuid-1",
+      );
+    });
+
+    it("allows a full-access caller (unscoped token) to mint a full-access token", async () => {
+      stubInsertResult({
+        id: "token-uuid-1",
+        name: "my-token",
+        prefix: "mp_live_abcd",
+        hashedToken: "some-hash",
+        createdAt: new Date(),
+      });
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      const response = await handler(buildEvent(userId, null));
+
+      expect((response as { data: { id: string } }).data.id).toBe(
+        "token-uuid-1",
+      );
+    });
+  });
+
+  // A caller with a bounded lifetime of its own must not be able to mint a
+  // token that outlives it — the expiry half of caller-authority
+  // containment (assertWithinCallerAuthority above is the scopes half).
+  describe("expiry containment (caller authority)", () => {
+    function stubInsertCapturingRow() {
+      let capturedRow: { expiresAt?: Date | null } | undefined;
+
+      const returning = vi.fn(async () => [
+        {
+          id: "token-uuid-1",
+          name: "my-token",
+          prefix: "mp_live_abcd",
+          hashedToken: "some-hash",
+          createdAt: new Date(),
+          expiresAt: capturedRow?.expiresAt ?? null,
+        },
+      ]);
+      const values = vi.fn((row: { expiresAt?: Date | null }) => {
+        capturedRow = row;
+        return { returning };
+      });
+      insertMock.mockReturnValue({ values });
+
+      return () => capturedRow;
+    }
+
+    it("clamps a longer requested expiry down to the caller's own expiry", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+      const callerExpiresAt = new Date("2026-07-01T00:00:00.000Z");
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", expiresInDays: 365 }),
+      );
+
+      await handler(buildEvent(userId, null, callerExpiresAt));
+
+      expect(getCapturedRow()?.expiresAt).toEqual(callerExpiresAt);
+    });
+
+    it("clamps an omitted (never-expires) request down to the caller's own expiry", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+      const callerExpiresAt = new Date("2026-07-01T00:00:00.000Z");
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await handler(buildEvent(userId, null, callerExpiresAt));
+
+      expect(getCapturedRow()?.expiresAt).toEqual(callerExpiresAt);
+    });
+
+    it("keeps a requested expiry that is already shorter than the caller's own", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-06-01T00:00:00.000Z"));
+
+      const getCapturedRow = stubInsertCapturingRow();
+      const callerExpiresAt = new Date("2027-01-01T00:00:00.000Z");
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", expiresInDays: 30 }),
+      );
+
+      await handler(buildEvent(userId, null, callerExpiresAt));
+
+      expect(getCapturedRow()?.expiresAt).toEqual(
+        new Date("2026-07-01T00:00:00.000Z"),
+      );
+
+      vi.useRealTimers();
+    });
+
+    it("does not clamp when the caller itself never expires (tokenExpiresAt null)", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await handler(buildEvent(userId, null, null));
+
+      expect(getCapturedRow()?.expiresAt).toBeNull();
+    });
+
+    it("does not clamp a Clerk session (no token expiresAt to inherit)", async () => {
+      const getCapturedRow = stubInsertCapturingRow();
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await handler(buildEvent(userId, undefined, undefined));
+
+      expect(getCapturedRow()?.expiresAt).toBeNull();
+    });
+  });
+
+  describe("requireScope enforcement (tokens:write)", () => {
+    it("throws 403 when the minting token lacks tokens:write", async () => {
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      await expect(
+        handler(buildEvent(userId, ["records:read"])),
+      ).rejects.toMatchObject({ statusCode: 403 });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 403,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "403",
+              title: "Forbidden",
+              detail:
+                "This token does not have the required `tokens:write` scope.",
+            }),
+          ],
+        },
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("mints successfully when the token carries tokens:write and requests scopes within its own authority", async () => {
+      stubInsertResult({
+        id: "token-uuid-1",
+        name: "my-token",
+        prefix: "mp_live_abcd",
+        hashedToken: "some-hash",
+        createdAt: new Date(),
+      });
+
+      mockReadBody.mockResolvedValue(
+        buildBody({ name: "my-token", scopes: ["tokens:write"] }),
+      );
+
+      const response = await handler(buildEvent(userId, ["tokens:write"]));
+
+      expect(mockSetResponseStatus).toHaveBeenCalledWith(
+        expect.anything(),
+        201,
+      );
+      expect((response as { data: { id: string } }).data.id).toBe(
+        "token-uuid-1",
+      );
+    });
+
+    it("mints successfully for a full-access (unscoped) token", async () => {
+      stubInsertResult({
+        id: "token-uuid-1",
+        name: "my-token",
+        prefix: "mp_live_abcd",
+        hashedToken: "some-hash",
+        createdAt: new Date(),
+      });
+
+      mockReadBody.mockResolvedValue(buildBody({ name: "my-token" }));
+
+      const response = await handler(buildEvent(userId, null));
+
+      expect((response as { data: { id: string } }).data.id).toBe(
+        "token-uuid-1",
+      );
     });
   });
 });

@@ -1,7 +1,7 @@
 import { getDb } from "../../db";
 import { userSettings } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import { assertValidFilenameTemplate } from "../../utils/filenameTemplate";
 import { assertValidVaultDir } from "../../utils/vaultDir";
@@ -113,6 +113,7 @@ export default defineEventHandler(
   async (event): Promise<UserSettingsApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "settings:write");
       const body = (await readBody(event)) as UpdateSettingsBody;
 
       apiValidate(body as ApiRequest, VALIDATION_RULES);
