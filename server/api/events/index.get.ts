@@ -2,7 +2,11 @@ import { and, count, desc, eq, lt, or, type SQL } from "drizzle-orm";
 import { getDb } from "../../db";
 import { events, EVENT_KINDS, type EventKind } from "../../db/schema";
 import { requireScope, requireUser } from "../../utils/auth";
-import { ApiError, apiErrorHandler } from "../../utils/errors";
+import {
+  ApiError,
+  apiErrorHandler,
+  invalidQueryParamError,
+} from "../../utils/errors";
 import { parsePageSize } from "../../utils/pagination";
 import { firstQueryValue } from "../../utils/query";
 import {
@@ -40,37 +44,6 @@ function isEventKind(value: string): value is EventKind {
   return (EVENT_KINDS as readonly string[]).includes(value);
 }
 
-// 400 (not 422) because these validate query parameters, not body
-// attributes — matching the "Invalid cursor" 400 below rather than the 422s
-// used for request-body validation elsewhere in the API.
-function invalidKindFilterError(): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "400",
-        title: "Invalid filter[kind]",
-        detail: `filter[kind] must be one of: ${EVENT_KINDS.join(", ")}`,
-        source: { parameter: "filter[kind]" },
-      },
-    ],
-    400,
-  );
-}
-
-function invalidSourceIdFilterError(): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "400",
-        title: "Invalid filter[sourceId]",
-        detail: "filter[sourceId] must be a valid source uuid",
-        source: { parameter: "filter[sourceId]" },
-      },
-    ],
-    400,
-  );
-}
-
 function validateKindFilter(
   rawFilterKind: string | string[] | undefined,
 ): EventKind | undefined {
@@ -81,7 +54,10 @@ function validateKindFilter(
   }
 
   if (!isEventKind(filterKind)) {
-    throw invalidKindFilterError();
+    throw invalidQueryParamError(
+      "filter[kind]",
+      `filter[kind] must be one of: ${EVENT_KINDS.join(", ")}`,
+    );
   }
 
   return filterKind;
@@ -103,7 +79,10 @@ function validateSourceIdFilter(
   }
 
   if (!isValidUuid(filterSourceId)) {
-    throw invalidSourceIdFilterError();
+    throw invalidQueryParamError(
+      "filter[sourceId]",
+      "filter[sourceId] must be a valid source uuid",
+    );
   }
 
   return filterSourceId;

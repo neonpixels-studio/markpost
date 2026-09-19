@@ -74,6 +74,27 @@ export function tooManyRequestsError(detail: string): ApiError {
   );
 }
 
+// Shared 400 shape for a malformed/unrecognized query filter parameter —
+// used by GET /api/records (filter[source]) and GET /api/events
+// (filter[kind], filter[sourceId]). 400, not 422, because these validate
+// query parameters, not body attributes.
+export function invalidQueryParamError(
+  parameter: string,
+  detail: string,
+): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "400",
+        title: `Invalid ${parameter}`,
+        detail,
+        source: { parameter },
+      },
+    ],
+    400,
+  );
+}
+
 function isHttpError(error: unknown): error is { statusCode: number } {
   return (
     typeof error === "object" &&
