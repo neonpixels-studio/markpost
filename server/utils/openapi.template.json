@@ -538,7 +538,21 @@
         "description": "Cursor-paginated, newest first.",
         "parameters": [
           { "$ref": "#/components/parameters/PageSize" },
-          { "$ref": "#/components/parameters/PageAfter" }
+          { "$ref": "#/components/parameters/PageAfter" },
+          {
+            "name": "filter[kind]",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to events of this kind. Unrecognized values return 400.",
+            "schema": { "$ref": "#/components/schemas/EventKind" }
+          },
+          {
+            "name": "filter[sourceId]",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to events attributed to this source uuid. A well-formed uuid that matches nothing returns an empty page; a malformed value returns 400.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
         ],
         "responses": {
           "200": {

@@ -12,8 +12,13 @@ import {
 } from "drizzle-orm";
 import { getDb } from "../../db";
 import { records, RECORD_STATUSES, sources } from "../../db/schema";
-import { ApiError, apiErrorHandler } from "../../utils/errors";
+import {
+  ApiError,
+  apiErrorHandler,
+  invalidQueryParamError,
+} from "../../utils/errors";
 import { buildRecordListResponse, parsePageSize } from "../../utils/pagination";
+import { firstQueryValue } from "../../utils/query";
 import type { RecordListApiResponse } from "../../utils/response";
 import {
   isSourceType,
@@ -80,36 +85,6 @@ async function resolveCursor(
   return cursor;
 }
 
-// 400 (not 422) because this validates a query parameter, not a body
-// attribute — matching the "Invalid cursor" 400 above rather than the 422s
-// used for POST /api/sources body validation.
-function invalidSourceFilterError(): ApiError {
-  return new ApiError(
-    [
-      {
-        status: "400",
-        title: "Invalid filter[source]",
-        detail: `filter[source] must be one of: ${SOURCE_TYPES.join(", ")}`,
-        source: { parameter: "filter[source]" },
-      },
-    ],
-    400,
-  );
-}
-
-// h3's getQuery() returns a string[] when a query key is repeated (e.g.
-// ?filter[source]=webhook&filter[source]=email). filter[status] and
-// filter[q] silently ignore that shape today (same as any other unrecognized
-// value), but filter[source] now throws on an unrecognized value, so an
-// unnormalized array would produce a misleading "must be one of" error even
-// though every value the caller sent was valid. Take the first value, the
-// same "duplicate key" convention most query-string parsers use.
-function firstQueryValue(
-  value: string | string[] | undefined,
-): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
 function validateSourceFilter(
   rawFilterSource: string | string[] | undefined,
 ): SourceType | undefined {
@@ -120,7 +95,10 @@ function validateSourceFilter(
   }
 
   if (!isSourceType(filterSource)) {
-    throw invalidSourceFilterError();
+    throw invalidQueryParamError(
+      "filter[source]",
+      `filter[source] must be one of: ${SOURCE_TYPES.join(", ")}`,
+    );
   }
 
   return filterSource;

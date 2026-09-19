@@ -147,8 +147,9 @@ export function buildFetchUrl(
     params.set("filter[status]", filters.status);
   }
 
-  // The server-provided links.next drops the active filters, so we rebuild the
-  // cursor URL client-side to keep filter[source]/filter[status] on later pages.
+  // Unlike GET /api/events, GET /api/records's server-provided links.next
+  // drops the active filters, so we rebuild the cursor URL client-side to
+  // keep filter[source]/filter[status] on later pages.
   if (afterUuid) {
     params.set("page[after]", afterUuid);
   }
