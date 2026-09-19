@@ -31,3 +31,16 @@ export const EMAIL_SOURCE_TYPE: SourceType = "email";
 export function isSourceType(value: string): value is SourceType {
   return (SOURCE_TYPES as readonly string[]).includes(value);
 }
+
+// The source test-event action (server/api/sources/[uuid]/test.post.ts) only
+// ever exercises applyFieldMapping and the hooks endpoint's signature
+// dispatch — both JSON-webhook-only, same as isSourceMappable's carve-out
+// above. Shared here (not just repeated per call site) so the card
+// (app/components/SourceCard.vue), the page's own guard
+// (app/pages/sources.vue), and the endpoint's guard agree on exactly which
+// type that applies to, rather than three separate `=== EMAIL_SOURCE_TYPE`
+// comparisons that could individually drift if a new non-JSON-webhook source
+// type were ever added.
+export function isSourceTestable(sourceType: string): boolean {
+  return sourceType !== EMAIL_SOURCE_TYPE;
+}

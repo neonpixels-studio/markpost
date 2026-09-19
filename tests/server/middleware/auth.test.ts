@@ -75,10 +75,18 @@ const userId = "user_abc123";
 const tokenId = "token-uuid-1";
 
 function buildEvent(path: string = "/api/records"): H3Event & {
-  context: { userId?: string };
+  context: {
+    userId?: string;
+    tokenScopes?: string[] | null;
+    tokenExpiresAt?: Date | null;
+  };
 } {
   return { path, context: {} } as unknown as H3Event & {
-    context: { userId?: string };
+    context: {
+      userId?: string;
+      tokenScopes?: string[] | null;
+      tokenExpiresAt?: Date | null;
+    };
   };
 }
 
@@ -356,6 +364,86 @@ describe("auth middleware", () => {
 
       expect(stubs.where).toHaveBeenCalledOnce();
       expect(stubs.limit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe("tokenScopes context (server/utils/auth.ts requireScope reads this)", () => {
+    it("sets tokenScopes to null for a legacy/unscoped token (full access)", async () => {
+      const rawToken = generateRawToken();
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, scopes: null }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenScopes).toBeNull();
+    });
+
+    it("carries the token's scopes array through to context", async () => {
+      const rawToken = generateRawToken();
+      const scopes = ["records:read", "records:write"];
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, scopes }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenScopes).toEqual(scopes);
+    });
+
+    it("sets tokenScopes to null for a Clerk session (always full access)", async () => {
+      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
+      mockGetHeader.mockReturnValue(`Bearer ${clerkToken}`);
+      mockVerifyToken.mockResolvedValue({ sub: userId });
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenScopes).toBeNull();
+    });
+  });
+
+  describe("tokenExpiresAt context (mint-time caller-authority clamp reads this)", () => {
+    it("carries the token's own expiresAt through to context", async () => {
+      const rawToken = generateRawToken();
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, expiresAt }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenExpiresAt).toEqual(expiresAt);
+    });
+
+    it("sets tokenExpiresAt to null for a token that never expires", async () => {
+      const rawToken = generateRawToken();
+
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId, expiresAt: null }]);
+      stubUpdateSuccess();
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenExpiresAt).toBeNull();
+    });
+
+    it("sets tokenExpiresAt to null for a Clerk session (no token to inherit a lifetime from)", async () => {
+      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
+      mockGetHeader.mockReturnValue(`Bearer ${clerkToken}`);
+      mockVerifyToken.mockResolvedValue({ sub: userId });
+
+      const event = buildEvent();
+      await handler(event);
+
+      expect(event.context.tokenExpiresAt).toBeNull();
     });
   });
 

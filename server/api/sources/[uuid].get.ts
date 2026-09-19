@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../db";
 import { sources } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import { sourceSerializer, type SourceApiResponse } from "../../utils/response";
 import { sourceNotFoundError } from "../../utils/sourceErrors";
@@ -22,6 +22,7 @@ async function findUserSource(userId: string, sourceUuid: string) {
 export default defineEventHandler(async (event): Promise<SourceApiResponse> => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "sources:read");
     const sourceUuid = getRouterParam(event, "uuid");
 
     if (!isValidUuid(sourceUuid)) {

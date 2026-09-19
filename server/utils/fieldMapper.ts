@@ -57,7 +57,13 @@ const TAG_OBJECT_KEYS = ["name", "title", "label", "value"] as const;
 export const MAX_TAGS = 50;
 export const MAX_TAG_LENGTH = 100;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+// Exported so other JSON-object-payload validators (e.g. the source
+// test-event endpoint, server/api/sources/[uuid]/test.post.ts) share this
+// definition instead of redeclaring their own — a plain object here means
+// exactly what applyFieldMapping/coerceTagsValue below already treat as one.
+export function isPlainObject(
+  value: unknown,
+): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

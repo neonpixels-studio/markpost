@@ -7,7 +7,7 @@ import {
   RECORD_STATUSES,
 } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
 import {
   parseWebhookPayload,
@@ -466,6 +466,7 @@ async function writeRecordCreatedEvent(
 export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "records:write");
     const body = (await readBody(event)) as CreateRecordBody;
 
     apiValidate(body as ApiRequest, VALIDATION_RULES);

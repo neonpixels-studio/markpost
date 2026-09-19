@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../db";
 import { sources } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
 import { sourceNotFoundError } from "../../utils/sourceErrors";
 import { invalidUuidError, isValidUuid } from "../../utils/uuid";
@@ -28,6 +28,7 @@ export default defineEventHandler(
   async (event): Promise<DeleteSourceResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "sources:write");
       const sourceUuid = getRouterParam(event, "uuid");
 
       if (!isValidUuid(sourceUuid)) {

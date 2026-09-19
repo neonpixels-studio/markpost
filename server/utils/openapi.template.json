@@ -624,7 +624,7 @@
       "post": {
         "tags": ["Tokens"],
         "summary": "Mint an API token",
-        "description": "The raw `mp_live_...` token is returned exactly once, in this response. Omit `expiresInDays` for a token that never expires.",
+        "description": "The raw `mp_live_...` token is returned exactly once, in this response. Omit `expiresInDays` for a token that never expires. Omit `scopes` for full access (every scope) — the default, and the behavior of every token minted before scoping existed. A caller minting from a scoped or time-bounded API token (as opposed to a browser session) cannot grant a token broader scopes or a longer lifetime than its own: `scopes` must then be an explicit subset of the caller's own scopes, and a requested `expiresInDays` longer than the caller's remaining lifetime (or omitted, under a caller that itself expires) is silently clamped to it.",
         "requestBody": {
           "required": true,
           "content": {
@@ -645,6 +645,12 @@
                             "type": ["integer", "null"],
                             "minimum": 1,
                             "maximum": 3650
+                          },
+                          "scopes": {
+                            "type": ["array", "null"],
+                            "items": { "type": "string" },
+                            "minItems": 1,
+                            "description": "One or more names from the top-level `x-scopes` catalog. Omit or send null for full access."
                           }
                         }
                       }
@@ -680,6 +686,11 @@
                             "expiresAt": {
                               "type": ["string", "null"],
                               "format": "date-time"
+                            },
+                            "scopes": {
+                              "type": ["array", "null"],
+                              "items": { "type": "string" },
+                              "description": "Exactly the requested `scopes` (null means full access) — a request exceeding the minting caller's own scopes is rejected with 422, never silently narrowed."
                             },
                             "token": {
                               "type": "string",
@@ -1316,7 +1327,15 @@
                 "type": ["string", "null"],
                 "format": "date-time"
               },
-              "expiresAt": { "type": ["string", "null"], "format": "date-time" }
+              "expiresAt": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "scopes": {
+                "type": ["array", "null"],
+                "items": { "type": "string" },
+                "description": "One of the names in the top-level `x-scopes` catalog. Null means full access (every scope) — the default for a token minted without `scopes`, and for every token minted before scoping existed."
+              }
             }
           }
         }

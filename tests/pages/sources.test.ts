@@ -10,6 +10,7 @@ const mockAddSource = vi.fn();
 const mockRemoveSource = vi.fn();
 const mockRotateSecret = vi.fn();
 const mockUpdateFieldMapping = vi.fn();
+const mockSendTestEvent = vi.fn();
 
 const sourcesRef = ref<object[]>([]);
 const isLoadingRef = ref(false);
@@ -23,6 +24,7 @@ vi.mock("../../app/composables/useSources", () => ({
     removeSource: mockRemoveSource,
     rotateSecret: mockRotateSecret,
     updateFieldMapping: mockUpdateFieldMapping,
+    sendTestEvent: mockSendTestEvent,
   }),
   buildEndpointUrl: (type: string, slug: string) => {
     if (type === "email") {
@@ -51,9 +53,9 @@ const globalConfig = {
       AppIcon: { template: "<span />" },
       SourceCard: {
         template:
-          '<div class="source-card" @click="$emit(\'remove\', source.attributes.uuid)"><button class="rotate-trigger" @click.stop="$emit(\'rotate\', source.attributes.uuid)" /><button class="mapping-trigger" @click.stop="$emit(\'configure-mapping\', source.attributes.uuid)" /></div>',
+          '<div class="source-card" @click="$emit(\'remove\', source.attributes.uuid)"><button class="rotate-trigger" @click.stop="$emit(\'rotate\', source.attributes.uuid)" /><button class="mapping-trigger" @click.stop="$emit(\'configure-mapping\', source.attributes.uuid)" /><button class="test-event-trigger" @click.stop="$emit(\'test-event\', source.attributes.uuid)" /></div>',
         props: ["source"],
-        emits: ["remove", "rotate", "configure-mapping"],
+        emits: ["remove", "rotate", "configure-mapping", "test-event"],
       },
       AddSourceModal: {
         template: '<div class="add-source-modal" />',
@@ -77,6 +79,12 @@ const globalConfig = {
           '<div class="mapping-modal"><button class="mapping-save" @click="$emit(\'save\', { title: \'data.subject\' })" /><button class="mapping-save-null" @click="$emit(\'save\', null)" /><button class="mapping-close" @click="$emit(\'close\')" /></div>',
         props: ["fieldMappingState", "submitting", "error"],
         emits: ["close", "save"],
+      },
+      TestEventModal: {
+        template:
+          '<div class="test-event-modal"><button class="test-event-send" @click="$emit(\'send\', { title: \'custom\' })" /><button class="test-event-close" @click="$emit(\'close\')" /></div>',
+        props: ["testEventState", "submitting", "error"],
+        emits: ["close", "send"],
       },
     },
   },
@@ -113,6 +121,7 @@ describe("sources page", () => {
     mockRemoveSource.mockReset();
     mockRotateSecret.mockReset();
     mockUpdateFieldMapping.mockReset();
+    mockSendTestEvent.mockReset();
   });
 
   it("calls loadSources on mount", () => {
@@ -486,6 +495,116 @@ describe("sources page", () => {
       resolveSave(makeSource("uuid-1"));
       await flushPromises();
       expect(wrapper.find(".mapping-modal").exists()).toBe(false);
+    });
+  });
+
+  describe("test event flow", () => {
+    const sampleResult = {
+      provider: null,
+      payload: { title: "custom" },
+      signatureCheck: { status: "not_required", message: "no provider" },
+      fieldMapping: {
+        title: "custom",
+        content: "",
+        tags: [],
+        frontmatter: {},
+        filePath: "99-incoming/custom.md",
+      },
+    };
+
+    it("opens the test event modal when a card requests it", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".test-event-trigger").trigger("click");
+      expect(wrapper.find(".test-event-modal").exists()).toBe(true);
+    });
+
+    it("does not open the test event modal for an email source (mirrors SourceCard's own gate — email never ingests via the JSON webhook path)", async () => {
+      const emailSource = makeSource("uuid-email");
+      emailSource.attributes.type = "email";
+      sourcesRef.value = [emailSource];
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".test-event-trigger").trigger("click");
+      expect(wrapper.find(".test-event-modal").exists()).toBe(false);
+    });
+
+    it("does not open the test event modal if the source is no longer in the list by the time the request is handled", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      const wrapper = mount(SourcesPage, globalConfig);
+      const trigger = wrapper.find(".test-event-trigger");
+      // Simulate the source vanishing (a concurrent loadSources/delete)
+      // between render and the click being handled.
+      sourcesRef.value = [];
+      await trigger.trigger("click");
+      expect(wrapper.find(".test-event-modal").exists()).toBe(false);
+    });
+
+    it("calls sendTestEvent with the source uuid and the emitted payload", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockSendTestEvent.mockResolvedValue(sampleResult);
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".test-event-trigger").trigger("click");
+      await wrapper.find(".test-event-send").trigger("click");
+      await flushPromises();
+      expect(mockSendTestEvent).toHaveBeenCalledWith("uuid-1", {
+        title: "custom",
+      });
+    });
+
+    it("stores the result on the modal state after a successful send", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockSendTestEvent.mockResolvedValue(sampleResult);
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".test-event-trigger").trigger("click");
+      const modal = wrapper.findComponent(".test-event-modal");
+      await wrapper.find(".test-event-send").trigger("click");
+      await flushPromises();
+
+      expect(modal.props("testEventState")).toMatchObject({
+        result: sampleResult,
+      });
+    });
+
+    it("keeps the modal open and routes a send failure into the modal's error prop", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockSendTestEvent.mockRejectedValue(new Error("test event failed"));
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".test-event-trigger").trigger("click");
+      const modal = wrapper.findComponent(".test-event-modal");
+      await wrapper.find(".test-event-send").trigger("click");
+      await flushPromises();
+
+      expect(wrapper.find(".test-event-modal").exists()).toBe(true);
+      expect(modal.props("error")).toContain("Failed to send test event");
+    });
+
+    it("closes the modal on a close emitted when no send is in flight", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".test-event-trigger").trigger("click");
+      expect(wrapper.find(".test-event-modal").exists()).toBe(true);
+      await wrapper.find(".test-event-close").trigger("click");
+      expect(wrapper.find(".test-event-modal").exists()).toBe(false);
+    });
+
+    it("ignores a close emitted while a send is in flight", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      let resolveSend: (value: typeof sampleResult) => void = () => {};
+      mockSendTestEvent.mockReturnValue(
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        }),
+      );
+      const wrapper = mount(SourcesPage, globalConfig);
+      await wrapper.find(".test-event-trigger").trigger("click");
+      wrapper.find(".test-event-send").trigger("click");
+      await Promise.resolve();
+
+      await wrapper.find(".test-event-close").trigger("click");
+      expect(wrapper.find(".test-event-modal").exists()).toBe(true);
+
+      resolveSend(sampleResult);
+      await flushPromises();
     });
   });
 

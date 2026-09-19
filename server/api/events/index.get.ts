@@ -1,7 +1,7 @@
 import { and, count, desc, eq, lt, or, type SQL } from "drizzle-orm";
 import { getDb } from "../../db";
 import { events, EVENT_KINDS, type EventKind } from "../../db/schema";
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import { parsePageSize } from "../../utils/pagination";
 import {
@@ -216,6 +216,7 @@ export default defineEventHandler(
   async (event): Promise<EventListApiResponse> => {
     try {
       const userId = requireUser(event);
+      requireScope(event, "events:read");
       const db = getDb();
 
       const query = getQuery(event);

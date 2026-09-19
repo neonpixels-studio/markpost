@@ -9,6 +9,15 @@ export function createMockCreateError() {
   });
 }
 
+// Deliberately NOT delegated to signatureVerifier.ts's own
+// buildStripeSignatureHeader/buildGithubSignatureHeader (added alongside the
+// source test-event endpoint, server/api/sources/[uuid]/test.post.ts): those
+// share their HMAC computation with verifyStripeSignature/verifyGithubSignature
+// (the functions signatureVerifier.test.ts exercises), so a fixture built from
+// them would sign and verify with the same code — a regression that could
+// silently break real verification (e.g. a wrong delimiter or hash algorithm)
+// while every test using this fixture stayed green. This stays an independent
+// transcription of each provider's published signing scheme.
 export function buildValidStripeHeader(
   rawBody: string,
   secret: string,

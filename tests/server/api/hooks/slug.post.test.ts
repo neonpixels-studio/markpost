@@ -44,6 +44,11 @@ vi.mock("drizzle-orm", () => ({
     column,
     pattern,
   }),
+  like: (column: unknown, pattern: unknown) => ({
+    op: "like",
+    column,
+    pattern,
+  }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     strings,
     values,
@@ -309,7 +314,11 @@ beforeEach(() => {
   mockWriteEvent.mockReset();
   mockWriteEvent.mockResolvedValue(undefined);
   mockWriteEventOncePerRecord.mockReset();
-  mockWriteEventOncePerRecord.mockResolvedValue(undefined);
+  // "inserted" is the default so existing dedup-path tests keep exercising the
+  // heal attempt as they did when the mock resolved to undefined (pre-
+  // markpost#277); tests that specifically need a "deduped" or "failed"
+  // outcome override this.
+  mockWriteEventOncePerRecord.mockResolvedValue("inserted");
   mockAssertWithinRecordLimit.mockReset();
   mockAssertWithinRecordLimit.mockResolvedValue(undefined);
   mockRecordWebhookHit.mockReset();
@@ -1510,10 +1519,15 @@ describe("POST /api/hooks/[slug]", () => {
           sourceId: SOURCE_UUID,
         }),
       );
+      // The record's errorMessage carries the same CONFIRMATION_FAILURE_PREFIX
+      // as the err event's message (markpost#277) — this is the marker
+      // markRecordHealed matches on to tell this handler's own confirmation
+      // failures apart from a CLI-reported vault-write error.
       expect(updateSet).toHaveBeenCalledWith(
         expect.objectContaining({
           status: "error",
-          errorMessage: "event write error",
+          errorMessage:
+            "Failed to confirm webhook ingestion: event write error",
         }),
       );
 
@@ -1862,19 +1876,27 @@ describe("POST /api/hooks/[slug]", () => {
         ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
       );
       expect(bumped).toBe(false);
-      const lastCall = (
-        statsSet.mock.calls.at(-1) as [Record<string, unknown>]
-      )[0];
-      expect(lastCall).toHaveProperty("lastHitAt");
+      // Looked up by shape, not `.at(-1)`: the claim, the lastHitAt touch, and
+      // the heal attempt (markRecordHealed; markpost#277, default-mocked as
+      // "inserted") are three independently-scheduled db.update calls, and
+      // their relative order is a microtask-timing artifact, not a
+      // contract — asserting position would make this test fragile to an
+      // unrelated await added anywhere in that chain.
+      const lastHitAtCall = statsSet.mock.calls.find(([set]) =>
+        Object.prototype.hasOwnProperty.call(set as object, "lastHitAt"),
+      )?.[0] as Record<string, unknown> | undefined;
+      expect(lastHitAtCall).toHaveProperty("lastHitAt");
     });
 
     // Debounce boundary (inside the window), in-memory fast path: a retry
     // lands while the source's lastHitAt (as read at the top of this request)
     // is still fresh, so touchLastHitAt must skip its UPDATE entirely without
-    // a round trip — the only db.update call left is the losing claim
-    // attempt. (The DB-level guard that protects same-instant duplicates
-    // racing on a stale snapshot is covered separately, by asserting the
-    // WHERE clause shape in the "outside the window" test below.)
+    // a round trip — leaving only the losing claim attempt and the
+    // writeOkEventAndHeal heal attempt (markRecordHealed; markpost#277) as
+    // db.update calls, neither of which ever touches lastHitAt. (The
+    // DB-level guard that protects same-instant duplicates racing on a stale
+    // snapshot is covered separately, by asserting the WHERE clause shape in
+    // the "outside the window" test below.)
     it("skips the lastHitAt write when the source was touched inside the debounce window", async () => {
       const rawBody = JSON.stringify({
         id: "evt_dup_fresh",
@@ -1897,12 +1919,16 @@ describe("POST /api/hooks/[slug]", () => {
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-      // Only the claim attempt touched db.update; no follow-up lastHitAt set.
-      expect(statsSet).toHaveBeenCalledOnce();
-      const lastCall = (
-        statsSet.mock.calls.at(-1) as [Record<string, unknown>]
-      )[0];
-      expect(lastCall).not.toHaveProperty("lastHitAt");
+      // No call ever carries a lastHitAt set — the debounced touch never ran
+      // at all. (Not asserting an exact total call count here: the claim
+      // attempt and the heal attempt, markpost#277, are independent db.update
+      // calls unrelated to this test's subject, so pinning their count would
+      // make this test fail for reasons that have nothing to do with the
+      // debounce behaviour it exists to guard.)
+      const lastHitAtCalls = statsSet.mock.calls.filter(([set]) =>
+        Object.prototype.hasOwnProperty.call(set as object, "lastHitAt"),
+      );
+      expect(lastHitAtCalls).toHaveLength(0);
     });
 
     // Debounce boundary (outside the window): a retry lands once the source's
@@ -1941,11 +1967,20 @@ describe("POST /api/hooks/[slug]", () => {
         const response = await handler(buildEvent());
 
         expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-        // The claim attempt plus the follow-up lastHitAt refresh: two calls.
-        expect(statsSet).toHaveBeenCalledTimes(2);
-        const lastCall = (
-          statsSet.mock.calls.at(-1) as [Record<string, unknown>]
-        )[0];
+        // Not asserting an exact total call count: the claim attempt and the
+        // heal attempt (markRecordHealed; markpost#277) are independent
+        // db.update calls unrelated to this test's subject (the staleness
+        // re-check below). Locating the lastHitAt call by shape instead
+        // proves the refresh happened without coupling to how many other
+        // calls surround it.
+        const lastHitAtCallIndex = statsSet.mock.calls.findIndex(([set]) =>
+          Object.prototype.hasOwnProperty.call(set as object, "lastHitAt"),
+        );
+        expect(lastHitAtCallIndex).toBeGreaterThanOrEqual(0);
+        const lastCall = statsSet.mock.calls[lastHitAtCallIndex][0] as Record<
+          string,
+          unknown
+        >;
         expect(lastCall).toHaveProperty("lastHitAt");
 
         // The touch's WHERE is `and(eq(sourceId), or(isNull, lte(staleBefore)))`
@@ -1953,7 +1988,13 @@ describe("POST /api/hooks/[slug]", () => {
         // including its exact cutoff value, so a future edit that drops the
         // guard OR breaks its cutoff math (e.g. wrong sign, wrong unit) fails
         // this test rather than only being caught by shape-only assertions.
-        const touchWhereCondition = statsWhere.mock.calls.at(-1)?.[0] as {
+        // Looked up by the same index as the lastHitAt `set` call above (set
+        // and where are always called in the same pair, in order), rather
+        // than `.at(-1)`, since the heal attempt's own db.update call may
+        // land before or after this one.
+        const touchWhereCondition = statsWhere.mock.calls[
+          lastHitAtCallIndex
+        ]?.[0] as {
           op: string;
           conditions: Array<{
             op: string;
@@ -2075,6 +2116,235 @@ describe("POST /api/hooks/[slug]", () => {
       consoleErrorSpy.mockRestore();
     });
 
+    // Shared assertion for the heal tests below: locates the markRecordHealed
+    // UPDATE (its `set` is the only one in this file carrying `status:
+    // "pending"`) and asserts its guard is exactly (records.uuid = … AND
+    // records.status = 'error' AND records.errorMessage LIKE
+    // 'Failed to confirm webhook ingestion: %') — the three-part guard that
+    // is the actual safety net against clobbering a CLI-reported error (see
+    // writeOkEventAndHeal's comment for why the outcome check alone cannot be
+    // that safety net).
+    function expectHealGuard(
+      updateSet: ReturnType<typeof vi.fn>,
+      updateWhere: ReturnType<typeof vi.fn>,
+    ): void {
+      const healCallIndex = updateSet.mock.calls.findIndex(
+        ([set]) => (set as { status?: string }).status === "pending",
+      );
+      expect(healCallIndex).toBeGreaterThanOrEqual(0);
+      expect(
+        (updateSet.mock.calls[healCallIndex] as [Record<string, unknown>])[0],
+      ).toMatchObject({ status: "pending", errorMessage: null });
+
+      const guard = updateWhere.mock.calls[healCallIndex]?.[0] as {
+        op?: string;
+        conditions?: Array<{
+          op?: string;
+          column?: unknown;
+          value?: unknown;
+          pattern?: unknown;
+        }>;
+      };
+      expect(guard.op).toBe("and");
+      expect(guard.conditions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            column: records.uuid,
+            value: sampleRecord.uuid,
+          }),
+          expect.objectContaining({ column: records.status, value: "error" }),
+          expect.objectContaining({
+            op: "like",
+            column: records.errorMessage,
+            pattern: "Failed to confirm webhook ingestion: %",
+          }),
+        ]),
+      );
+    }
+
+    // Regression guard for markpost#277: a record left in `error` by an
+    // earlier failed confirmation write must be reconciled once a later
+    // retry's ok event write actually lands — that is the "healing" signal.
+    // Reconciles to `pending`, not `synced` (see markRecordHealed's comment
+    // in the handler): `synced` is exclusively set by the CLI confirming a
+    // vault write and is unrelated to this confirmation.
+    it("reconciles an errored record back to pending when a healing ok event is inserted for the first time", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_heal",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        // status: "error" is what makes selectOkEventWriter choose
+        // writeOkEventAndHeal in the first place — see the writer-selection
+        // tests below for the case where it's anything else.
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "error" }],
+      );
+      const { set: updateSet, where: updateWhere } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      // "inserted": this request's ok-event write is the one that just landed
+      // for the first time in this record's life — the earlier delivery's
+      // write is what left the record in `error`.
+      mockWriteEventOncePerRecord.mockResolvedValue("inserted");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expectHealGuard(updateSet, updateWhere);
+    });
+
+    // The other common real-world shape: the ok-event row actually landed on
+    // an earlier attempt, but that attempt's own fetch rejected (a
+    // neon-http round trip has no ambient transaction, so a commit can
+    // outlive a client-side timeout) and reported failure — the record was
+    // marked `error` despite the row existing. A later redelivery sees that
+    // row as an ordinary dedup hit ("deduped", never "inserted" again), and
+    // must still be able to heal it — see writeOkEventAndHeal's comment for
+    // why the gate is "not failed" rather than "is inserted".
+    it("reconciles an errored record back to pending on an ordinary deduped retry too", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_heal_deduped",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "error" }],
+      );
+      const { set: updateSet, where: updateWhere } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      mockWriteEventOncePerRecord.mockResolvedValue("deduped");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expectHealGuard(updateSet, updateWhere);
+    });
+
+    // writeEventOncePerRecord fails CLOSED (server/utils/eventWriter.ts): a
+    // transient DB blip on the ok-event insert is swallowed and the write
+    // still resolves without throwing — as the "failed" outcome, not
+    // "inserted"/"deduped". This is the one outcome that must skip the heal
+    // entirely: this attempt did not, as far as it can tell, confirm
+    // anything, so there is nothing yet to reconcile.
+    it("does not heal when the ok event write fails (swallowed, not thrown)", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_heal_write_failed",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "error" }],
+      );
+      const { set: updateSet } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      mockWriteEventOncePerRecord.mockResolvedValue("failed");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      const healCalls = updateSet.mock.calls.filter(
+        ([set]) => (set as { status?: string }).status === "pending",
+      );
+      expect(healCalls).toHaveLength(0);
+    });
+
+    // selectOkEventWriter's whole reason to exist: the overwhelming majority
+    // of redeliveries hit a healthy record (`pending`/`synced`), and for
+    // those, markRecordHealed's guarded UPDATE would always be a no-op — so
+    // the writer is chosen from the record already read by
+    // findAlreadyIngested/findRecordByDelivery, and writeOkEventOnly is
+    // picked instead, skipping that round trip entirely rather than relying
+    // on the WHERE guard to make it a no-op. The event write itself still
+    // happens as normal.
+    it("does not attempt a heal UPDATE on an ordinary retry whose record is not currently in error", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_ordinary_retry",
+        type: "charge.succeeded",
+      });
+      stubSourceThenDelivery(
+        [stripeSource],
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "pending" }],
+      );
+      const { set: updateSet } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(mockWriteEventOncePerRecord).toHaveBeenCalled();
+      const healCalls = updateSet.mock.calls.filter(
+        ([set]) => (set as { status?: string }).status === "pending",
+      );
+      expect(healCalls).toHaveLength(0);
+    });
+
+    // Hot-path guard: a fresh insert (this record did not exist before this
+    // request) can never already be `error`, so writeIngestSideEffects must
+    // use plain writeEvent, never writeOkEventAndHeal, for it — no heal
+    // UPDATE should be issued at all on this path.
+    it("does not issue a heal UPDATE on a fresh (non-deduped) insert", async () => {
+      stubSourceAndSettings([sampleSource]);
+      const { set: updateSet } = stubUpdateStats();
+      stubInsertRecord(sampleRecord);
+      mockReadRawBody.mockResolvedValue(
+        JSON.stringify({ title: "Hello", content: "C" }),
+      );
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expect(mockWriteEventOncePerRecord).not.toHaveBeenCalled();
+      const healCalls = updateSet.mock.calls.filter(
+        ([set]) => (set as { status?: string }).status === "pending",
+      );
+      expect(healCalls).toHaveLength(0);
+    });
+
+    // The other writeOkEventAndHeal call site: a concurrent insert that lost
+    // the unique-index race also resolves through the record-deduped writer
+    // (deduped=true), so it must attempt the heal exactly like the
+    // already-ingested retry path above, once the record it resolved to is
+    // itself read back as `error`.
+    it("also attempts a heal on the concurrent-race dedup-hit path", async () => {
+      const rawBody = JSON.stringify({
+        id: "evt_race_heal",
+        type: "charge.succeeded",
+      });
+      const sourceChain = makeSelectChain([stripeSource]);
+      const preCheckChain = makeSelectChain([]);
+      const settingsChain = makeSelectChain([
+        { filenameTemplate: DEFAULT_FILENAME_TEMPLATE },
+      ]);
+      const collisionChain = makeWhereResolvingChain([]);
+      const raceLookupChain = makeSelectChain([
+        { uuid: sampleRecord.uuid, title: "Charge", status: "error" },
+      ]);
+      selectMock
+        .mockReturnValueOnce({ from: sourceChain.from })
+        .mockReturnValueOnce({ from: preCheckChain.from })
+        .mockReturnValueOnce({ from: settingsChain.from })
+        .mockReturnValueOnce({ from: collisionChain.from })
+        .mockReturnValueOnce({ from: raceLookupChain.from });
+
+      const returning = vi.fn(() => Promise.resolve([]));
+      const onConflictDoNothing = vi.fn(() => ({ returning }));
+      const values = vi.fn(() => ({ onConflictDoNothing }));
+      insertMock.mockReturnValue({ values });
+      const { set: updateSet, where: updateWhere } = stubUpdateStats(false);
+      mockReadRawBody.mockResolvedValue(rawBody);
+      stubStripeHeader(rawBody);
+      mockWriteEventOncePerRecord.mockResolvedValue("inserted");
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+      expectHealGuard(updateSet, updateWhere);
+    });
+
     // The heal stats write is best-effort too: a retry still returns 202 even if
     // the counter bump fails after the ok event healed the crash window.
     it("still returns 202 when the heal stats bump fails", async () => {
@@ -2121,9 +2391,12 @@ describe("POST /api/hooks/[slug]", () => {
       );
       stubSourceThenDelivery(
         [{ ...stripeSource, lastHitAt: freshLastHitAt }],
-        [{ uuid: sampleRecord.uuid, title: "Charge" }],
+        // status: "error" so selectOkEventWriter still attempts the heal
+        // (via writeOkEventAndHeal) here — this test's whole point is that
+        // heal attempt also failing, under the same failing update stub.
+        [{ uuid: sampleRecord.uuid, title: "Charge", status: "error" }],
       );
-      const { where: statsWhere } = stubFailingStatsUpdate();
+      stubFailingStatsUpdate();
       mockReadRawBody.mockResolvedValue(rawBody);
       stubStripeHeader(rawBody);
       const consoleErrorSpy = spyConsoleError();
@@ -2131,16 +2404,25 @@ describe("POST /api/hooks/[slug]", () => {
       const response = await handler(buildEvent());
 
       expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
-      // Only the claim attempt reached the database; the debounced touch
-      // never called .where() a second time.
-      expect(statsWhere).toHaveBeenCalledOnce();
-      // Exactly one stats failure logged (the claim's), not two.
+      // Not asserting a raw call count on statsWhere: the claim attempt and
+      // the heal attempt (markRecordHealed; markpost#277) both reach the
+      // database independently of this test's subject, so the real proof
+      // that the debounced touch made no second *attempt* is the log-message
+      // counts below — if touchLastHitAt had run and failed, it would add a
+      // second "failed to update source stats:" entry (same shared
+      // logStatsError), inflating that count past 1.
       const statsFailureLogs = consoleErrorSpy.mock.calls.filter(
         ([message]) =>
           typeof message === "string" &&
           message.includes("[hooks/ingest] failed to update source stats:"),
       );
       expect(statsFailureLogs).toHaveLength(1);
+      const healFailureLogs = consoleErrorSpy.mock.calls.filter(
+        ([message]) =>
+          typeof message === "string" &&
+          message.includes("[hooks/ingest] failed to heal record status:"),
+      );
+      expect(healFailureLogs).toHaveLength(1);
 
       consoleErrorSpy.mockRestore();
     });
@@ -2302,10 +2584,15 @@ describe("POST /api/hooks/[slug]", () => {
         ([set]) => (set as { recordCount?: unknown }).recordCount !== undefined,
       );
       expect(bumped).toBe(false);
-      const lastCall = (
-        updateSet.mock.calls.at(-1) as [Record<string, unknown>]
-      )[0];
-      expect(lastCall).toHaveProperty("lastHitAt");
+      // Looked up by shape, not `.at(-1)` — see the same note in "does not
+      // re-bump the counter on an ordinary retry that was already counted"
+      // above: the heal attempt (markpost#277) is an independently-scheduled
+      // db.update call whose relative order versus the lastHitAt touch is a
+      // microtask-timing artifact, not a contract.
+      const lastHitAtCall = updateSet.mock.calls.find(([set]) =>
+        Object.prototype.hasOwnProperty.call(set as object, "lastHitAt"),
+      )?.[0] as Record<string, unknown> | undefined;
+      expect(lastHitAtCall).toHaveProperty("lastHitAt");
     });
 
     // Fail loud, don't fabricate: if the insert returns no row AND the follow-up

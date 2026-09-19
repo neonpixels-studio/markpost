@@ -27,6 +27,7 @@ const tokenOne = {
   createdAt: new Date("2026-04-01T00:00:00Z"),
   lastUsedAt: new Date("2026-06-01T00:00:00Z"),
   expiresAt: new Date("2026-09-01T00:00:00Z"),
+  scopes: ["records:read", "records:write"],
 };
 
 const tokenTwo = {
@@ -36,10 +37,18 @@ const tokenTwo = {
   createdAt: new Date("2026-03-01T00:00:00Z"),
   lastUsedAt: null,
   expiresAt: null,
+  // NULL means full access — the mint-time default (server/db/schema.ts
+  // apiTokens.scopes).
+  scopes: null,
 };
 
-function buildEvent(contextUserId: string | undefined): H3Event {
-  return { context: { userId: contextUserId } } as unknown as H3Event;
+function buildEvent(
+  contextUserId: string | undefined,
+  tokenScopes?: string[] | null,
+): H3Event {
+  return {
+    context: { userId: contextUserId, tokenScopes },
+  } as unknown as H3Event;
 }
 
 function stubSelectResult(rows: unknown[]) {
@@ -78,6 +87,7 @@ describe("GET /api/tokens", () => {
             createdAt: tokenOne.createdAt,
             lastUsedAt: tokenOne.lastUsedAt,
             expiresAt: tokenOne.expiresAt,
+            scopes: tokenOne.scopes,
           },
         },
         {
@@ -89,6 +99,7 @@ describe("GET /api/tokens", () => {
             createdAt: tokenTwo.createdAt,
             lastUsedAt: null,
             expiresAt: null,
+            scopes: null,
           },
         },
       ],
@@ -119,6 +130,7 @@ describe("GET /api/tokens", () => {
             createdAt: expiredToken.createdAt,
             lastUsedAt: expiredToken.lastUsedAt,
             expiresAt: expiredToken.expiresAt,
+            scopes: null,
           },
         },
       ],
@@ -154,6 +166,44 @@ describe("GET /api/tokens", () => {
           expect.objectContaining({ status: "401", title: "Unauthorized" }),
         ],
       },
+    });
+  });
+
+  describe("requireScope enforcement (tokens:read)", () => {
+    it("throws 403 when the token lacks tokens:read", async () => {
+      await expect(
+        handler(buildEvent(userId, ["records:read"])),
+      ).rejects.toMatchObject({ statusCode: 403 });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 403,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "403",
+              title: "Forbidden",
+              detail:
+                "This token does not have the required `tokens:read` scope.",
+            }),
+          ],
+        },
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it("returns the list when the token carries tokens:read", async () => {
+      stubSelectResult([tokenOne]);
+
+      const response = await handler(buildEvent(userId, ["tokens:read"]));
+
+      expect(response).toMatchObject({ data: [{ id: tokenOne.id }] });
+    });
+
+    it("returns the list for a full-access (unscoped) token", async () => {
+      stubSelectResult([tokenOne]);
+
+      const response = await handler(buildEvent(userId, null));
+
+      expect(response).toMatchObject({ data: [{ id: tokenOne.id }] });
     });
   });
 });

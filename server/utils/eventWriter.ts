@@ -122,6 +122,17 @@ function describeInsertFailure(insertError: unknown): string {
   return "[eventWriter] deduped event insert failed; skipping the write:";
 }
 
+// Reports what actually happened to the insert, distinguishing three outcomes
+// a caller may need to tell apart (see markRecordHealed in
+// server/api/hooks/[slug].post.ts, the one caller that currently does):
+// "inserted" — a brand-new row landed, "deduped" — a row for this
+// (recordUuid, kind) already existed (onConflictDoNothing no-op), "failed" —
+// the insert itself errored and was swallowed (see the fail-closed comment
+// below). Collapsing "deduped" and "failed" into a single falsy/void result
+// would make them indistinguishable to a caller that only wants to react to a
+// genuine first-time insert, which is exactly the bug this type prevents.
+export type WriteEventOnceOutcome = "inserted" | "deduped" | "failed";
+
 // Exact dedup for callers that may re-run a side effect (e.g. a webhook
 // provider retry that heals a crash between the record insert and its side
 // effects, or a concurrent race where a losing writer still needs to log its
@@ -145,18 +156,18 @@ function describeInsertFailure(insertError: unknown): string {
 //
 // Fails CLOSED on the insert itself: a transient DB blip, or the app
 // deploying before migration 0025 lands the arbiter index, is logged and
-// skipped rather than rejected. This is specifically for this function's
-// callers (server/api/hooks/[slug].post.ts's retry/race-loser paths — the
-// guaranteed-first-write path uses plain writeEvent instead, which does not
-// swallow insert failures), where a rejection propagates into
-// recordIngestEventFailure and flips an otherwise-healthy record to `error`
-// over a failed *log write*, not a real ingest failure. Skipping instead
-// risks only a missing activity event on the rare heal; the recordCount
-// counter is guarded independently (by the record's counted_at claim), so it
-// is never mis-counted.
+// skipped (reported as the "failed" outcome) rather than rejected. This is
+// specifically for this function's callers (server/api/hooks/[slug].post.ts's
+// retry/race-loser paths — the guaranteed-first-write path uses plain
+// writeEvent instead, which does not swallow insert failures), where a
+// rejection propagates into recordIngestEventFailure and flips an
+// otherwise-healthy record to `error` over a failed *log write*, not a real
+// ingest failure. Skipping instead risks only a missing activity event on the
+// rare heal; the recordCount counter is guarded independently (by the
+// record's counted_at claim), so it is never mis-counted.
 export async function writeEventOncePerRecord(
   input: WriteEventInput & { recordUuid: string; kind: DedupedEventKind },
-): Promise<void> {
+): Promise<WriteEventOnceOutcome> {
   const validatedKind = validateEventKind(input.kind);
 
   if (!isDedupedKind(validatedKind)) {
@@ -168,13 +179,18 @@ export async function writeEventOncePerRecord(
   const inserted = await insertEventRow(input, validatedKind).catch(
     (insertError) => {
       console.error(describeInsertFailure(insertError), insertError);
-      return [];
+      return null;
     },
   );
 
+  if (inserted === null) {
+    return "failed";
+  }
+
   if (inserted.length === 0) {
-    return;
+    return "deduped";
   }
 
   await maybePruneEventsForUser(input.userId);
+  return "inserted";
 }

@@ -22,7 +22,13 @@
         @click="emit('delete-selected')"
         >delete selected</AppBtn
       >
-      <AppBtn size="sm" variant="ghost" @click="emit('clear')">clear</AppBtn>
+      <AppBtn
+        size="sm"
+        variant="ghost"
+        :disabled="disabled"
+        @click="emit('clear')"
+        >clear</AppBtn
+      >
     </div>
   </div>
 </template>

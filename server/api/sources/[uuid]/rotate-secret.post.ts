@@ -2,7 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { sources } from "../../../db/schema";
 import type { ApiRequest } from "../../../types/api.types";
-import { requireUser } from "../../../utils/auth";
+import { requireScope, requireUser } from "../../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../../utils/errors";
 import {
   computeProviderSecretPlan,
@@ -122,6 +122,7 @@ async function rotateUserSourceSecret(
 export default defineEventHandler(async (event): Promise<SourceApiResponse> => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "sources:write");
     const sourceUuid = getRouterParam(event, "uuid");
 
     if (!isValidUuid(sourceUuid)) {

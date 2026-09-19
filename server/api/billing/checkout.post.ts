@@ -1,4 +1,4 @@
-import { requireUser } from "../../utils/auth";
+import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
 import { findSubscriptionByUserId } from "../../utils/billing";
 import { buildAppUrl } from "../../utils/appUrl";
@@ -64,6 +64,7 @@ function isValidPriceKey(value: unknown): value is PriceIdKey {
 export default defineEventHandler(async (event) => {
   try {
     const userId = requireUser(event);
+    requireScope(event, "billing:write");
     const body = await readBody(event);
 
     const priceKey = body?.priceKey;

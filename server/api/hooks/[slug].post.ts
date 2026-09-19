@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, like, lte, or, sql } from "drizzle-orm";
 import type { H3Event } from "h3";
 import { getDb } from "../../db";
 import { records, sources, userSettings } from "../../db/schema";
@@ -45,6 +45,16 @@ const EVENT_KIND_ERR = "err";
 const EVENT_KIND_DIM = "dim";
 const PING_DISCARDED_MESSAGE =
   "GitHub ping received (connectivity check, not stored)";
+// Marks a record's errorMessage as this handler's own confirmation failure
+// (recordIngestEventFailure below), as opposed to any other reason a record
+// can carry status=error — most notably the CLI reporting a real vault-write
+// failure via the single-record PATCH endpoint (server/api/records/[uuid]
+// .patch.ts accepts a client-supplied status/errorMessage). markRecordHealed
+// matches on this exact prefix (via a SQL LIKE) so it only ever reconciles a
+// record this handler itself broke, never a client-reported one. Must never
+// contain a `%` or `_` — either would silently widen the LIKE match beyond an
+// exact prefix.
+const CONFIRMATION_FAILURE_PREFIX = "Failed to confirm webhook ingestion: ";
 
 // Debounce window for the best-effort dedup lastHitAt touch (see
 // touchLastHitAt below). A provider redelivery storm otherwise issues one
@@ -155,7 +165,11 @@ type ParsedWebhookResult = {
   filePath: string;
 };
 
-type IngestedRecord = { uuid: string; title: string };
+// status is carried alongside uuid/title so a caller that already re-read the
+// record (findRecordByDelivery, on both dedup paths) can decide whether a
+// heal is even worth attempting without a second round trip — see
+// selectOkEventWriter below.
+type IngestedRecord = { uuid: string; title: string; status: string };
 
 // onConflictDoNothing on the (source_id, delivery_id) unique index absorbs the
 // race the app-level pre-check can't: two identical deliveries arriving at once
@@ -198,7 +212,11 @@ async function findRecordByDelivery(
 ): Promise<IngestedRecord | null> {
   const db = getDb();
   const [row] = await db
-    .select({ uuid: records.uuid, title: records.title })
+    .select({
+      uuid: records.uuid,
+      title: records.title,
+      status: records.status,
+    })
     .from(records)
     .where(
       and(eq(records.sourceId, sourceId), eq(records.deliveryId, deliveryId)),
@@ -366,6 +384,48 @@ async function markRecordError(
         inArray(records.status, [RECORD_STATUS_PENDING, RECORD_STATUS_ERROR]),
       ),
     );
+}
+
+// Reconcile a record this handler itself left in `error` (see
+// CONFIRMATION_FAILURE_PREFIX below) back to `pending`. Called only by
+// writeOkEventAndHeal, which owns the full rationale for when this fires — see
+// its comment. Contract: a no-op UPDATE unless the record is CURRENTLY
+// `error` AND its errorMessage carries this handler's own confirmation-failure
+// prefix; anything else (still `pending`, `synced`, or `error` for an
+// unrelated reason such as a CLI-reported vault-write failure) is left
+// untouched. Best-effort — swallows its own failure via the caller's `.catch`
+// so it never turns an already-served 202 into a 500.
+//
+// `.returning()` + the log line below exist purely for observability: a heal
+// is, by definition, quietly repairing state nobody is watching in the
+// moment, so this is the only signal (short of querying the table) that it
+// ever actually fired versus matched nothing.
+async function markRecordHealed(recordUuid: string): Promise<void> {
+  const db = getDb();
+  const healed = await db
+    .update(records)
+    .set({
+      status: RECORD_STATUS_PENDING,
+      errorMessage: null,
+    })
+    .where(
+      and(
+        eq(records.uuid, recordUuid),
+        eq(records.status, RECORD_STATUS_ERROR),
+        like(records.errorMessage, `${CONFIRMATION_FAILURE_PREFIX}%`),
+      ),
+    )
+    .returning({ uuid: records.uuid });
+
+  if (healed.length > 0) {
+    console.log(
+      `[hooks/ingest] healed record ${recordUuid} back to pending after a confirmed retry`,
+    );
+  }
+}
+
+function logHealError(healError: unknown): void {
+  console.error("[hooks/ingest] failed to heal record status:", healError);
 }
 
 function toErrorMessage(error: unknown): string {
@@ -658,10 +718,10 @@ function buildDeliveryHeaders(
 // best-effort (each swallows its own failure) so this must not throw, or it would
 // defeat the "don't roll back the 202 response" guarantee.
 //
-// Known gap (follow-up): if a record is left in `error` by a failed confirmation
-// and a later retry heals it (writes the ok event), the record's status is not
-// reconciled back — the ok event lands but the error status/message remain. That
-// status-machine reconciliation is out of scope here and tracked as a follow-up.
+// The inverse heal — a record left in `error` by a failed confirmation, then
+// reconciled once a later retry's ok event write actually lands — is handled
+// by markRecordHealed, invoked from the writeOkEventAndHeal writer (below)
+// rather than from here (this function only ever runs on failure).
 async function recordIngestEventFailure(
   source: SourceRow,
   record: { uuid: string; title: string },
@@ -669,18 +729,26 @@ async function recordIngestEventFailure(
 ): Promise<void> {
   console.error("[hooks/ingest] failed to write event:", writeError);
 
-  const errorMessage = toErrorMessage(writeError);
+  // Prefixed once and reused for both writes below, so the record's
+  // errorMessage and the err event's message always agree AND the record
+  // carries the CONFIRMATION_FAILURE_PREFIX marker markRecordHealed matches
+  // on — a record can also reach status=error via the CLI's own PATCH (a real
+  // vault-write failure), so this prefix is what lets the heal path tell the
+  // two apart later.
+  const confirmationErrorMessage = `${CONFIRMATION_FAILURE_PREFIX}${toErrorMessage(writeError)}`;
 
   await Promise.all([
-    markRecordError(record.uuid, errorMessage).catch((markError) => {
-      console.error("[hooks/ingest] failed to mark record error:", markError);
-    }),
+    markRecordError(record.uuid, confirmationErrorMessage).catch(
+      (markError) => {
+        console.error("[hooks/ingest] failed to mark record error:", markError);
+      },
+    ),
     // Deduped by record so a provider that retries a persistently-failing
     // delivery for hours appends at most one err event, not one per attempt.
     writeEventOncePerRecord({
       userId: source.userId,
       kind: EVENT_KIND_ERR,
-      message: `Failed to confirm webhook ingestion: ${errorMessage}`,
+      message: confirmationErrorMessage,
       recordUuid: record.uuid,
       sourceId: source.uuid,
     }).catch((errEventError) => {
@@ -738,12 +806,14 @@ type OkEventWriter = (
 // The ingest side effects, shared by every outcome. The stat bump is claimed
 // atomically (applyStatsBump) so it stays correct under retries and concurrent
 // duplicates regardless of the event write, and the ok event goes through the
-// caller-chosen writer: a fresh insert uses the plain `writeEvent` (a brand-new
-// record has no prior ok event, so the hot path skips the dedup read), while a
-// deduped retry uses `writeEventOncePerRecord` so the activity log keeps at most
-// one ok event per record. Stats and event run concurrently and independently;
-// both are best-effort — each swallows its own failure and neither rolls back
-// the record or the 202 response.
+// caller-chosen writer (see selectOkEventWriter below): a fresh insert uses
+// the plain `writeEvent` (a brand-new record has no prior ok event, so the
+// hot path skips the dedup read), while a deduped retry uses
+// `writeOkEventOnly` or `writeOkEventAndHeal` so the activity log keeps at
+// most one ok event per record AND, when the record was already `error`, gets
+// reconciled. Stats and event run concurrently and independently; both are
+// best-effort — each swallows its own failure and neither rolls back the
+// record or the 202 response.
 async function writeIngestSideEffects(
   source: SourceRow,
   record: IngestedRecord,
@@ -757,6 +827,91 @@ async function writeIngestSideEffects(
       recordIngestEventFailure(source, record, writeError),
     ),
   ]);
+}
+
+// A brand-new record (writeEvent's fresh-insert path) can never already be
+// `error` — it does not exist until this same request creates it — so only the
+// dedup writer needs to attempt a heal. Wrapping writeEventOncePerRecord here
+// (rather than baking the heal into writeIngestSideEffects itself) keeps that
+// extra UPDATE off the fresh-insert hot path entirely and scopes it to exactly
+// the two call sites where the record could pre-date this request: an
+// already-ingested retry and a concurrent insert's race loser.
+//
+// Attempts a heal on both "inserted" and "deduped", skipping only "failed" —
+// deliberately NOT gated on "inserted" alone, even though that would be the
+// intuitively "safe" choice. The record can only ever reach
+// CONFIRMATION_FAILURE_PREFIX's `error` via the FRESH-insert path: its plain
+// `writeEvent` call does not swallow a failure the way
+// writeEventOncePerRecord does (see eventWriter.ts), so a real rejection
+// there propagates into recordIngestEventFailure and marks the record
+// `error`. But that rejection can itself be a false negative: neon-http's
+// insert is a single HTTP round trip with no ambient transaction, so the row
+// can commit on the server and the client's fetch still reject (network
+// blip, timeout) — the record ends up `error` even though the ok event
+// genuinely landed. Every later redelivery of that SAME record then finds
+// the row already present via this dedup writer — a "deduped" outcome,
+// never "inserted" again for that record — so gating strictly on "inserted"
+// would make exactly this shape permanently unhealable.
+//
+// Safety against clobbering an unrelated `error` (most notably the CLI
+// reporting a real vault-write failure via PATCH — a record only this
+// handler's own writes should ever heal) is therefore NOT the outcome check
+// above; it is markRecordHealed's own guard, matched to
+// CONFIRMATION_FAILURE_PREFIX. Only a record this handler itself marked
+// `error` carries that prefix, so a CLI-reported error is never touched
+// regardless of how many "inserted"/"deduped" heal attempts run against it.
+// "failed" alone is excluded here because it means this very attempt did not
+// (as far as it can tell) confirm anything — there is nothing yet to heal.
+//
+// markRecordHealed's failure is swallowed here, not left to propagate into
+// writeIngestSideEffects's own `.catch` — a heal that can't land must never be
+// mistaken for the ok event write itself failing, which would wrongly
+// re-mark a just-healed record `error` and stomp its cleared message.
+async function writeOkEventAndHeal(
+  input: WriteEventInput & { recordUuid: string; kind: "ok" },
+): Promise<void> {
+  const outcome = await writeEventOncePerRecord(input);
+
+  if (outcome === "failed") {
+    return;
+  }
+
+  await markRecordHealed(input.recordUuid).catch(logHealError);
+}
+
+// Plain writeEventOncePerRecord, discarding its outcome, for a dedup-path
+// delivery whose already-read record (see selectOkEventWriter) is not
+// currently `error` — the overwhelming majority of retries. Skipping
+// writeOkEventAndHeal here avoids markRecordHealed's guarded UPDATE (a no-op
+// in that case anyway, but still a full round trip) on every ordinary
+// redelivery of a healthy record; a provider can redeliver the same webhook
+// for hours; see DEDUP_TOUCH_STALENESS_SECONDS above for the same cost
+// concern applied to the lastHitAt touch.
+async function writeOkEventOnly(
+  input: WriteEventInput & { recordUuid: string; kind: "ok" },
+): Promise<void> {
+  await writeEventOncePerRecord(input);
+}
+
+// Picks the ok-event writer for a given outcome path. A fresh insert
+// (`!deduped`) always uses plain writeEvent — see writeOkEventAndHeal's
+// comment for why that record can never already be `error`. A dedup path
+// (`alreadyIngested`, or a concurrent insert's race loser) attempts a heal
+// only when the record it already read is currently `error`; otherwise it
+// uses writeOkEventOnly to skip the redundant round trip.
+function selectOkEventWriter(
+  deduped: boolean,
+  record: IngestedRecord,
+): OkEventWriter {
+  if (!deduped) {
+    return writeEvent;
+  }
+
+  if (record.status === RECORD_STATUS_ERROR) {
+    return writeOkEventAndHeal;
+  }
+
+  return writeOkEventOnly;
 }
 
 export default defineEventHandler(async (event) => {
@@ -832,17 +987,21 @@ export default defineEventHandler(async (event) => {
     );
     const alreadyIngested = await findAlreadyIngested(source, deliveryId);
 
-    // A retry whose record already exists still runs its side effects, with the
+    // A retry whose record already exists still runs its side effects, with a
     // record-deduped ok-event writer: a normal retry is a no-op (claim already
     // taken, ok event already logged), but a first delivery that committed the
     // record then crashed before its side effects ran is healed here — the claim
     // is won and the missing ok event lands. The plan-limit budget is not spent
-    // again: the record already counted.
+    // again: the record already counted. selectOkEventWriter additionally
+    // reconciles a record an earlier delivery left in `error` back to `pending`
+    // once this retry's ok event confirms (markpost#277) — but only when
+    // alreadyIngested (already read above) shows the record is actually in
+    // that state, so an ordinary healthy retry skips the extra check.
     if (alreadyIngested) {
       await writeIngestSideEffects(
         source,
         alreadyIngested,
-        writeEventOncePerRecord,
+        selectOkEventWriter(true, alreadyIngested),
       );
       setResponseStatus(event, 202);
       return { data: { uuid: alreadyIngested.uuid } };
@@ -856,11 +1015,14 @@ export default defineEventHandler(async (event) => {
       deliveryId,
     );
 
-    // A fresh insert uses the plain ok-event write (no prior event to dedup); a
-    // concurrent-race dedup hit uses the record-deduped writer so it closes the
-    // same crash-window gap without duplicating the winner's ok event. Either
-    // way the atomic claim keeps recordCount from moving twice.
-    const writeOkEvent = deduped ? writeEventOncePerRecord : writeEvent;
+    // A fresh insert uses the plain ok-event write (no prior event to dedup, and
+    // a record that cannot possibly be `error` yet); a concurrent-race dedup hit
+    // goes through selectOkEventWriter the same way the alreadyIngested branch
+    // above does, so it closes the same crash-window gap without duplicating
+    // the winner's ok event, and reconciles the record if the winner's own
+    // confirmation had already failed. Either way the atomic claim keeps
+    // recordCount from moving twice.
+    const writeOkEvent = selectOkEventWriter(deduped, record);
     await writeIngestSideEffects(source, record, writeOkEvent);
 
     setResponseStatus(event, 202);
