@@ -2,18 +2,19 @@
 # nuxt build`, so it decrypts .env.production with DOTENV_PRIVATE_KEY_PRODUCTION
 # (set in Netlify env, Builds scope) and bakes NUXT_* values into the bundle.
 [build]
-  command = "npx nuxt prepare && npm run test:ci && npm run build"
-  publish = "dist"
+command = "npx nuxt prepare && npm run test:ci && npm run build"
+publish = "dist"
+ignore = "if [ \"$CONTEXT\" = \"production\" ]; then exit 0; else exit 1; fi"
 
 # Deploy previews and branch deploys decrypt .env.dev instead, via
 # DOTENV_PRIVATE_KEY_DEV, so they never build against the production database.
 # Deferred until previews are enabled: set DOTENV_PRIVATE_KEY_DEV in Netlify and
 # fill the .env.dev DB with a non-prod Neon branch first.
 [context.deploy-preview]
-  command = "npx nuxt prepare && npm run test:ci && npm run build:dev"
+command = "npx nuxt prepare && npm run test:ci && npm run build:dev"
 
 [context.branch-deploy]
-  command = "npx nuxt prepare && npm run test:ci && npm run build:dev"
+command = "npx nuxt prepare && npm run test:ci && npm run build:dev"
 
 [context.production]
-  ignore = "if [ -n \"$INCOMING_HOOK_TITLE\" ]; then exit 1; else exit 0; fi"
+ignore = "if [ -n \"$INCOMING_HOOK_TITLE\" ]; then exit 1; else exit 0; fi"
