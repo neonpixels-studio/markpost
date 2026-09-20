@@ -23,6 +23,7 @@ export default defineNuxtConfig({
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",
     public: {
       sentryDsn: "",
+      gaId: "",
     },
   },
   css: ["~/assets/css/main.css"],
