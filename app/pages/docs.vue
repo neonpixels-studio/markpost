@@ -27,15 +27,18 @@
         <div class="input-wrap">
           <span class="lead-addon"><AppIcon name="search" :size="14" /></span>
           <input
+            ref="searchInputRef"
+            v-model="searchQuery"
             class="input has-lead"
             placeholder="search docs…"
             style="height: 34px; width: 200px; font-size: 13px"
+            @keydown.esc="searchQuery = ''"
           />
           <span class="addon"><AppKbd>/</AppKbd></span>
         </div>
         <a
           class="icon-btn"
-          href="https://github.com"
+          href="https://github.com/neonpixels-studio/markpost"
           style="color: var(--ink-2)"
         >
           <AppIcon name="github" :size="18" />
@@ -68,36 +71,45 @@
           overflow-y: auto;
         "
       >
+        <p
+          v-if="filteredNav.length === 0"
+          class="mono faint"
+          style="padding: 0 10px; font-size: 13px"
+        >
+          No results for "{{ searchQuery }}"
+        </p>
         <div
-          v-for="group in DOC_NAV"
+          v-for="group in filteredNav"
           :key="group.group"
           style="margin-bottom: 22px"
         >
           <span class="kicker" style="display: block; padding: 0 10px 8px">{{
             group.group
           }}</span>
-          <div class="col gap-1">
-            <button
-              v-for="[id, label] in group.items"
-              :key="id"
-              :style="{
-                textAlign: 'left',
-                border: 0,
-                cursor: 'pointer',
-                background:
-                  activePage === id ? 'var(--accent-tint)' : 'transparent',
-                color: activePage === id ? 'var(--accent-700)' : 'var(--ink-2)',
-                padding: '6px 10px',
-                borderRadius: '6px',
-                fontSize: '13.5px',
-                fontWeight: activePage === id ? 600 : 400,
-                fontFamily: activePage === id ? 'var(--mono)' : 'var(--sans)',
-              }"
-              @click="activePage = id"
-            >
-              {{ label }}
-            </button>
-          </div>
+          <ul class="col gap-1" style="list-style: none; padding: 0; margin: 0">
+            <li v-for="[id, label] in group.items" :key="id">
+              <button
+                :style="{
+                  textAlign: 'left',
+                  width: '100%',
+                  border: 0,
+                  cursor: 'pointer',
+                  background:
+                    activePage === id ? 'var(--accent-tint)' : 'transparent',
+                  color:
+                    activePage === id ? 'var(--accent-700)' : 'var(--ink-2)',
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  fontSize: '13.5px',
+                  fontWeight: activePage === id ? 600 : 400,
+                  fontFamily: activePage === id ? 'var(--mono)' : 'var(--sans)',
+                }"
+                @click="activePage = id"
+              >
+                {{ label }}
+              </button>
+            </li>
+          </ul>
         </div>
       </nav>
 
@@ -314,5 +326,49 @@ const activeGroup = computed(() => {
     group.items.some(([id]) => id === activePage.value),
   );
   return found?.group ?? "";
+});
+
+// ── Docs search: filter the sidebar nav, focus on "/" ───────────────────────
+const searchQuery = ref("");
+const searchInputRef = ref<HTMLInputElement | null>(null);
+
+const filteredNav = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (!query) {
+    return DOC_NAV;
+  }
+  return DOC_NAV.map((group) => ({
+    ...group,
+    items: group.items.filter(([, label]) =>
+      label.toLowerCase().includes(query),
+    ),
+  })).filter((group) => group.items.length > 0);
+});
+
+function isTypingInField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return (
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.isContentEditable
+  );
+}
+
+function handleGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key !== "/" || isTypingInField(event.target)) {
+    return;
+  }
+  event.preventDefault();
+  searchInputRef.value?.focus();
+}
+
+onMounted(() => {
+  window.addEventListener("keydown", handleGlobalKeydown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleGlobalKeydown);
 });
 </script>
