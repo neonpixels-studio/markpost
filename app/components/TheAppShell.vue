@@ -14,9 +14,9 @@
           v-for="navItem in navItems"
           :key="navItem.id"
           :to="navItem.path"
+          :title="navItem.label"
           class="row app-shell__nav-link gap-3"
           :style="{
-            width: '100%',
             border: 0,
             cursor: 'pointer',
             background:
@@ -51,9 +51,9 @@
 
         <a
           href="/docs"
+          title="Docs"
           class="row app-shell__nav-link app-shell__docs-link gap-3"
           style="
-            width: 100%;
             border: 0;
             cursor: pointer;
             background: transparent;
@@ -91,9 +91,9 @@
       <!-- user -->
       <NuxtLink
         to="/settings"
+        :title="userName"
         class="row app-shell__nav-link gap-3"
         style="
-          width: 100%;
           border: 1px solid var(--line);
           cursor: pointer;
           background: var(--surface-2);
@@ -365,6 +365,15 @@ function goToActivity(): void {
   flex: 1;
 }
 
+/* Shared full-width sizing for the nav links, the Docs link and the user
+   card (all remaining static per-instance style stays inline, per instance,
+   since it differs between the three). Kept out of each inline style so the
+   phone override below can win — an inline style always beats a stylesheet
+   rule of any specificity short of !important. */
+.app-shell__nav-link {
+  width: 100%;
+}
+
 .app-shell__header {
   padding: 0 26px;
   height: 60px;
@@ -382,23 +391,6 @@ function goToActivity(): void {
   min-width: 0;
 }
 
-/* Visually hides text while keeping it in the accessibility tree, so the
-   icon-only rail/bar at compact widths still exposes an accessible name for
-   each nav link (screen readers) instead of losing it via display: none. */
-.app-shell__label,
-.app-shell__nav-label,
-.app-shell__nav-badge {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 @media (max-width: 1024px) {
   .app-shell {
     grid-template-columns: 76px 1fr;
@@ -409,10 +401,27 @@ function goToActivity(): void {
     align-items: center;
   }
 
-  /* Collapse the sidebar to an icon rail: visually hide labels/text (kept
-     for screen readers, see .app-shell__nav-label above), drop the plan
-     card (promotional, not core navigation) and purely decorative icons
-     that have no room in the rail. */
+  /* Visually hides text while keeping it in the accessibility tree, so the
+     icon-only rail at this width still exposes an accessible name for each
+     nav link (screen readers) instead of losing it via display: none. Scoped
+     to this media query only — must never apply at the full desktop width. */
+  .app-shell__label,
+  .app-shell__nav-label,
+  .app-shell__nav-badge {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Collapse the sidebar to an icon rail: drop the plan card (promotional,
+     not core navigation) and purely decorative icons that have no room in
+     the rail. */
   .app-shell__plan-card,
   .app-shell__nav-decoration {
     display: none;
@@ -424,7 +433,7 @@ function goToActivity(): void {
 
   /* AppLogo renders an icon mark plus a text wordmark; the wordmark doesn't
      fit the 56px rail content width, so hide it and keep the mark only. */
-  .app-shell__logo-link :deep(.row.gap-2 span:nth-child(2)) {
+  .app-shell__logo-link :deep(.app-logo__wordmark) {
     display: none;
   }
 }
@@ -452,12 +461,19 @@ function goToActivity(): void {
     margin-bottom: 0;
   }
 
-  /* Compound selector so this reliably beats the global .col utility
-     (display: flex; flex-direction: column) regardless of stylesheet
-     load order, since both are single-class selectors otherwise. */
+  /* Compound selectors so these reliably beat the global .col utility
+     (display: flex; flex-direction: column) and the base
+     .app-shell__nav-link width above, regardless of stylesheet load order,
+     since those are single-class selectors otherwise. Without this, the
+     user card's inline-free width: 100% would still claim the full
+     remaining row width in the horizontal top bar. */
   .app-shell__sidebar .app-shell__nav {
     flex-direction: row;
     flex: none;
+  }
+
+  .app-shell__sidebar .app-shell__nav-link {
+    width: auto;
   }
 
   .app-shell__divider {

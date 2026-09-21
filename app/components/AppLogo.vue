@@ -21,6 +21,7 @@
     </span>
     <span
       v-if="showWord"
+      class="app-logo__wordmark"
       :style="{
         fontWeight: 600,
         fontSize: `${size * 0.82}px`,
