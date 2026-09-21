@@ -1,10 +1,10 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { users } from "../db/schema";
 import { throwUnauthorized } from "./errors";
 import {
+  buildWindowResetSet,
   evaluateThrottleCounter,
-  windowExpiredCondition,
   type ThrottleResult,
 } from "./fixedWindowThrottle";
 
@@ -40,8 +40,9 @@ async function recordHitAndFetchCounter(
   userId: string,
 ): Promise<CounterOutcome> {
   const database = getDb();
-  const windowExpired = windowExpiredCondition(
+  const resetSet = buildWindowResetSet(
     users.apiThrottleWindowStart,
+    users.apiThrottleCount,
     API_THROTTLE_WINDOW_SECONDS,
   );
 
@@ -49,8 +50,8 @@ async function recordHitAndFetchCounter(
     const [row] = await database
       .update(users)
       .set({
-        apiThrottleWindowStart: sql`CASE WHEN ${windowExpired} THEN now() ELSE ${users.apiThrottleWindowStart} END`,
-        apiThrottleCount: sql`CASE WHEN ${windowExpired} THEN 1 ELSE ${users.apiThrottleCount} + 1 END`,
+        apiThrottleWindowStart: resetSet.windowStart,
+        apiThrottleCount: resetSet.count,
       })
       .where(eq(users.userId, userId))
       .returning({

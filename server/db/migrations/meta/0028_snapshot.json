@@ -1,5 +1,5 @@
 {
-  "id": "c052ae92-fbd5-4474-8891-7c3139fccb33",
+  "id": "915abf6c-a4cd-4171-a154-182744d7433d",
   "prevId": "27697ed3-c7cd-4832-b96a-2158ef3fb0fa",
   "version": "7",
   "dialect": "postgresql",
@@ -136,7 +136,23 @@
           "default": 0
         }
       },
-      "indexes": {},
+      "indexes": {
+        "auth_failure_throttle_window_start_idx": {
+          "name": "auth_failure_throttle_window_start_idx",
+          "columns": [
+            {
+              "expression": "window_start",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

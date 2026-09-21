@@ -35,6 +35,50 @@ export function secondsRemainingInWindow(
   return Math.max(1, Math.ceil(remainingSeconds));
 }
 
+// App-clock counterpart to windowExpiredCondition's SQL version, for callers
+// that read a counter without also atomically resetting it in the same
+// statement (a read-only "is this key currently throttled" peek, as opposed
+// to the UPDATE/INSERT...ON CONFLICT writers below, which apply the reset
+// server-side before evaluateThrottleCounter ever sees the row). A peek that
+// used evaluateThrottleCounter directly on a stale row would treat an
+// already-expired window as still over budget, since nothing has told it the
+// window doesn't apply anymore.
+export function isWindowExpired(
+  windowStart: Date,
+  windowSeconds: number,
+): boolean {
+  const elapsedSeconds = (Date.now() - windowStart.getTime()) / 1000;
+  return elapsedSeconds >= windowSeconds;
+}
+
+export type WindowResetSet = {
+  windowStart: SQL;
+  count: SQL;
+};
+
+// Shared SET/ON CONFLICT DO UPDATE SET fragment for every fixed-window
+// throttle (apiThrottle.ts, webhookThrottle.ts, authFailureThrottle.ts):
+// reset to a fresh window (count 1) once windowStartColumn is expired,
+// otherwise increment the existing count. Centralized so the reset-vs-increment
+// CASE logic is defined and tested once instead of copy-pasted per limiter;
+// each caller still owns mapping these generic fields onto its own
+// table-specific column names in its own .set(...)/.values(...) call.
+export function buildWindowResetSet(
+  windowStartColumn: AnyPgColumn,
+  countColumn: AnyPgColumn,
+  windowSeconds: number,
+): WindowResetSet {
+  const windowExpired = windowExpiredCondition(
+    windowStartColumn,
+    windowSeconds,
+  );
+
+  return {
+    windowStart: sql`CASE WHEN ${windowExpired} THEN now() ELSE ${windowStartColumn} END`,
+    count: sql`CASE WHEN ${windowExpired} THEN 1 ELSE ${countColumn} + 1 END`,
+  };
+}
+
 // Decides allow/deny from the counter row read back by the caller's atomic
 // update. A `null` counter (the row vanished between resolution and this
 // check — a deleted source or user) is allowed: there is nothing left to

@@ -49,27 +49,42 @@ export const users = pgTable("users", {
   apiThrottleCount: integer("api_throttle_count").default(0).notNull(),
 });
 
-// Fixed-window counter backing recordAuthFailure (server/utils/authFailureThrottle.ts),
-// which throttles repeated *failed* authentication attempts (bad-token
-// guessing) ahead of throwUnauthorized() in server/middleware/auth.ts.
-// Keyed by a SHA-256 hash of the client IP rather than the raw address —
-// equality matching is all a fixed-window counter needs, so there is no
-// reason to persist a reversible IP at rest. Unlike users.apiThrottle*
-// (a column on a row that always already exists) or sources.throttle*
-// (scoped to one source's webhook volume), there is no pre-existing row to
-// attach an IP counter to, so this is its own narrow table rather than a
-// wide column bolted onto a hot table — an INSERT ... ON CONFLICT DO UPDATE
-// creates the row on first failure and updates it on every failure after,
-// same atomic CASE-based window reset as the other two throttles. Persisted
-// in Postgres (not in-memory) so the budget survives Netlify's stateless
-// serverless invocations between requests, same rationale as apiThrottle.
-export const authFailureThrottle = pgTable("auth_failure_throttle", {
-  ipHash: text("ip_hash").primaryKey(),
-  windowStart: timestamp("window_start", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
-  count: integer("count").default(0).notNull(),
-});
+// Fixed-window counter backing recordAuthFailure/isAuthFailureThrottled
+// (server/utils/authFailureThrottle.ts), which throttles repeated *failed*
+// authentication attempts (bad-token guessing) in server/middleware/auth.ts.
+// Keyed by an HMAC-SHA256 of the client IP (peppered with
+// AUTH_THROTTLE_IP_PEPPER when that env var is set) rather than the raw
+// address or a bare hash — a bare SHA-256 of an IP is trivially reversible
+// (the whole IPv4 space is a few billion values, well within rainbow-table
+// range), so a pepper is what actually keeps this a one-way key instead of
+// obfuscation. Without the pepper set, treat the hash as non-reversible only
+// in the casual sense (see hashIp in authFailureThrottle.ts). Unlike
+// users.apiThrottle* (a column on a row that always already exists) or
+// sources.throttle* (scoped to one source's webhook volume), there is no
+// pre-existing row to attach an IP counter to, so this is its own narrow
+// table rather than a wide column bolted onto a hot table — an INSERT ...
+// ON CONFLICT DO UPDATE creates the row on first failure and updates it on
+// every failure after, same atomic CASE-based window reset (shared via
+// buildWindowResetSet) as the other two throttles. Persisted in Postgres
+// (not in-memory) so the budget survives Netlify's stateless serverless
+// invocations between requests, same rationale as apiThrottle. Rows are
+// pruned opportunistically once their window has expired (see
+// pruneExpiredRows in authFailureThrottle.ts) so this table does not grow
+// without bound as distinct IPs fail auth over time; window_start is
+// indexed to keep that prune query cheap.
+export const authFailureThrottle = pgTable(
+  "auth_failure_throttle",
+  {
+    ipHash: text("ip_hash").primaryKey(),
+    windowStart: timestamp("window_start", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    count: integer("count").default(0).notNull(),
+  },
+  (table) => [
+    index("auth_failure_throttle_window_start_idx").on(table.windowStart),
+  ],
+);
 
 export const SUBSCRIPTION_PLANS = ["hobby", "pro"] as const;
 export type SubscriptionPlan = (typeof SUBSCRIPTION_PLANS)[number];
