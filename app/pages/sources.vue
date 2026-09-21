@@ -6,7 +6,7 @@
       >
     </template>
 
-    <div style="padding: 22px 26px 40px; max-width: 920px">
+    <div class="sources-layout">
       <div style="margin-bottom: 18px">
         <AppAlert tone="info" title="How sources work">
           There are only two ways in — a <strong>webhook endpoint</strong> and
@@ -584,3 +584,19 @@ const cancelRemove = () => {
   pendingRemoveUuid.value = null;
 };
 </script>
+
+<style scoped>
+/* Breakpoints kept in sync with TheAppShell.vue / settings.vue / inbox.vue:
+   tablet: max-width 1024px, phone: max-width 640px */
+
+.sources-layout {
+  padding: 22px 26px 40px;
+  max-width: 920px;
+}
+
+@media (max-width: 640px) {
+  .sources-layout {
+    padding: 16px 14px 32px;
+  }
+}
+</style>

@@ -18,7 +18,7 @@
       >
     </template>
 
-    <div style="padding: 22px 26px 40px; max-width: 1080px">
+    <div class="inbox-layout">
       <div v-if="showToast" style="margin-bottom: 18px">
         <AppAlert
           tone="ok"
@@ -64,14 +64,7 @@
       </AppAlert>
 
       <!-- stat row -->
-      <div
-        style="
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: 14px;
-          margin-bottom: 22px;
-        "
-      >
+      <div class="inbox-stats">
         <div
           v-for="stat in statsDisplay"
           :key="stat.k"
@@ -572,3 +565,38 @@ onMounted(async () => {
   await Promise.all([loadRecords(), refreshStats()]);
 });
 </script>
+
+<style scoped>
+/* Breakpoints kept in sync with TheAppShell.vue / settings.vue / sources.vue:
+   tablet: max-width 1024px, phone: max-width 640px */
+
+.inbox-layout {
+  padding: 22px 26px 40px;
+  max-width: 1080px;
+}
+
+.inbox-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+@media (max-width: 1024px) {
+  .inbox-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .inbox-layout {
+    padding: 16px 14px 32px;
+  }
+}
+
+@media (max-width: 480px) {
+  .inbox-stats {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

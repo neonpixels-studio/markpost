@@ -1,22 +1,7 @@
 <template>
-  <div
-    style="
-      height: 100vh;
-      display: grid;
-      grid-template-columns: 232px 1fr;
-      background: var(--bg);
-    "
-  >
+  <div class="app-shell">
     <!-- sidebar -->
-    <aside
-      style="
-        border-right: 1px solid var(--line);
-        background: var(--surface);
-        display: flex;
-        flex-direction: column;
-        padding: 18px 14px;
-      "
-    >
+    <aside class="app-shell__sidebar">
       <NuxtLink
         to="/"
         style="padding: 4px 8px; margin-bottom: 18px; display: block"
@@ -24,13 +9,15 @@
         <AppLogo :size="22" />
       </NuxtLink>
 
-      <nav class="col gap-2" style="flex: 1">
-        <span class="kicker" style="padding: 4px 8px 8px">workspace</span>
+      <nav class="col app-shell__nav gap-2" style="flex: 1">
+        <span class="kicker app-shell__label" style="padding: 4px 8px 8px"
+          >workspace</span
+        >
         <NuxtLink
           v-for="navItem in navItems"
           :key="navItem.id"
           :to="navItem.path"
-          class="row gap-3"
+          class="row app-shell__nav-link gap-3"
           :style="{
             width: '100%',
             border: 0,
@@ -50,7 +37,7 @@
           }"
         >
           <AppIcon :name="navItem.ic" :size="17" />
-          {{ navItem.label }}
+          <span class="app-shell__nav-label">{{ navItem.label }}</span>
           <AppBadge
             v-if="navItem.id === 'inbox' && pendingCount"
             tone="accent"
@@ -60,11 +47,13 @@
           </AppBadge>
         </NuxtLink>
 
-        <div style="margin-top: 18px"><hr class="hairline" /></div>
+        <div class="app-shell__divider" style="margin-top: 18px">
+          <hr class="hairline" />
+        </div>
 
         <a
           href="/docs"
-          class="row gap-3"
+          class="row app-shell__nav-link app-shell__docs-link gap-3"
           style="
             width: 100%;
             border: 0;
@@ -82,26 +71,29 @@
           "
         >
           <AppIcon name="book" :size="17" />
-          Docs
+          <span class="app-shell__nav-label">Docs</span>
           <AppIcon
             name="external"
             :size="13"
+            class="app-shell__nav-label"
             :style="{ marginLeft: 'auto', color: 'var(--ink-3)' }"
           />
         </a>
       </nav>
 
       <!-- plan card -->
-      <AppPlanCard
-        :badge="planBadge"
-        :trial-days-left="trialDaysLeft"
-        :trial-percent-elapsed="trialPercentElapsed"
-      />
+      <div class="app-shell__plan-card">
+        <AppPlanCard
+          :badge="planBadge"
+          :trial-days-left="trialDaysLeft"
+          :trial-percent-elapsed="trialPercentElapsed"
+        />
+      </div>
 
       <!-- user -->
       <NuxtLink
         to="/settings"
-        class="row gap-3"
+        class="row app-shell__nav-link gap-3"
         style="
           width: 100%;
           border: 1px solid var(--line);
@@ -132,7 +124,7 @@
           {{ userInitial }}
         </span>
         <span
-          class="col"
+          class="col app-shell__nav-label"
           style="align-items: flex-start; line-height: 1.2; overflow: hidden"
         >
           <span style="font-size: 13px; font-weight: 500">{{ userName }}</span>
@@ -152,6 +144,7 @@
         <AppIcon
           name="chevR"
           :size="14"
+          class="app-shell__nav-label"
           :style="{ marginLeft: 'auto', color: 'var(--ink-3)' }"
         />
       </NuxtLink>
@@ -159,26 +152,17 @@
 
     <!-- main -->
     <div style="display: flex; flex-direction: column; min-width: 0">
-      <header
-        class="row between"
-        style="
-          padding: 0 26px;
-          height: 60px;
-          border-bottom: 1px solid var(--line);
-          background: color-mix(in oklab, var(--bg) 84%, transparent);
-          backdrop-filter: blur(8px);
-          flex: none;
-        "
-      >
-        <div class="col" style="gap: 2px; min-width: 0; flex: none">
+      <header class="row between app-shell__header">
+        <div class="col app-shell__title-group" style="gap: 2px; flex: none">
           <span
             v-if="crumb"
-            class="mono faint"
+            class="mono faint app-shell__crumb"
             style="font-size: 11px; letter-spacing: 0.08em; white-space: nowrap"
           >
             {{ crumb }}
           </span>
           <h1
+            class="app-shell__title"
             style="
               font-size: 17px;
               font-weight: 600;
@@ -189,7 +173,7 @@
             {{ title }}
           </h1>
         </div>
-        <div class="row gap-3">
+        <div class="row app-shell__header-actions gap-3">
           <AppRecordSearch ref="recordSearchRef" @select="selectRecord" />
           <slot name="actions" />
           <button
@@ -344,3 +328,119 @@ function goToActivity(): void {
   navigateTo("/activity");
 }
 </script>
+
+<style scoped>
+/* ----------------------------------------------------------------------
+   Responsive breakpoints — kept in sync with the same values used in
+   app/pages/settings.vue, app/pages/inbox.vue and app/pages/sources.vue:
+     tablet: max-width 1024px
+     phone:  max-width 640px
+   ---------------------------------------------------------------------- */
+
+.app-shell {
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  background: var(--bg);
+}
+
+.app-shell__sidebar {
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 14px;
+  min-width: 0;
+}
+
+.app-shell__header {
+  padding: 0 26px;
+  height: 60px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklab, var(--bg) 84%, transparent);
+  backdrop-filter: blur(8px);
+  flex: none;
+}
+
+.app-shell__title-group {
+  min-width: 0;
+}
+
+@media (max-width: 1024px) {
+  .app-shell {
+    grid-template-columns: 76px 1fr;
+  }
+
+  .app-shell__sidebar {
+    padding: 18px 10px;
+    align-items: center;
+  }
+
+  /* Collapse the sidebar to an icon rail: hide labels/text, keep icons and
+     the user avatar so navigation stays usable without clipping. */
+  .app-shell__label,
+  .app-shell__nav-label,
+  .app-shell__plan-card {
+    display: none;
+  }
+
+  .app-shell__nav-link {
+    justify-content: center;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    height: 100dvh;
+  }
+
+  /* Sidebar becomes a horizontally-scrollable top bar instead of a rail, so
+     the full nav is still reachable on narrow phones without vertical
+     space loss. */
+  .app-shell__sidebar {
+    flex-direction: row;
+    align-items: center;
+    padding: 10px 12px;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* Compound selector so this reliably beats the global .col utility
+     (display: flex; flex-direction: column) regardless of stylesheet
+     load order, since both are single-class selectors otherwise. */
+  .app-shell__sidebar .app-shell__nav {
+    flex-direction: row;
+    flex: none;
+  }
+
+  .app-shell__divider,
+  .app-shell__docs-link {
+    display: none;
+  }
+
+  .app-shell__header {
+    height: auto;
+    min-height: 56px;
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .app-shell__title-group {
+    flex: 1 1 auto;
+  }
+
+  .app-shell__crumb,
+  .app-shell__title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .app-shell__header-actions {
+    flex-wrap: wrap;
+  }
+}
+</style>
