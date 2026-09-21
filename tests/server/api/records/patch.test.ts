@@ -62,11 +62,37 @@ function stubUpdateResult(rows: unknown[]) {
   return { set, where, returning };
 }
 
+// The handler issues up to two db.select() calls in a fixed order: first
+// isNoOpSyncedUpdate (skipped entirely unless this request moves status to
+// "synced"), then resolveSourceTypes (skipped entirely when the updated
+// record has no sourceId). Queue-based so a test can give each call its own
+// result instead of one static return shared by both — `results[N]` may be a
+// plain row array or a thunk (for rejection).
+function stubSelects(results: (unknown[] | (() => Promise<unknown[]>))[]) {
+  let call = 0;
+  selectMock.mockImplementation(() => {
+    const index = call;
+    call += 1;
+    const resultOrThunk = results[index] ?? [];
+    const where = vi.fn(() =>
+      typeof resultOrThunk === "function"
+        ? resultOrThunk()
+        : Promise.resolve(resultOrThunk),
+    );
+    const from = vi.fn(() => ({ where }));
+    return { from };
+  });
+}
+
+// Convenience for tests that only care about the sourceType lookup: the
+// no-op-synced-update call (if any) resolves empty, which doesn't affect
+// these sourceType-focused tests.
 function stubSourceTypeResult(rows: unknown[]) {
-  const where = vi.fn(() => Promise.resolve(rows));
-  const from = vi.fn(() => ({ where }));
-  selectMock.mockReturnValue({ from });
-  return { from, where };
+  stubSelects([[], rows]);
+}
+
+function existingRecordRow(status: string, syncedAt: Date | null) {
+  return { status, syncedAt };
 }
 
 beforeEach(() => {
@@ -79,20 +105,24 @@ beforeEach(() => {
   updateMock.mockReset();
   selectMock.mockReset();
   writeEventMock.mockClear();
+  stubSelects([]);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("PATCH /api/records/:uuid", () => {
-  it("returns the updated record when status, syncedAt, filePath, and errorMessage are provided", async () => {
+  it("returns the updated record when status, filePath, and errorMessage are provided", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00.000Z"));
+
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(
       buildBody({
         status: "synced",
-        syncedAt: "2024-01-16T10:00:00.000Z",
         filePath: "05-stripe/note.md",
         errorMessage: null,
       }),
@@ -100,7 +130,7 @@ describe("PATCH /api/records/:uuid", () => {
     const updatedRecord = {
       ...sampleRecord,
       status: "synced",
-      syncedAt: new Date("2024-01-16T10:00:00.000Z"),
+      syncedAt: new Date("2026-06-27T12:00:00.000Z"),
       filePath: "05-stripe/note.md",
       errorMessage: null,
     };
@@ -165,9 +195,9 @@ describe("PATCH /api/records/:uuid", () => {
       status: "synced",
     };
     stubUpdateResult([updatedRecord]);
-    const where = vi.fn(() => Promise.reject(new Error("connection reset")));
-    const from = vi.fn(() => ({ where }));
-    selectMock.mockReturnValue({ from });
+    // Call 1: isNoOpSyncedUpdate resolves fine. Call 2: resolveSourceTypes
+    // rejects — only the sourceType enrichment should degrade, not the update.
+    stubSelects([[], () => Promise.reject(new Error("connection reset"))]);
 
     const response = await handler(buildEvent(userId));
 
@@ -206,6 +236,7 @@ describe("PATCH /api/records/:uuid", () => {
     await handler(buildEvent(userId));
 
     expect(set).toHaveBeenCalledWith({ status: "pending" });
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   it("updates only filePath without touching other fields", async () => {
@@ -242,7 +273,10 @@ describe("PATCH /api/records/:uuid", () => {
     });
   });
 
-  it("moves a record from error to synced status, clearing errorMessage", async () => {
+  it("moves a record from error to synced status, clearing errorMessage and stamping syncedAt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00.000Z"));
+
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(
       buildBody({ status: "synced", errorMessage: null }),
@@ -251,43 +285,19 @@ describe("PATCH /api/records/:uuid", () => {
       ...sampleRecord,
       status: "synced",
       errorMessage: null,
+      syncedAt: new Date("2026-06-27T12:00:00.000Z"),
     };
     const { set } = stubUpdateResult([updatedRecord]);
 
     const response = await handler(buildEvent(userId));
 
-    expect(set).toHaveBeenCalledWith({ status: "synced", errorMessage: null });
+    expect(set).toHaveBeenCalledWith({
+      status: "synced",
+      errorMessage: null,
+      syncedAt: new Date("2026-06-27T12:00:00.000Z"),
+    });
     expect(response.data?.attributes.status).toBe("synced");
     expect(response.data?.attributes.errorMessage).toBeNull();
-  });
-
-  it("parses syncedAt into a Date before updating", async () => {
-    mockGetRouterParam.mockReturnValue(validUuid);
-    mockReadBody.mockResolvedValue(
-      buildBody({ syncedAt: "2024-01-16T10:00:00.000Z" }),
-    );
-    const updatedRecord = {
-      ...sampleRecord,
-      syncedAt: new Date("2024-01-16T10:00:00.000Z"),
-    };
-    const { set } = stubUpdateResult([updatedRecord]);
-
-    await handler(buildEvent(userId));
-
-    expect(set).toHaveBeenCalledWith({
-      syncedAt: new Date("2024-01-16T10:00:00.000Z"),
-    });
-  });
-
-  it("allows clearing syncedAt with an explicit null", async () => {
-    mockGetRouterParam.mockReturnValue(validUuid);
-    mockReadBody.mockResolvedValue(buildBody({ syncedAt: null }));
-    const updatedRecord = { ...sampleRecord, syncedAt: null };
-    const { set } = stubUpdateResult([updatedRecord]);
-
-    await handler(buildEvent(userId));
-
-    expect(set).toHaveBeenCalledWith({ syncedAt: null });
   });
 
   it("updates title and content, preserving createdAt and source lineage", async () => {
@@ -330,7 +340,7 @@ describe("PATCH /api/records/:uuid", () => {
     );
   });
 
-  it("does not write an activity event for a status/filePath/syncedAt/errorMessage-only update", async () => {
+  it("does not write an activity event for a status/filePath/errorMessage-only update", async () => {
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
     stubUpdateResult([{ ...sampleRecord, status: "synced" }]);
@@ -568,50 +578,6 @@ describe("PATCH /api/records/:uuid", () => {
     });
   });
 
-  it("throws 422 when syncedAt is not a string or null", async () => {
-    mockGetRouterParam.mockReturnValue(validUuid);
-    mockReadBody.mockResolvedValue(buildBody({ syncedAt: 12345 }));
-
-    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
-      statusCode: 422,
-    });
-    expect(mockCreateError).toHaveBeenCalledWith({
-      statusCode: 422,
-      data: {
-        errors: [
-          {
-            status: "422",
-            title: "Invalid Attribute",
-            detail: "SyncedAt must be a date string or null",
-            source: { pointer: "/data/attributes/syncedAt" },
-          },
-        ],
-      },
-    });
-  });
-
-  it("throws 422 when syncedAt is an unparseable date string", async () => {
-    mockGetRouterParam.mockReturnValue(validUuid);
-    mockReadBody.mockResolvedValue(buildBody({ syncedAt: "not-a-date" }));
-
-    await expect(handler(buildEvent(userId))).rejects.toMatchObject({
-      statusCode: 422,
-    });
-    expect(mockCreateError).toHaveBeenCalledWith({
-      statusCode: 422,
-      data: {
-        errors: [
-          {
-            status: "422",
-            title: "Invalid Attribute",
-            detail: "SyncedAt must be a valid date string",
-            source: { pointer: "/data/attributes/syncedAt" },
-          },
-        ],
-      },
-    });
-  });
-
   it("throws 422 when filePath is not a string or null", async () => {
     mockGetRouterParam.mockReturnValue(validUuid);
     mockReadBody.mockResolvedValue(buildBody({ filePath: 42 }));
@@ -713,6 +679,220 @@ describe("PATCH /api/records/:uuid", () => {
           expect.objectContaining({ status: "401", title: "Unauthorized" }),
         ],
       },
+    });
+  });
+
+  // Bug: markpost#291 (mirroring markpost#265's fix on the bulk endpoint). A
+  // single-record status change let the client dictate syncedAt outright —
+  // an arbitrary client-supplied timestamp alongside (or independent of) a
+  // status change could corrupt the "synced today" stat card. The client can
+  // no longer supply syncedAt at all (see "rejects any client-supplied
+  // syncedAt" below); these tests exercise the server-side derivation, which
+  // stamps "now" unless doing so would be a true no-op — current status is
+  // already "synced" *and* it already has a real syncedAt. Both conditions
+  // matter: status alone would wrongly skip a POST-created
+  // "synced"-with-no-syncedAt record, and syncedAt alone would wrongly skip a
+  // genuine pending/error -> synced re-sync that still has an old syncedAt on
+  // the row.
+  describe("syncedAt trust boundary on status changes", () => {
+    it("does not re-stamp syncedAt when the record is already fully synced", async () => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+      stubSelects([
+        [existingRecordRow("synced", new Date("2024-01-01T00:00:00Z"))],
+      ]);
+      const { set } = stubUpdateResult([{ ...sampleRecord, status: "synced" }]);
+
+      await handler(buildEvent(userId));
+
+      expect(set).toHaveBeenCalledWith({ status: "synced" });
+    });
+
+    it("stamps syncedAt with the current time when a record has never been synced", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-06-27T12:00:00.000Z"));
+
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+      stubSelects([[existingRecordRow("pending", null)]]);
+      const { set } = stubUpdateResult([{ ...sampleRecord, status: "synced" }]);
+
+      await handler(buildEvent(userId));
+
+      expect(set).toHaveBeenCalledWith({
+        status: "synced",
+        syncedAt: new Date("2026-06-27T12:00:00.000Z"),
+      });
+    });
+
+    // Regression case: status alone can't answer "has this ever been
+    // synced?" — POST /api/records lets a client create a record already
+    // marked "synced" with no syncedAt. Keying the guard off status instead
+    // of syncedAt would make such a record permanently unstampable here.
+    it("stamps syncedAt even when the record's current status is already synced, as long as syncedAt is null", async () => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+      stubSelects([[existingRecordRow("synced", null)]]);
+      const { set } = stubUpdateResult([{ ...sampleRecord, status: "synced" }]);
+
+      await handler(buildEvent(userId));
+
+      expect(set).toHaveBeenCalledWith(
+        expect.objectContaining({ syncedAt: expect.any(Date) }),
+      );
+    });
+
+    // Regression case: syncedAt alone can't answer it either — a record
+    // synced weeks ago, then moved to "error", still carries that old
+    // syncedAt (this fix no longer nulls it). Re-marking it "synced" today is
+    // a genuine new sync and must get a fresh stamp, not be skipped as if it
+    // were still the same sync.
+    it("re-stamps syncedAt on a genuine re-sync, even though the row still carries an old syncedAt from before", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-06-27T12:00:00.000Z"));
+
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+      stubSelects([
+        [existingRecordRow("error", new Date("2024-01-01T00:00:00Z"))],
+      ]);
+      const { set } = stubUpdateResult([{ ...sampleRecord, status: "synced" }]);
+
+      await handler(buildEvent(userId));
+
+      expect(set).toHaveBeenCalledWith({
+        status: "synced",
+        syncedAt: new Date("2026-06-27T12:00:00.000Z"),
+      });
+    });
+
+    it("stamps syncedAt when the server has no prior record of the uuid at all", async () => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+      stubSelects([[]]);
+      const { set } = stubUpdateResult([{ ...sampleRecord, status: "synced" }]);
+
+      await handler(buildEvent(userId));
+
+      expect(set).toHaveBeenCalledWith(
+        expect.objectContaining({ syncedAt: expect.any(Date) }),
+      );
+    });
+
+    it("never touches syncedAt, and never queries for it, when moving a record to pending", async () => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ status: "pending" }));
+      const { set } = stubUpdateResult([
+        { ...sampleRecord, status: "pending" },
+      ]);
+
+      await handler(buildEvent(userId));
+
+      expect(set).toHaveBeenCalledWith({ status: "pending" });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it("never touches syncedAt, and never queries for it, when moving a record to error", async () => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(
+        buildBody({ status: "error", errorMessage: "boom" }),
+      );
+      const { set } = stubUpdateResult([{ ...sampleRecord, status: "error" }]);
+
+      await handler(buildEvent(userId));
+
+      expect(set).toHaveBeenCalledWith({
+        status: "error",
+        errorMessage: "boom",
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it("skips the lookup entirely when the update includes no status change", async () => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ filePath: "a.md" }));
+      const { set } = stubUpdateResult([{ ...sampleRecord, filePath: "a.md" }]);
+
+      await handler(buildEvent(userId));
+
+      expect(set).toHaveBeenCalledWith({ filePath: "a.md" });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it("aborts the request, writing nothing, when the no-op lookup fails", async () => {
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ status: "synced" }));
+      // Unlike the sourceType lookup (display-only enrichment, degrades
+      // gracefully), a failed lookup here must not fall back to a guess —
+      // guessing "not yet synced" would re-stamp the row and reintroduce the
+      // exact stat inflation this fix closes.
+      stubSelects([() => Promise.reject(new Error("connection reset"))]);
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 500,
+      });
+      expect(updateMock).not.toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
+    });
+
+    // Guards against a partial fix that only checks the combination — a
+    // standalone `{ syncedAt }` update (no status key at all) is just as much
+    // a client-trusted timestamp as one sent alongside a status change, and
+    // must be rejected the same way rather than left as an unguarded
+    // backdoor around the restriction.
+    it("throws 422 when a client sends syncedAt alongside a status change", async () => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(
+        buildBody({ status: "synced", syncedAt: "2099-01-01T00:00:00.000Z" }),
+      );
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 422,
+        data: {
+          errors: [
+            {
+              status: "422",
+              title: "Invalid Attribute",
+              detail:
+                "SyncedAt is derived by the server from status changes and cannot be set directly.",
+              source: { pointer: "/data/attributes/syncedAt" },
+            },
+          ],
+        },
+      });
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it("throws 422 when a client sends a standalone syncedAt with no status change", async () => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ syncedAt: null }));
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 422,
+        data: {
+          errors: [
+            {
+              status: "422",
+              title: "Invalid Attribute",
+              detail:
+                "SyncedAt is derived by the server from status changes and cannot be set directly.",
+              source: { pointer: "/data/attributes/syncedAt" },
+            },
+          ],
+        },
+      });
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(selectMock).not.toHaveBeenCalled();
     });
   });
 });
