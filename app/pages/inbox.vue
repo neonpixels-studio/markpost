@@ -237,6 +237,7 @@
       :retry-error="retryError"
       @close="closeRecordDetail"
       @retry="retryRecord"
+      @updated="handleRecordUpdated"
     />
 
     <ConfirmDialog
@@ -260,6 +261,7 @@ import {
   BULK_ACTION_MAX_BATCH_SIZE,
   type RecordStats,
   type RecordStatus,
+  type RecordResource,
 } from "~/composables/useRecords";
 import { useRecordDetail } from "~/composables/useRecordDetail";
 import { useExportNotice } from "~/composables/useExportNotice";
@@ -292,6 +294,7 @@ const {
   actionError,
   deleteRecords,
   updateRecordsStatus,
+  applyRecordUpdate,
 } = useRecords("all");
 
 const isBulkActionInFlight = computed(
@@ -553,6 +556,18 @@ async function retryRecord(uuid: string): Promise<void> {
       retryingUuid.value = null;
     }
   }
+}
+
+// Mirrors retryRecord's applyDetailUpdate + table-row-update pairing: the
+// modal already applies the save to its own displayed copy internally (see
+// editedRecordOverride in RecordDetailModal), so this only needs to push the
+// saved record into the table row (applyRecordUpdate) and into
+// useRecordDetail's own copy (applyDetailUpdate) so a later re-render of the
+// modal from `record` — e.g. after the override resets — still shows the
+// edit instead of the pre-edit value.
+function handleRecordUpdated(updated: RecordResource): void {
+  applyRecordUpdate(updated);
+  applyDetailUpdate(updated);
 }
 
 watch(

@@ -782,6 +782,15 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       .filter((record) => matchesActiveFilter(record, filter.value));
   }
 
+  // Pushes a single record edited elsewhere (e.g. a title/content save in
+  // RecordDetailModal) into the table row list, so the row reflects the edit
+  // without a full reload. Reuses applyStatusUpdates's replace-in-place +
+  // filter-reconciliation logic — the same rules apply to any record update,
+  // not just a status change, and this edit never touches status anyway.
+  function applyRecordUpdate(updated: RecordResource): void {
+    applyStatusUpdates([updated]);
+  }
+
   // A rejected bulk PATCH can still have committed rows server-side (see
   // fetchRecordOutcome above). Re-fetches exactly the uuids this batch
   // touched (not a full loadRecords(), which would drop any pages loaded via
@@ -934,6 +943,7 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
     actionError,
     deleteRecords,
     updateRecordsStatus,
+    applyRecordUpdate,
     hasMore,
     filter,
     loadRecords,

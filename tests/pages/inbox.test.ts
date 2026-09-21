@@ -23,6 +23,7 @@ const mockFetchRecordStats = vi.fn();
 const mockTriggerRecordExport = vi.fn();
 const mockDeleteRecords = vi.fn();
 const mockUpdateRecordsStatus = vi.fn();
+const mockApplyRecordUpdate = vi.fn();
 
 function isSelected(uuid: string): boolean {
   return selectedUuidsRef.value.has(uuid);
@@ -85,6 +86,7 @@ vi.mock("../../app/composables/useRecords", async (importOriginal) => {
       actionError: actionErrorRef,
       deleteRecords: mockDeleteRecords,
       updateRecordsStatus: mockUpdateRecordsStatus,
+      applyRecordUpdate: mockApplyRecordUpdate,
     }),
     get fetchRecordStats() {
       return mockFetchRecordStats;
@@ -169,8 +171,13 @@ const globalConfig = {
       },
       RecordDetailModal: {
         name: "RecordDetailModal",
+        // The "save" button hands back a record built from the modal's own
+        // `record` prop with the title overwritten, mirroring what the real
+        // component's handleSave does after a successful PATCH — enough for
+        // tests to assert the emitted record without re-implementing the
+        // real save flow.
         template:
-          '<div class="record-detail-modal" @click="$emit(\'close\')"><button class="detail-retry-btn" :disabled="isRetrying || isRetryDisabled" @click.stop="$emit(\'retry\', record?.attributes?.uuid)">{{ isRetrying ? "retrying…" : "retry" }}</button><span v-if="retryError" class="detail-retry-error">{{ retryError }}</span></div>',
+          '<div class="record-detail-modal" @click="$emit(\'close\')"><button class="detail-retry-btn" :disabled="isRetrying || isRetryDisabled" @click.stop="$emit(\'retry\', record?.attributes?.uuid)">{{ isRetrying ? "retrying…" : "retry" }}</button><span v-if="retryError" class="detail-retry-error">{{ retryError }}</span><button class="detail-save-btn" @click.stop="$emit(\'updated\', { ...record, attributes: { ...record.attributes, title: \'Edited title\' } })">save</button></div>',
         props: [
           "record",
           "isLoading",
@@ -179,7 +186,7 @@ const globalConfig = {
           "isRetryDisabled",
           "retryError",
         ],
-        emits: ["close", "retry"],
+        emits: ["close", "retry", "updated"],
       },
       InputCheckbox: {
         template:
@@ -262,6 +269,7 @@ describe("inbox page", () => {
     mockDeleteRecords.mockResolvedValue(1);
     mockUpdateRecordsStatus.mockReset();
     mockUpdateRecordsStatus.mockResolvedValue([]);
+    mockApplyRecordUpdate.mockReset();
     detailRecordRef.value = null;
     detailLoadingRef.value = false;
     detailErrorRef.value = null;
@@ -1165,6 +1173,52 @@ describe("inbox page", () => {
       const wrapper = await mountWithOpenErrorRecord();
 
       expect(wrapper.find(".detail-retry-btn").text()).toBe("retry");
+    });
+  });
+
+  describe("record updated", () => {
+    it("pushes the saved record into the table row list when the modal emits updated", async () => {
+      routeQueryRef.value = { record: "query-uuid" };
+      const openRecord = makeRecord({ uuid: "query-uuid", title: "Before" });
+      detailRecordRef.value = openRecord;
+      recordsRef.value = [openRecord];
+
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".detail-save-btn").trigger("click");
+      await flushPromises();
+
+      expect(mockApplyRecordUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attributes: expect.objectContaining({
+            uuid: "query-uuid",
+            title: "Edited title",
+          }),
+        }),
+      );
+    });
+
+    it("pushes the saved record into the detail view when the modal emits updated", async () => {
+      routeQueryRef.value = { record: "query-uuid" };
+      const openRecord = makeRecord({ uuid: "query-uuid", title: "Before" });
+      detailRecordRef.value = openRecord;
+      recordsRef.value = [openRecord];
+
+      const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+
+      await wrapper.find(".detail-save-btn").trigger("click");
+      await flushPromises();
+
+      expect(mockApplyDetailUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attributes: expect.objectContaining({
+            uuid: "query-uuid",
+            title: "Edited title",
+          }),
+        }),
+      );
     });
   });
 });
