@@ -237,6 +237,7 @@
       :retry-error="retryError"
       @close="closeRecordDetail"
       @retry="retryRecord"
+      @updated="handleRecordUpdated"
     />
 
     <ConfirmDialog
@@ -260,6 +261,7 @@ import {
   BULK_ACTION_MAX_BATCH_SIZE,
   type RecordStats,
   type RecordStatus,
+  type RecordResource,
 } from "~/composables/useRecords";
 import { useRecordDetail } from "~/composables/useRecordDetail";
 import { useExportNotice } from "~/composables/useExportNotice";
@@ -292,6 +294,7 @@ const {
   actionError,
   deleteRecords,
   updateRecordsStatus,
+  applyRecordUpdate,
 } = useRecords("all");
 
 const isBulkActionInFlight = computed(
@@ -553,6 +556,17 @@ async function retryRecord(uuid: string): Promise<void> {
       retryingUuid.value = null;
     }
   }
+}
+
+// Table row always updates (the edit already saved server-side); the detail
+// push is guarded, mirroring markRecordPendingForRetry's activeRecordUuid
+// check, so a late save can't land in a different open record.
+function handleRecordUpdated(updatedRecord: RecordResource): void {
+  applyRecordUpdate(updatedRecord);
+  if (updatedRecord.attributes.uuid !== activeRecordUuid.value) {
+    return;
+  }
+  applyDetailUpdate(updatedRecord);
 }
 
 watch(

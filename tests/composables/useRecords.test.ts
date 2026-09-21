@@ -1707,3 +1707,98 @@ describe("useRecords updateRecordsStatus", () => {
     expect(isUpdatingStatus.value).toBe(false);
   });
 });
+
+describe("useRecords applyRecordUpdate", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("replaces a record in place with a freshly edited copy", async () => {
+    const originalRecord = makeRecordResource("uuid-1");
+    mockFetch.mockResolvedValueOnce({
+      data: [originalRecord],
+      meta: { hasMore: false },
+    });
+
+    const { loadRecords, records, applyRecordUpdate } = useRecords("all");
+    await loadRecords();
+
+    const editedRecord: RecordResource = {
+      ...originalRecord,
+      attributes: {
+        ...originalRecord.attributes,
+        title: "Edited title",
+        content: "Edited content",
+      },
+    };
+    applyRecordUpdate(editedRecord);
+
+    expect(records.value[0]?.attributes.title).toBe("Edited title");
+    expect(records.value[0]?.attributes.content).toBe("Edited content");
+  });
+
+  it("leaves the list untouched when the edited record isn't in it", async () => {
+    const originalRecord = makeRecordResource("uuid-1");
+    mockFetch.mockResolvedValueOnce({
+      data: [originalRecord],
+      meta: { hasMore: false },
+    });
+
+    const { loadRecords, records, applyRecordUpdate } = useRecords("all");
+    await loadRecords();
+
+    applyRecordUpdate(makeRecordResource("uuid-other"));
+
+    expect(records.value).toEqual([originalRecord]);
+  });
+
+  it("keeps a record under the active filter when the edit doesn't touch status", async () => {
+    const errorRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "error",
+      },
+    };
+    mockFetch.mockResolvedValueOnce({
+      data: [errorRecord],
+      meta: { hasMore: false },
+    });
+
+    const { loadRecords, records, applyRecordUpdate } = useRecords("errors");
+    await loadRecords();
+
+    applyRecordUpdate({
+      ...errorRecord,
+      attributes: { ...errorRecord.attributes, title: "Edited title" },
+    });
+
+    expect(records.value).toHaveLength(1);
+    expect(records.value[0]?.attributes.title).toBe("Edited title");
+    expect(records.value[0]?.attributes.status).toBe("error");
+  });
+
+  it("drops the record from the 'errors' filter if the edit also carries a status change out of error", async () => {
+    const errorRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "error",
+      },
+    };
+    mockFetch.mockResolvedValueOnce({
+      data: [errorRecord],
+      meta: { hasMore: false },
+    });
+
+    const { loadRecords, records, applyRecordUpdate } = useRecords("errors");
+    await loadRecords();
+
+    applyRecordUpdate({
+      ...errorRecord,
+      attributes: { ...errorRecord.attributes, status: "synced" },
+    });
+
+    expect(records.value).toEqual([]);
+  });
+});
