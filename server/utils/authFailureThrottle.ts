@@ -1,4 +1,4 @@
-import { createHmac } from "crypto";
+import { createHmac } from "node:crypto";
 import { isIPv4, isIPv6 } from "node:net";
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "../db";
@@ -10,18 +10,33 @@ import {
   type ThrottleResult,
 } from "./fixedWindowThrottle";
 
-// Bounds a bad-token guessing loop from a single IP: enough budget for a
-// human mistyping/re-pasting a token a few times, tight enough to make
-// brute-forcing a token infeasible within a window. Deliberately much
-// tighter than API_THROTTLE_MAX_HITS (apiThrottle.ts, 300/60s) — that limiter
-// bounds normal authenticated traffic, this one exists specifically to
-// starve a guessing loop, so it stays low regardless of legitimate request
-// volume.
+// reserveAuthAttempt spends one unit of budget on *every* mp_live_ attempt,
+// not just failed ones (see the comment on reserveAuthAttempt below for why
+// it has to work that way under concurrency), so this has two jobs at once:
+// bound a guessing loop, and tolerate a legitimate caller's own concurrent
+// in-flight requests before their reservations get refunded. Guessing a
+// 32-byte random token is astronomically infeasible regardless of whether
+// the limit is 10 or 100 — the exact number does nothing to stop brute
+// force — so it is sized for the concurrency case instead: comfortably above
+// a realistic burst of parallel requests from one legitimate API client
+// (e.g. a CLI batch sync) rather than being tuned as if it were a meaningful
+// brute-force defense. Deliberately still below API_THROTTLE_MAX_HITS
+// (apiThrottle.ts, 300/60s, the already-authenticated ceiling) so a genuine
+// runaway/misbehaving script is still bounded well before that budget.
 export const AUTH_FAILURE_THROTTLE_WINDOW_SECONDS = 60;
-export const AUTH_FAILURE_THROTTLE_MAX_HITS = 10;
+export const AUTH_FAILURE_THROTTLE_MAX_HITS = 50;
 
 const IP_HASH_ALGORITHM = "sha256";
 const IPV4_MAPPED_IPV6_PREFIX = "::ffff:";
+// Matches the fully-written form of an IPv4-mapped address (RFC 4291 §2.5.5.2),
+// e.g. "0:0:0:0:0:ffff:203.0.113.10" — the same address the compressed
+// "::ffff:203.0.113.10" form (handled separately) refers to, just without
+// the zero-run collapsed. Both forms must resolve to the same throttle key,
+// or a client (or the environment in front of it) that happens to emit the
+// expanded form would get an all-zero /64 bucket shared with every other
+// IPv4-mapped client instead of its own IPv4 address.
+const IPV4_MAPPED_FULL_PATTERN =
+  /^0(:0){4}:ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
 // A single IPv6 customer (residential or mobile) is typically handed a /64
 // block and can rotate freely through the remaining 64 bits (privacy
 // extensions, per-device addressing) — keying on the full address would let
@@ -46,10 +61,8 @@ if (
 }
 
 // Expands the `::` zero-compression shorthand so the address can be sliced
-// by group index. Does not handle a zone id (`%eth0`) or an IPv4 embedded in
-// a form other than the `::ffff:` prefix (handled separately in
-// throttleKeyForIp) — neither is a shape getRequestIP or Netlify's
-// x-nf-client-connection-ip header produce.
+// by group index. Does not handle a zone id (`%eth0`) — not a shape
+// getRequestIP or Netlify's x-nf-client-connection-ip header produce.
 function expandIpv6Groups(address: string): string[] {
   const [head, tail] = address.split("::");
   const headGroups = head ? head.split(":") : [];
@@ -62,31 +75,52 @@ function expandIpv6Groups(address: string): string[] {
   ];
 }
 
+// Extracts the embedded IPv4 address from either written form of an
+// IPv4-mapped IPv6 address (compressed "::ffff:a.b.c.d" or fully-written
+// "0:0:0:0:0:ffff:a.b.c.d" — see IPV4_MAPPED_FULL_PATTERN), or undefined if
+// loweredAddress is not one. Takes the already-lowercased address so callers
+// don't each have to remember to lowercase before matching.
+function extractMappedIpv4(loweredAddress: string): string | undefined {
+  if (loweredAddress.startsWith(IPV4_MAPPED_IPV6_PREFIX)) {
+    const candidate = loweredAddress.slice(IPV4_MAPPED_IPV6_PREFIX.length);
+    return isIPv4(candidate) ? candidate : undefined;
+  }
+
+  const fullFormMatch = loweredAddress.match(IPV4_MAPPED_FULL_PATTERN);
+  const candidate = fullFormMatch?.[2];
+  return candidate && isIPv4(candidate) ? candidate : undefined;
+}
+
 // Normalizes an address to the key it should be throttled under: an IPv4
-// address (including one embedded in an IPv4-mapped IPv6 address) as-is, or
-// an IPv6 address truncated to its /64 prefix. See the const comments above
-// for why bucketing matters for IPv6 specifically.
+// address (including one embedded in an IPv4-mapped IPv6 address, in either
+// written form) as-is, or an IPv6 address truncated to its /64 prefix. See
+// the const comments above for why bucketing matters for IPv6 specifically.
+// Case- and leading-zero-insensitive: "2001:DB8::1", "2001:db8::1" and
+// "2001:0db8::1" all describe the same address and must resolve to the same
+// key, or the same client could straddle multiple buckets depending on which
+// equivalent form happened to reach this function.
 export function throttleKeyForIp(ipAddress: string): string {
   if (isIPv4(ipAddress)) {
     return ipAddress;
-  }
-
-  const lowered = ipAddress.toLowerCase();
-  if (lowered.startsWith(IPV4_MAPPED_IPV6_PREFIX)) {
-    const embeddedIpv4 = ipAddress.slice(IPV4_MAPPED_IPV6_PREFIX.length);
-    if (isIPv4(embeddedIpv4)) {
-      return embeddedIpv4;
-    }
   }
 
   if (!isIPv6(ipAddress)) {
     return ipAddress;
   }
 
-  const groups = ipAddress.includes("::")
-    ? expandIpv6Groups(ipAddress)
-    : ipAddress.split(":");
-  return groups.slice(0, IPV6_THROTTLE_PREFIX_GROUPS).join(":");
+  const lowered = ipAddress.toLowerCase();
+  const mappedIpv4 = extractMappedIpv4(lowered);
+  if (mappedIpv4) {
+    return mappedIpv4;
+  }
+
+  const groups = lowered.includes("::")
+    ? expandIpv6Groups(lowered)
+    : lowered.split(":");
+  return groups
+    .slice(0, IPV6_THROTTLE_PREFIX_GROUPS)
+    .map((group) => parseInt(group, 16).toString(16))
+    .join(":");
 }
 
 // Only equality matching is needed to key the fixed-window counter, so a

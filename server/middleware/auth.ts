@@ -159,16 +159,10 @@ function throwAuthFailureThrottled(
   );
 }
 
-// Atomically reserves one unit of the IP's failed-auth budget *before*
-// verification runs, and throws the throttle's 429 immediately if that
-// reservation itself came back over budget. This has to happen before
-// verification, not after a failure, to actually stop a guessing loop:
-// Netlify runs requests concurrently, so a read-then-write pre-check (check,
-// then only record on failure) would let an entire burst of simultaneous
-// guesses past the check before any of them had recorded a failure — see the
-// comment on reserveAuthAttempt in authFailureThrottle.ts. Reserving instead
-// spends budget the moment an attempt is made, correct or not; a correct one
-// gets it back via refundAuthAttempt below.
+// Reserves budget before verification and throws the throttle's 429
+// immediately if that reservation came back over budget — see the doc
+// comment on reserveAuthAttempt (authFailureThrottle.ts) for why this has to
+// happen before verification rather than after a failure.
 async function reserveAuthBudgetOrThrow(
   event: H3Event,
   clientIp: string,
@@ -217,6 +211,28 @@ async function resolveCredentialAuth(
     : await authenticateViaClerk(rawToken);
 
   return { apiTokenAuth, userId };
+}
+
+// A thrown (not merely "no userId") failure out of resolveCredentialAuth
+// means credential resolution itself broke — e.g. the DB select inside
+// authenticateViaApiToken rejecting — not a wrong guess. Refunds the
+// reservation before rethrowing so an infrastructure hiccup doesn't quietly
+// erode a legitimate IP's guessing budget the way an actual wrong guess is
+// meant to; the original error still propagates unchanged, this only
+// corrects the throttle side effect.
+async function resolveCredentialAuthOrRefund(
+  rawToken: string,
+  viaApiToken: boolean,
+  clientIp: string | undefined,
+): Promise<CredentialAuthResult> {
+  try {
+    return await resolveCredentialAuth(rawToken, viaApiToken);
+  } catch (error) {
+    if (clientIp) {
+      await refundAuthAttempt(clientIp);
+    }
+    throw error;
+  }
 }
 
 // Only the Clerk path can carry a brand-new identity; an API token can only
@@ -281,7 +297,11 @@ export default defineEventHandler(async (event) => {
     await reserveAuthBudgetOrThrow(event, clientIp);
   }
 
-  const credentialAuth = await resolveCredentialAuth(rawToken, viaApiToken);
+  const credentialAuth = await resolveCredentialAuthOrRefund(
+    rawToken,
+    viaApiToken,
+    clientIp,
+  );
   if (!credentialAuth.userId) {
     throwUnauthorized();
   }

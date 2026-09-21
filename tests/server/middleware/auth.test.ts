@@ -159,6 +159,13 @@ function stubSelectResult(rows: unknown[]) {
   return { from, where, limit };
 }
 
+function stubSelectFailure(error: Error) {
+  const limit = vi.fn(() => Promise.reject(error));
+  const where = vi.fn(() => ({ limit }));
+  const from = vi.fn(() => ({ where }));
+  selectMock.mockReturnValue({ from });
+}
+
 function stubUpdateSuccess() {
   const where = vi.fn(() => Promise.resolve());
   const set = vi.fn(() => ({ where }));
@@ -740,6 +747,28 @@ describe("auth middleware", () => {
       await expect(handler(buildEvent())).rejects.toThrow();
 
       expect(mockRefundAuthAttempt).not.toHaveBeenCalled();
+    });
+
+    it("refunds budget when credential resolution itself throws (an infrastructure error, not a wrong guess)", async () => {
+      const rawToken = generateRawToken();
+      stubHeaders({ authorization: `Bearer ${rawToken}` });
+      stubSelectFailure(new Error("connection reset"));
+
+      await expect(handler(buildEvent())).rejects.toThrow("connection reset");
+
+      expect(mockRefundAuthAttempt).toHaveBeenCalledWith(DEFAULT_CLIENT_IP);
+    });
+
+    it("still propagates the original error after refunding on a thrown credential-resolution failure", async () => {
+      const rawToken = generateRawToken();
+      stubHeaders({ authorization: `Bearer ${rawToken}` });
+      stubSelectFailure(new Error("connection reset"));
+
+      await expect(handler(buildEvent())).rejects.toThrow("connection reset");
+
+      // The refund must not swallow or replace the real error with the
+      // throttle's own 401/429 handling.
+      expect(mockCreateError).not.toHaveBeenCalled();
     });
 
     it("gives the normal 401 (not 429) for a failed API token attempt that stayed within the reservation's budget", async () => {

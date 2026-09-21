@@ -1,4 +1,4 @@
-import { createHmac } from "crypto";
+import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spyConsoleError } from "../helpers";
 
@@ -133,6 +133,36 @@ describe("throttleKeyForIp", () => {
     const first = throttleKeyForIp("2001:db8:1234:5678::1");
     const second = throttleKeyForIp("2001:db8:1234:5679::1");
     expect(first).not.toBe(second);
+  });
+
+  it("is case-insensitive", () => {
+    expect(throttleKeyForIp("2001:DB8:1234:5678::1")).toBe(
+      throttleKeyForIp("2001:db8:1234:5678::1"),
+    );
+  });
+
+  it("normalizes leading zeros within a group", () => {
+    expect(throttleKeyForIp("2001:0db8:1234:5678::1")).toBe(
+      throttleKeyForIp("2001:db8:1234:5678::1"),
+    );
+  });
+
+  it("extracts the embedded IPv4 from the fully-written mapped form (not just the ::ffff: shorthand)", () => {
+    expect(throttleKeyForIp("0:0:0:0:0:ffff:203.0.113.10")).toBe(
+      "203.0.113.10",
+    );
+  });
+
+  it("treats the compressed and fully-written mapped forms of the same address as the same key", () => {
+    expect(throttleKeyForIp("0:0:0:0:0:ffff:203.0.113.10")).toBe(
+      throttleKeyForIp("::ffff:203.0.113.10"),
+    );
+  });
+
+  it("is case-insensitive for the fully-written mapped form", () => {
+    expect(throttleKeyForIp("0:0:0:0:0:FFFF:203.0.113.10")).toBe(
+      "203.0.113.10",
+    );
   });
 });
 
@@ -277,6 +307,21 @@ describe("reserveAuthAttempt threshold behavior", () => {
   it("allows an attempt exactly at the limit", async () => {
     stubInsertReturning([
       { count: AUTH_FAILURE_THROTTLE_MAX_HITS, windowStart: new Date() },
+    ]);
+
+    const result = await reserveAuthAttempt(CLIENT_IP);
+
+    expect(result).toEqual({ allowed: true });
+  });
+
+  it("has enough headroom to absorb a realistic burst of concurrent legitimate requests from one IP", async () => {
+    // reserveAuthAttempt spends budget on every attempt, successful or not
+    // (see its doc comment) — a plausible concurrent burst from one
+    // legitimate API client (e.g. a CLI batch sync) must clear the limit, or
+    // this throttle would 429 real traffic instead of only guessing loops.
+    const REALISTIC_CONCURRENT_BURST = 20;
+    stubInsertReturning([
+      { count: REALISTIC_CONCURRENT_BURST, windowStart: new Date() },
     ]);
 
     const result = await reserveAuthAttempt(CLIENT_IP);
