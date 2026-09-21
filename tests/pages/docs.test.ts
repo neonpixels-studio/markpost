@@ -3,7 +3,10 @@ import { mount } from "@vue/test-utils";
 
 vi.stubGlobal("definePageMeta", vi.fn());
 
-import DocsPage from "../../app/pages/docs.vue";
+import DocsPage, { DOC_NAV } from "../../app/pages/docs.vue";
+
+const TOTAL_NAV_ITEMS = DOC_NAV.flatMap((group) => group.items).length;
+const REPO_URL = "https://github.com/neonpixels-studio/markpost";
 
 const globalConfig = {
   // docs.vue renders the active doc via `<component :is="currentPage.component" />`
@@ -26,16 +29,29 @@ const globalConfig = {
 };
 
 let activeWrapper: ReturnType<typeof mount> | null = null;
+let strayElement: HTMLElement | null = null;
 
 function mountDocsPage() {
   activeWrapper = mount(DocsPage, { ...globalConfig, attachTo: document.body });
   return activeWrapper;
 }
 
+// Creates and focuses an element outside the docs page, for shortcut-guard
+// tests. Tracked on a module-level variable so afterEach always removes it,
+// even if the test's assertions fail first.
+function focusOutsideField(tagName: "input" | "select"): HTMLElement {
+  strayElement = document.createElement(tagName);
+  document.body.appendChild(strayElement);
+  strayElement.focus();
+  return strayElement;
+}
+
 describe("docs page", () => {
   afterEach(() => {
     activeWrapper?.unmount();
     activeWrapper = null;
+    strayElement?.remove();
+    strayElement = null;
   });
 
   it("matches snapshot in default state", () => {
@@ -45,7 +61,13 @@ describe("docs page", () => {
 
   it("shows every nav item when the search box is empty", () => {
     const wrapper = mountDocsPage();
-    expect(wrapper.findAll("nav button")).toHaveLength(8);
+    expect(wrapper.findAll("nav button")).toHaveLength(TOTAL_NAV_ITEMS);
+  });
+
+  it("shows every nav item when the search query is only whitespace", async () => {
+    const wrapper = mountDocsPage();
+    await wrapper.find("input").setValue("   ");
+    expect(wrapper.findAll("nav button")).toHaveLength(TOTAL_NAV_ITEMS);
   });
 
   it("filters the sidebar nav down to items matching the search query", async () => {
@@ -81,7 +103,7 @@ describe("docs page", () => {
     await searchInput.setValue("auth");
     await searchInput.setValue("");
 
-    expect(wrapper.findAll("nav button")).toHaveLength(8);
+    expect(wrapper.findAll("nav button")).toHaveLength(TOTAL_NAV_ITEMS);
   });
 
   it("clears the search query on Escape", async () => {
@@ -91,15 +113,25 @@ describe("docs page", () => {
     await searchInput.trigger("keydown.esc");
 
     expect((searchInput.element as HTMLInputElement).value).toBe("");
-    expect(wrapper.findAll("nav button")).toHaveLength(8);
+    expect(wrapper.findAll("nav button")).toHaveLength(TOTAL_NAV_ITEMS);
   });
 
-  it("links the GitHub icon to the real markpost repository", () => {
+  it("links the header GitHub icon to the real markpost repository", () => {
     const wrapper = mountDocsPage();
-    const githubLink = wrapper.find("a.icon-btn");
-    expect(githubLink.attributes("href")).toBe(
-      "https://github.com/neonpixels-studio/markpost",
-    );
+    expect(wrapper.find("a.icon-btn").attributes("href")).toBe(REPO_URL);
+  });
+
+  it("links every GitHub affordance on the page to the real repository", () => {
+    const wrapper = mountDocsPage();
+    const githubHrefs = wrapper
+      .findAll("a")
+      .map((link) => link.attributes("href"))
+      .filter((href): href is string => !!href?.includes("github.com"));
+
+    expect(githubHrefs.length).toBeGreaterThan(0);
+    for (const href of githubHrefs) {
+      expect(href).toBe(REPO_URL);
+    }
   });
 
   it("focuses the search input when '/' is pressed outside a text field", () => {
@@ -111,28 +143,59 @@ describe("docs page", () => {
     expect(document.activeElement).toBe(searchInput);
   });
 
-  it("does not hijack '/' while the user is already typing in another field", () => {
+  it("ignores '/' combined with a modifier key, e.g. Cmd+/ or Ctrl+/", () => {
     const wrapper = mountDocsPage();
     const searchInput = wrapper.find("input").element as HTMLInputElement;
-    const otherInput = document.createElement("input");
-    document.body.appendChild(otherInput);
-    otherInput.focus();
 
-    const event = new KeyboardEvent("keydown", { key: "/", bubbles: true });
-    otherInput.dispatchEvent(event);
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "/", metaKey: true }),
+    );
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "/", ctrlKey: true }),
+    );
 
     expect(document.activeElement).not.toBe(searchInput);
-    expect(document.activeElement).toBe(otherInput);
-    otherInput.remove();
   });
 
-  it("stops listening for the '/' shortcut after being unmounted", () => {
+  it("does not hijack '/' while the user is already typing in another input", () => {
     const wrapper = mountDocsPage();
+    const searchInput = wrapper.find("input").element as HTMLInputElement;
+    const otherInput = focusOutsideField("input");
+
+    otherInput.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "/", bubbles: true }),
+    );
+
+    expect(document.activeElement).toBe(otherInput);
+    expect(document.activeElement).not.toBe(searchInput);
+  });
+
+  it("does not hijack '/' while a <select> has focus (native type-ahead)", () => {
+    const wrapper = mountDocsPage();
+    const searchInput = wrapper.find("input").element as HTMLInputElement;
+    const otherSelect = focusOutsideField("select");
+
+    otherSelect.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "/", bubbles: true }),
+    );
+
+    expect(document.activeElement).toBe(otherSelect);
+    expect(document.activeElement).not.toBe(searchInput);
+  });
+
+  it("removes the '/' shortcut listener when unmounted", () => {
+    const addSpy = vi.spyOn(window, "addEventListener");
+    const wrapper = mountDocsPage();
+    const keydownCall = addSpy.mock.calls.find(([type]) => type === "keydown");
+    expect(keydownCall).toBeDefined();
+    const handler = keydownCall?.[1];
+
+    const removeSpy = vi.spyOn(window, "removeEventListener");
     wrapper.unmount();
     activeWrapper = null;
 
-    expect(() =>
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "/" })),
-    ).not.toThrow();
+    expect(removeSpy).toHaveBeenCalledWith("keydown", handler);
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
 });

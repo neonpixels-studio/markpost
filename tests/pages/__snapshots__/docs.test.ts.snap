@@ -52,7 +52,7 @@ exports[`docs page > matches snapshot in default state 1`] = `
       <div class="col gap-2"><span class="mono" style="font-size: 12px; color: var(--accent-700); padding-left: 10px; cursor: pointer; border-left-width: var(--accent); border-left-style: var(--accent); border-left-color: var(--accent);">Install the CLI</span><span class="mono" style="font-size: 12px; color: var(--ink-3); padding-left: 10px; cursor: pointer; border-left-width: var(--line); border-left-style: var(--line); border-left-color: var(--line);">Authenticate</span><span class="mono" style="font-size: 12px; color: var(--ink-3); padding-left: 10px; cursor: pointer; border-left-width: var(--line); border-left-style: var(--line); border-left-color: var(--line);">Point a source</span><span class="mono" style="font-size: 12px; color: var(--ink-3); padding-left: 10px; cursor: pointer; border-left-width: var(--line); border-left-style: var(--line); border-left-color: var(--line);">Sync</span></div>
       <div class="card" style="padding: 14px; margin-top: 28px;"><span class="mono faint" style="font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase;"> need a hand? </span>
         <p style="font-size: 13px; margin: 8px 0px 12px; line-height: 1.5;"> Drop into the community or open an issue. </p>
-        <appbtn size="sm" block="true" icon="github" href="https://github.com">github</appbtn>
+        <appbtn size="sm" block="true" icon="github" href="https://github.com/neonpixels-studio/markpost">github</appbtn>
       </div>
     </aside>
   </div>

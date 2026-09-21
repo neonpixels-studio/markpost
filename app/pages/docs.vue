@@ -36,11 +36,7 @@
           />
           <span class="addon"><AppKbd>/</AppKbd></span>
         </div>
-        <a
-          class="icon-btn"
-          href="https://github.com/neonpixels-studio/markpost"
-          style="color: var(--ink-2)"
-        >
+        <a class="icon-btn" :href="REPO_URL" style="color: var(--ink-2)">
           <AppIcon name="github" :size="18" />
         </a>
         <button
@@ -193,11 +189,7 @@
           <p style="font-size: 13px; margin: 8px 0 12px; line-height: 1.5">
             Drop into the community or open an issue.
           </p>
-          <AppBtn
-            size="sm"
-            :block="true"
-            icon="github"
-            href="https://github.com"
+          <AppBtn size="sm" :block="true" icon="github" :href="REPO_URL"
             >github</AppBtn
           >
         </div>
@@ -206,23 +198,10 @@
   </div>
 </template>
 
-<script setup lang="ts">
-import DocNavButton from "~/components/DocNavButton.vue";
-import QuickstartDoc from "~/components/docs/QuickstartDoc.vue";
-import ConceptsDoc from "~/components/docs/ConceptsDoc.vue";
-import AuthDoc from "~/components/docs/AuthDoc.vue";
-import WebhooksDoc from "~/components/docs/WebhooksDoc.vue";
-import EmailDoc from "~/components/docs/EmailDoc.vue";
-import RecordsDoc from "~/components/docs/RecordsDoc.vue";
-import CliDoc from "~/components/docs/CliDoc.vue";
-import MarkdownDoc from "~/components/docs/MarkdownDoc.vue";
-
-useHead({ title: "Documentation" });
-
-const { isDark, initTheme, toggleTheme } = useTheme();
-onMounted(initTheme);
-
-const DOC_NAV = [
+<script lang="ts">
+// Plain (non-setup) script block so DOC_NAV can be a named export — needed to
+// derive the sidebar item count in tests instead of hard-coding it there.
+export const DOC_NAV = [
   {
     group: "Introduction",
     items: [
@@ -247,6 +226,25 @@ const DOC_NAV = [
     ],
   },
 ] as const;
+</script>
+
+<script setup lang="ts">
+import DocNavButton from "~/components/DocNavButton.vue";
+import QuickstartDoc from "~/components/docs/QuickstartDoc.vue";
+import ConceptsDoc from "~/components/docs/ConceptsDoc.vue";
+import AuthDoc from "~/components/docs/AuthDoc.vue";
+import WebhooksDoc from "~/components/docs/WebhooksDoc.vue";
+import EmailDoc from "~/components/docs/EmailDoc.vue";
+import RecordsDoc from "~/components/docs/RecordsDoc.vue";
+import CliDoc from "~/components/docs/CliDoc.vue";
+import MarkdownDoc from "~/components/docs/MarkdownDoc.vue";
+
+useHead({ title: "Documentation" });
+
+const REPO_URL = "https://github.com/neonpixels-studio/markpost";
+
+const { isDark, initTheme, toggleTheme } = useTheme();
+onMounted(initTheme);
 
 type PageId =
   | "quickstart"
@@ -345,19 +343,23 @@ const filteredNav = computed(() => {
   })).filter((group) => group.items.length > 0);
 });
 
+const TEXT_ENTRY_TAG_NAMES = ["INPUT", "TEXTAREA", "SELECT"];
+
 function isTypingInField(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
   return (
-    target.tagName === "INPUT" ||
-    target.tagName === "TEXTAREA" ||
-    target.isContentEditable
+    TEXT_ENTRY_TAG_NAMES.includes(target.tagName) || target.isContentEditable
   );
 }
 
 function handleGlobalKeydown(event: KeyboardEvent): void {
-  if (event.key !== "/" || isTypingInField(event.target)) {
+  const hasModifier = event.metaKey || event.ctrlKey || event.altKey;
+  if (event.key !== "/" || event.isComposing || hasModifier) {
+    return;
+  }
+  if (isTypingInField(event.target)) {
     return;
   }
   event.preventDefault();
