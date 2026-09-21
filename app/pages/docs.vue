@@ -27,17 +27,18 @@
         <div class="input-wrap">
           <span class="lead-addon"><AppIcon name="search" :size="14" /></span>
           <input
+            ref="searchInputRef"
+            v-model="searchQuery"
+            type="search"
+            aria-label="Search docs"
             class="input has-lead"
             placeholder="search docs…"
             style="height: 34px; width: 200px; font-size: 13px"
+            @keydown.esc="searchQuery = ''"
           />
-          <span class="addon"><AppKbd>/</AppKbd></span>
+          <span v-if="!searchQuery" class="addon"><AppKbd>/</AppKbd></span>
         </div>
-        <a
-          class="icon-btn"
-          href="https://github.com"
-          style="color: var(--ink-2)"
-        >
+        <a class="icon-btn" :href="REPO_URL" style="color: var(--ink-2)">
           <AppIcon name="github" :size="18" />
         </a>
         <button
@@ -68,36 +69,45 @@
           overflow-y: auto;
         "
       >
+        <p
+          v-if="filteredNav.length === 0"
+          class="mono faint"
+          style="padding: 0 10px; font-size: 13px"
+        >
+          No results for "{{ searchQuery }}"
+        </p>
         <div
-          v-for="group in DOC_NAV"
+          v-for="group in filteredNav"
           :key="group.group"
           style="margin-bottom: 22px"
         >
           <span class="kicker" style="display: block; padding: 0 10px 8px">{{
             group.group
           }}</span>
-          <div class="col gap-1">
-            <button
-              v-for="[id, label] in group.items"
-              :key="id"
-              :style="{
-                textAlign: 'left',
-                border: 0,
-                cursor: 'pointer',
-                background:
-                  activePage === id ? 'var(--accent-tint)' : 'transparent',
-                color: activePage === id ? 'var(--accent-700)' : 'var(--ink-2)',
-                padding: '6px 10px',
-                borderRadius: '6px',
-                fontSize: '13.5px',
-                fontWeight: activePage === id ? 600 : 400,
-                fontFamily: activePage === id ? 'var(--mono)' : 'var(--sans)',
-              }"
-              @click="activePage = id"
-            >
-              {{ label }}
-            </button>
-          </div>
+          <ul class="col gap-1" style="list-style: none; padding: 0; margin: 0">
+            <li v-for="[id, label] in group.items" :key="id">
+              <button
+                :style="{
+                  textAlign: 'left',
+                  width: '100%',
+                  border: 0,
+                  cursor: 'pointer',
+                  background:
+                    activePage === id ? 'var(--accent-tint)' : 'transparent',
+                  color:
+                    activePage === id ? 'var(--accent-700)' : 'var(--ink-2)',
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  fontSize: '13.5px',
+                  fontWeight: activePage === id ? 600 : 400,
+                  fontFamily: activePage === id ? 'var(--mono)' : 'var(--sans)',
+                }"
+                @click="activePage = id"
+              >
+                {{ label }}
+              </button>
+            </li>
+          </ul>
         </div>
       </nav>
 
@@ -181,11 +191,7 @@
           <p style="font-size: 13px; margin: 8px 0 12px; line-height: 1.5">
             Drop into the community or open an issue.
           </p>
-          <AppBtn
-            size="sm"
-            :block="true"
-            icon="github"
-            href="https://github.com"
+          <AppBtn size="sm" :block="true" icon="github" :href="REPO_URL"
             >github</AppBtn
           >
         </div>
@@ -196,6 +202,7 @@
 
 <script setup lang="ts">
 import DocNavButton from "~/components/DocNavButton.vue";
+import { DOC_NAV, filterDocNav } from "~/utils/docNav";
 import QuickstartDoc from "~/components/docs/QuickstartDoc.vue";
 import ConceptsDoc from "~/components/docs/ConceptsDoc.vue";
 import AuthDoc from "~/components/docs/AuthDoc.vue";
@@ -207,34 +214,10 @@ import MarkdownDoc from "~/components/docs/MarkdownDoc.vue";
 
 useHead({ title: "Documentation" });
 
+const REPO_URL = "https://github.com/neonpixels-studio/markpost";
+
 const { isDark, initTheme, toggleTheme } = useTheme();
 onMounted(initTheme);
-
-const DOC_NAV = [
-  {
-    group: "Introduction",
-    items: [
-      ["quickstart", "Quickstart"],
-      ["concepts", "Core concepts"],
-    ],
-  },
-  {
-    group: "API Reference",
-    items: [
-      ["auth", "Authentication"],
-      ["webhooks", "Ingest a webhook"],
-      ["email", "Email-in"],
-      ["records", "List records"],
-    ],
-  },
-  {
-    group: "CLI",
-    items: [
-      ["cli", "Command reference"],
-      ["markdown", "Markdown & frontmatter"],
-    ],
-  },
-] as const;
 
 type PageId =
   | "quickstart"
@@ -314,5 +297,42 @@ const activeGroup = computed(() => {
     group.items.some(([id]) => id === activePage.value),
   );
   return found?.group ?? "";
+});
+
+// ── Docs search: filter the sidebar nav, focus on "/" ───────────────────────
+const searchQuery = ref("");
+const searchInputRef = ref<HTMLInputElement | null>(null);
+
+const filteredNav = computed(() => filterDocNav(DOC_NAV, searchQuery.value));
+
+const TEXT_ENTRY_TAG_NAMES = ["INPUT", "TEXTAREA", "SELECT"];
+
+function isTypingInField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return (
+    TEXT_ENTRY_TAG_NAMES.includes(target.tagName) || target.isContentEditable
+  );
+}
+
+function handleGlobalKeydown(event: KeyboardEvent): void {
+  const hasModifier = event.metaKey || event.ctrlKey || event.altKey;
+  if (event.key !== "/" || event.isComposing || hasModifier) {
+    return;
+  }
+  if (isTypingInField(event.target)) {
+    return;
+  }
+  event.preventDefault();
+  searchInputRef.value?.focus();
+}
+
+onMounted(() => {
+  window.addEventListener("keydown", handleGlobalKeydown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleGlobalKeydown);
 });
 </script>
