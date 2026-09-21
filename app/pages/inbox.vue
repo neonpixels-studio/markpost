@@ -568,7 +568,9 @@ onMounted(async () => {
 
 <style scoped>
 /* Breakpoints kept in sync with TheAppShell.vue / settings.vue / sources.vue:
-   tablet: max-width 1024px, phone: max-width 640px */
+   tablet: max-width 1024px, phone: max-width 640px.
+   .inbox-stats also adds an inbox-only 480px step to drop from 2 to 1
+   column on the narrowest phones. */
 
 .inbox-layout {
   padding: 22px 26px 40px;

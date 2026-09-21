@@ -2,14 +2,11 @@
   <div class="app-shell">
     <!-- sidebar -->
     <aside class="app-shell__sidebar">
-      <NuxtLink
-        to="/"
-        style="padding: 4px 8px; margin-bottom: 18px; display: block"
-      >
+      <NuxtLink to="/" class="app-shell__logo-link">
         <AppLogo :size="22" />
       </NuxtLink>
 
-      <nav class="col app-shell__nav gap-2" style="flex: 1">
+      <nav class="col app-shell__nav gap-2">
         <span class="kicker app-shell__label" style="padding: 4px 8px 8px"
           >workspace</span
         >
@@ -41,6 +38,7 @@
           <AppBadge
             v-if="navItem.id === 'inbox' && pendingCount"
             tone="accent"
+            class="app-shell__nav-badge"
             style="margin-left: auto; font-size: 9.5px; padding: 1px 6px"
           >
             {{ pendingCount }}
@@ -75,7 +73,7 @@
           <AppIcon
             name="external"
             :size="13"
-            class="app-shell__nav-label"
+            class="app-shell__nav-decoration"
             :style="{ marginLeft: 'auto', color: 'var(--ink-3)' }"
           />
         </a>
@@ -144,7 +142,7 @@
         <AppIcon
           name="chevR"
           :size="14"
-          class="app-shell__nav-label"
+          class="app-shell__nav-decoration"
           :style="{ marginLeft: 'auto', color: 'var(--ink-3)' }"
         />
       </NuxtLink>
@@ -153,7 +151,7 @@
     <!-- main -->
     <div style="display: flex; flex-direction: column; min-width: 0">
       <header class="row between app-shell__header">
-        <div class="col app-shell__title-group" style="gap: 2px; flex: none">
+        <div class="col app-shell__title-group">
           <span
             v-if="crumb"
             class="mono faint app-shell__crumb"
@@ -353,6 +351,20 @@ function goToActivity(): void {
   min-width: 0;
 }
 
+.app-shell__logo-link {
+  padding: 4px 8px;
+  margin-bottom: 18px;
+  display: block;
+}
+
+/* Static layout props for the nav (dynamic per-item props stay inline on
+   each NuxtLink). Kept out of an inline style on <nav> itself so the phone
+   override below can win — an inline style always beats a stylesheet rule
+   of any specificity short of !important. */
+.app-shell__nav {
+  flex: 1;
+}
+
 .app-shell__header {
   padding: 0 26px;
   height: 60px;
@@ -362,8 +374,29 @@ function goToActivity(): void {
   flex: none;
 }
 
+/* Fully class-based (no inline style on the element) for the same reason as
+   .app-shell__nav above: the phone rule needs to change `flex`. */
 .app-shell__title-group {
+  gap: 2px;
+  flex: none;
   min-width: 0;
+}
+
+/* Visually hides text while keeping it in the accessibility tree, so the
+   icon-only rail/bar at compact widths still exposes an accessible name for
+   each nav link (screen readers) instead of losing it via display: none. */
+.app-shell__label,
+.app-shell__nav-label,
+.app-shell__nav-badge {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (max-width: 1024px) {
@@ -376,16 +409,23 @@ function goToActivity(): void {
     align-items: center;
   }
 
-  /* Collapse the sidebar to an icon rail: hide labels/text, keep icons and
-     the user avatar so navigation stays usable without clipping. */
-  .app-shell__label,
-  .app-shell__nav-label,
-  .app-shell__plan-card {
+  /* Collapse the sidebar to an icon rail: visually hide labels/text (kept
+     for screen readers, see .app-shell__nav-label above), drop the plan
+     card (promotional, not core navigation) and purely decorative icons
+     that have no room in the rail. */
+  .app-shell__plan-card,
+  .app-shell__nav-decoration {
     display: none;
   }
 
   .app-shell__nav-link {
     justify-content: center;
+  }
+
+  /* AppLogo renders an icon mark plus a text wordmark; the wordmark doesn't
+     fit the 56px rail content width, so hide it and keep the mark only. */
+  .app-shell__logo-link :deep(.row.gap-2 span:nth-child(2)) {
+    display: none;
   }
 }
 
@@ -397,8 +437,8 @@ function goToActivity(): void {
   }
 
   /* Sidebar becomes a horizontally-scrollable top bar instead of a rail, so
-     the full nav is still reachable on narrow phones without vertical
-     space loss. */
+     the full nav (including Docs) is still reachable on narrow phones
+     without vertical space loss. */
   .app-shell__sidebar {
     flex-direction: row;
     align-items: center;
@@ -406,6 +446,10 @@ function goToActivity(): void {
     overflow-x: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  .app-shell__logo-link {
+    margin-bottom: 0;
   }
 
   /* Compound selector so this reliably beats the global .col utility
@@ -416,8 +460,7 @@ function goToActivity(): void {
     flex: none;
   }
 
-  .app-shell__divider,
-  .app-shell__docs-link {
+  .app-shell__divider {
     display: none;
   }
 

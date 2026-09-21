@@ -11,21 +11,13 @@
           <button
             v-for="tab in tabs"
             :key="tab.id"
-            class="row gap-3"
+            class="row settings-layout__tab gap-3"
             :style="{
-              width: '100%',
-              border: 0,
-              cursor: 'pointer',
               background:
                 activeTab === tab.id ? 'var(--accent-tint)' : 'transparent',
               color:
                 activeTab === tab.id ? 'var(--accent-700)' : 'var(--ink-2)',
-              padding: '8px 10px',
-              borderRadius: '7px',
-              fontFamily: 'var(--mono)',
-              fontSize: '13px',
               fontWeight: activeTab === tab.id ? 600 : 500,
-              whiteSpace: 'nowrap',
             }"
             @click="activeTab = tab.id"
           >
@@ -90,6 +82,21 @@ const tabs = [
   overflow-y: auto;
 }
 
+/* Static layout props for each tab button (dynamic active-state props stay
+   inline via :style). Kept out of the inline style so the phone rule below
+   can override width — an inline style always beats a stylesheet rule of
+   any specificity short of !important. */
+.settings-layout__tab {
+  width: 100%;
+  border: 0;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 @media (max-width: 1024px) {
   .settings-layout {
     grid-template-columns: 180px 1fr;
@@ -114,6 +121,13 @@ const tabs = [
      load order, since both are single-class selectors otherwise. */
   .settings-layout__nav .settings-layout__nav-list {
     flex-direction: row;
+  }
+
+  /* Two-class compound selector: enough specificity to beat the base
+     .settings-layout__tab rule above regardless of source order (see that
+     rule's comment), without an unnecessarily deep selector chain. */
+  .settings-layout__nav-list .settings-layout__tab {
+    width: auto;
   }
 
   .settings-layout__body {
