@@ -10,7 +10,7 @@ exports[`docs page > matches snapshot in default state 1`] = `
       <appbadge tone="accent" style="font-size: 10px;">docs</appbadge>
     </div>
     <div class="row gap-3">
-      <div class="input-wrap"><span class="lead-addon"><span name="search" size="14"></span></span><input class="input has-lead" placeholder="search docs…" style="height: 34px; width: 200px; font-size: 13px;"><span class="addon"><kbd>/</kbd></span></div><a class="icon-btn" href="https://github.com/neonpixels-studio/markpost" style="color: var(--ink-2);"><span name="github" size="18"></span></a><button class="icon-btn" style="color: var(--ink-2);"><span name="moon" size="17"></span></button>
+      <div class="input-wrap"><span class="lead-addon"><span name="search" size="14"></span></span><input type="search" aria-label="Search docs" class="input has-lead" placeholder="search docs…" style="height: 34px; width: 200px; font-size: 13px;"><span class="addon"><kbd>/</kbd></span></div><a class="icon-btn" href="https://github.com/neonpixels-studio/markpost" style="color: var(--ink-2);"><span name="github" size="18"></span></a><button class="icon-btn" style="color: var(--ink-2);"><span name="moon" size="17"></span></button>
       <appbtn size="sm" variant="accent" href="/inbox">dashboard</appbtn>
     </div>
   </header>

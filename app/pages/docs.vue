@@ -29,6 +29,8 @@
           <input
             ref="searchInputRef"
             v-model="searchQuery"
+            type="search"
+            aria-label="Search docs"
             class="input has-lead"
             placeholder="search docs…"
             style="height: 34px; width: 200px; font-size: 13px"
@@ -198,38 +200,9 @@
   </div>
 </template>
 
-<script lang="ts">
-// Plain (non-setup) script block so DOC_NAV can be a named export — needed to
-// derive the sidebar item count in tests instead of hard-coding it there.
-export const DOC_NAV = [
-  {
-    group: "Introduction",
-    items: [
-      ["quickstart", "Quickstart"],
-      ["concepts", "Core concepts"],
-    ],
-  },
-  {
-    group: "API Reference",
-    items: [
-      ["auth", "Authentication"],
-      ["webhooks", "Ingest a webhook"],
-      ["email", "Email-in"],
-      ["records", "List records"],
-    ],
-  },
-  {
-    group: "CLI",
-    items: [
-      ["cli", "Command reference"],
-      ["markdown", "Markdown & frontmatter"],
-    ],
-  },
-] as const;
-</script>
-
 <script setup lang="ts">
 import DocNavButton from "~/components/DocNavButton.vue";
+import { DOC_NAV, filterDocNav } from "~/utils/docNav";
 import QuickstartDoc from "~/components/docs/QuickstartDoc.vue";
 import ConceptsDoc from "~/components/docs/ConceptsDoc.vue";
 import AuthDoc from "~/components/docs/AuthDoc.vue";
@@ -330,18 +303,7 @@ const activeGroup = computed(() => {
 const searchQuery = ref("");
 const searchInputRef = ref<HTMLInputElement | null>(null);
 
-const filteredNav = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase();
-  if (!query) {
-    return DOC_NAV;
-  }
-  return DOC_NAV.map((group) => ({
-    ...group,
-    items: group.items.filter(([, label]) =>
-      label.toLowerCase().includes(query),
-    ),
-  })).filter((group) => group.items.length > 0);
-});
+const filteredNav = computed(() => filterDocNav(DOC_NAV, searchQuery.value));
 
 const TEXT_ENTRY_TAG_NAMES = ["INPUT", "TEXTAREA", "SELECT"];
 

@@ -3,7 +3,8 @@ import { mount } from "@vue/test-utils";
 
 vi.stubGlobal("definePageMeta", vi.fn());
 
-import DocsPage, { DOC_NAV } from "../../app/pages/docs.vue";
+import DocsPage from "../../app/pages/docs.vue";
+import { DOC_NAV } from "../../app/utils/docNav";
 
 const TOTAL_NAV_ITEMS = DOC_NAV.flatMap((group) => group.items).length;
 const REPO_URL = "https://github.com/neonpixels-studio/markpost";
@@ -52,6 +53,7 @@ describe("docs page", () => {
     activeWrapper = null;
     strayElement?.remove();
     strayElement = null;
+    vi.restoreAllMocks();
   });
 
   it("matches snapshot in default state", () => {
@@ -88,6 +90,17 @@ describe("docs page", () => {
     expect(labels).toEqual(["Command reference"]);
   });
 
+  it("keeps every item in a group whose group name matches the query", async () => {
+    const wrapper = mountDocsPage();
+    const searchInput = wrapper.find("input");
+    await searchInput.setValue("cli");
+
+    // "cli" matches the "CLI" group name, not either item's label, so a
+    // query that only matched item labels would wrongly report no results.
+    const labels = wrapper.findAll("nav button").map((button) => button.text());
+    expect(labels).toEqual(["Command reference", "Markdown & frontmatter"]);
+  });
+
   it("shows a no-results message when nothing matches the query", async () => {
     const wrapper = mountDocsPage();
     const searchInput = wrapper.find("input");
@@ -106,14 +119,16 @@ describe("docs page", () => {
     expect(wrapper.findAll("nav button")).toHaveLength(TOTAL_NAV_ITEMS);
   });
 
-  it("clears the search query on Escape", async () => {
+  it("clears the search query on Escape and keeps focus in the search box", async () => {
     const wrapper = mountDocsPage();
     const searchInput = wrapper.find("input");
+    (searchInput.element as HTMLInputElement).focus();
     await searchInput.setValue("auth");
     await searchInput.trigger("keydown.esc");
 
     expect((searchInput.element as HTMLInputElement).value).toBe("");
     expect(wrapper.findAll("nav button")).toHaveLength(TOTAL_NAV_ITEMS);
+    expect(document.activeElement).toBe(searchInput.element);
   });
 
   it("links the header GitHub icon to the real markpost repository", () => {
@@ -143,7 +158,7 @@ describe("docs page", () => {
     expect(document.activeElement).toBe(searchInput);
   });
 
-  it("ignores '/' combined with a modifier key, e.g. Cmd+/ or Ctrl+/", () => {
+  it("ignores '/' combined with a modifier key, e.g. Cmd+/, Ctrl+/, or Alt+/", () => {
     const wrapper = mountDocsPage();
     const searchInput = wrapper.find("input").element as HTMLInputElement;
 
@@ -152,6 +167,20 @@ describe("docs page", () => {
     );
     window.dispatchEvent(
       new KeyboardEvent("keydown", { key: "/", ctrlKey: true }),
+    );
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "/", altKey: true }),
+    );
+
+    expect(document.activeElement).not.toBe(searchInput);
+  });
+
+  it("ignores '/' typed while an IME composition is in progress", () => {
+    const wrapper = mountDocsPage();
+    const searchInput = wrapper.find("input").element as HTMLInputElement;
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "/", isComposing: true }),
     );
 
     expect(document.activeElement).not.toBe(searchInput);
@@ -183,6 +212,23 @@ describe("docs page", () => {
     expect(document.activeElement).not.toBe(searchInput);
   });
 
+  it("does not hijack '/' while a contenteditable element has focus", () => {
+    const wrapper = mountDocsPage();
+    const searchInput = wrapper.find("input").element as HTMLInputElement;
+    strayElement = document.createElement("div");
+    // jsdom/happy-dom don't compute isContentEditable from the attribute, so
+    // set the property directly to exercise the same branch the browser does.
+    Object.defineProperty(strayElement, "isContentEditable", { value: true });
+    document.body.appendChild(strayElement);
+    strayElement.focus();
+
+    strayElement.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "/", bubbles: true }),
+    );
+
+    expect(document.activeElement).not.toBe(searchInput);
+  });
+
   it("removes the '/' shortcut listener when unmounted", () => {
     const addSpy = vi.spyOn(window, "addEventListener");
     const wrapper = mountDocsPage();
@@ -195,7 +241,5 @@ describe("docs page", () => {
     activeWrapper = null;
 
     expect(removeSpy).toHaveBeenCalledWith("keydown", handler);
-    addSpy.mockRestore();
-    removeSpy.mockRestore();
   });
 });
