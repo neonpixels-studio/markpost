@@ -558,20 +558,9 @@ async function retryRecord(uuid: string): Promise<void> {
   }
 }
 
-// Mirrors retryRecord's applyDetailUpdate + table-row-update pairing: the
-// modal already applies the save to its own displayed copy internally (see
-// editedRecordOverride in RecordDetailModal), so this only needs to push the
-// saved record into the table row (applyRecordUpdate) and into
-// useRecordDetail's own copy (applyDetailUpdate) so a later re-render of the
-// modal from `record` — e.g. after the override resets — still shows the
-// edit instead of the pre-edit value.
-//
-// The table row update always applies — the edit already landed server-side
-// regardless of what's open now, same as retryRecord's status update. The
-// detail push is guarded to the still-open record, same as
-// markRecordPendingForRetry's activeRecordUuid check, so a save that
-// resolves after the user has switched to a different record can't land in
-// that other record's detail view.
+// Table row always updates (the edit already saved server-side); the detail
+// push is guarded, mirroring markRecordPendingForRetry's activeRecordUuid
+// check, so a late save can't land in a different open record.
 function handleRecordUpdated(updatedRecord: RecordResource): void {
   applyRecordUpdate(updatedRecord);
   if (updatedRecord.attributes.uuid !== activeRecordUuid.value) {

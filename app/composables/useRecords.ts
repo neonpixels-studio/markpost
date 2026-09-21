@@ -782,14 +782,9 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
       .filter((record) => matchesActiveFilter(record, filter.value));
   }
 
-  // Pushes a single record edited elsewhere (e.g. a title/content save in
-  // RecordDetailModal) into the table row list, so the row reflects the edit
-  // without a full reload. Reuses applyStatusUpdates's replace-in-place +
-  // filter-reconciliation logic since the same rules apply to any record
-  // update — the filter check only ever looks at status, so a title/content-
-  // only edit leaves it unchanged, and an update that also happens to carry a
-  // status change is reconciled against the active filter exactly like a
-  // dedicated status update would be.
+  // Same replace-in-place + filter reconciliation as a status update (the
+  // filter only ever checks status), reused here for a record edited
+  // elsewhere (e.g. a title/content save in RecordDetailModal).
   function applyRecordUpdate(updatedRecord: RecordResource): void {
     applyStatusUpdates([updatedRecord]);
   }

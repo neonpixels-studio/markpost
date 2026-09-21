@@ -1203,14 +1203,15 @@ describe("inbox page", () => {
       expect(mockApplyDetailUpdate).toHaveBeenCalledWith(expectedRecord);
     });
 
-    it("still pushes a late save into the table row after the user has switched to a different record", async () => {
+    it("still pushes a late save into the table row, but not the detail view, once the user has switched to a different record", async () => {
       const wrapper = await mountWithOpenRecord("query-uuid");
 
       // Switch to a different record before the save's "updated" event fires
       // — the row update isn't scoped to the open record, same as
-      // retryRecord's status update.
+      // retryRecord's status update, but the detail push must be.
       routeQueryRef.value = { record: "other-uuid" };
       await flushPromises();
+      mockApplyDetailUpdate.mockClear();
 
       await wrapper.find(".detail-save-btn").trigger("click");
       await flushPromises();
@@ -1220,18 +1221,6 @@ describe("inbox page", () => {
           attributes: expect.objectContaining({ uuid: "query-uuid" }),
         }),
       );
-    });
-
-    it("does not push a stale save into the detail view once the user has switched to a different record", async () => {
-      const wrapper = await mountWithOpenRecord("query-uuid");
-
-      routeQueryRef.value = { record: "other-uuid" };
-      await flushPromises();
-      mockApplyDetailUpdate.mockClear();
-
-      await wrapper.find(".detail-save-btn").trigger("click");
-      await flushPromises();
-
       expect(mockApplyDetailUpdate).not.toHaveBeenCalled();
     });
   });
