@@ -88,23 +88,12 @@ export function statusInvalidError(pointer: string): ApiError {
   );
 }
 
-export function syncedAtTypeError(pointer: string): ApiError {
-  return invalidAttributeError(
-    "SyncedAt must be a date string or null",
-    pointer,
-  );
-}
-
-export function syncedAtInvalidError(pointer: string): ApiError {
-  return invalidAttributeError("SyncedAt must be a valid date string", pointer);
-}
-
-// syncedAt is server-derived on bulk status changes (see
-// withServerDerivedSyncedAt in index.patch.ts); a client that still sends it
-// gets a clear 422 rather than a value that's silently ignored (markpost#265
-// — client-trusted syncedAt corrupted stats). The single-record PATCH
-// endpoint still accepts a client-supplied syncedAt directly, so this is only
-// thrown by the bulk endpoint.
+// syncedAt is server-derived on status changes (see withServerDerivedSyncedAt
+// in both index.patch.ts, the bulk endpoint, and [uuid].patch.ts, the
+// single-record endpoint); a client that still sends it gets a clear 422
+// rather than a value that's silently ignored (markpost#265 fixed the bulk
+// endpoint; markpost#291 mirrored the fix on the single-record endpoint,
+// since client-trusted syncedAt corrupted stats on either path).
 export function syncedAtNotSettableError(pointer: string): ApiError {
   return invalidAttributeError(
     "SyncedAt is derived by the server from status changes and cannot be set directly.",

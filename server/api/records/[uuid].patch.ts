@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../db";
-import { records } from "../../db/schema";
+import { records, type RecordStatus } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
 import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
@@ -16,8 +16,7 @@ import {
   invalidAttributeError,
   attributesShapeError,
   statusInvalidError,
-  syncedAtTypeError,
-  syncedAtInvalidError,
+  syncedAtNotSettableError,
   filePathTypeError,
   errorMessageTypeError,
 } from "../../utils/recordErrors";
@@ -29,6 +28,11 @@ const FILE_PATH_POINTER = "/data/attributes/filePath";
 const ERROR_MESSAGE_POINTER = "/data/attributes/errorMessage";
 const TITLE_POINTER = "/data/attributes/title";
 const CONTENT_POINTER = "/data/attributes/content";
+
+// Annotated rather than compared against a magic string, so a status this
+// endpoint stamps syncedAt for stays obvious at a glance (mirrors
+// index.patch.ts's SYNCED_STATUS).
+const SYNCED_STATUS: RecordStatus = "synced";
 
 type PatchRecordAttributes = {
   status?: string;
@@ -47,7 +51,7 @@ type PatchRecordBody = ApiRequest & {
 
 type RecordUpdatePayload = {
   status?: string;
-  syncedAt?: Date | null;
+  syncedAt?: Date;
   filePath?: string | null;
   errorMessage?: string | null;
   title?: string;
@@ -58,7 +62,7 @@ const ATTRIBUTES_POINTER = "/data/attributes";
 
 function emptyUpdateError(): ApiError {
   return invalidAttributeError(
-    "At least one of status, syncedAt, filePath, errorMessage, title, or content must be provided.",
+    "At least one of status, filePath, errorMessage, title, or content must be provided.",
     ATTRIBUTES_POINTER,
   );
 }
@@ -92,14 +96,6 @@ function validateStatus(attributes: PatchRecordAttributes): void {
   if (!isRecordStatus(attributes.status)) {
     throw statusInvalidError(STATUS_POINTER);
   }
-}
-
-function validateSyncedAtType(raw: unknown): void {
-  if (raw === null || typeof raw === "string") {
-    return;
-  }
-
-  throw syncedAtTypeError(SYNCED_AT_POINTER);
 }
 
 function validateNullableStringField(
@@ -144,14 +140,17 @@ function validateTitle(attributes: PatchRecordAttributes): void {
   }
 }
 
-// Runs the per-field type checks up front. buildUpdatePayload still parses
-// syncedAt into a Date and can throw syncedAtInvalidError there, since that
-// check needs the parsed value rather than just the raw type.
+// syncedAt is server-derived (see withServerDerivedSyncedAt below): the
+// server stamps it itself when a status change moves a record to "synced",
+// rather than trusting a client-supplied value. A client that still sends
+// it — with or without a status change — gets a clear 422 rather than a
+// value that's silently ignored (markpost#291, mirroring markpost#265's fix
+// on the bulk endpoint).
 function validateAttributes(attributes: PatchRecordAttributes): void {
   validateStatus(attributes);
 
   if ("syncedAt" in attributes) {
-    validateSyncedAtType(attributes.syncedAt);
+    throw syncedAtNotSettableError(SYNCED_AT_POINTER);
   }
 
   if ("filePath" in attributes) {
@@ -173,20 +172,6 @@ function validateAttributes(attributes: PatchRecordAttributes): void {
   }
 }
 
-function parseSyncedAt(raw: unknown): Date | null {
-  if (raw === null) {
-    return null;
-  }
-
-  const parsed = new Date(raw as string);
-
-  if (Number.isNaN(parsed.getTime())) {
-    throw syncedAtInvalidError(SYNCED_AT_POINTER);
-  }
-
-  return parsed;
-}
-
 // Deliberately database-only: editing title/content does not touch
 // filePath, status, or syncedAt. filePath is derived from the pre-edit
 // title at creation time (server/utils/markdown.ts's buildFilename) and is
@@ -204,10 +189,6 @@ function buildUpdatePayload(
 
   if (attributes.status !== undefined) {
     payload.status = attributes.status;
-  }
-
-  if ("syncedAt" in attributes) {
-    payload.syncedAt = parseSyncedAt(attributes.syncedAt);
   }
 
   if ("filePath" in attributes) {
@@ -250,6 +231,50 @@ function logRecordEdit(
   }).catch((writeError) => {
     console.error("[records/:uuid/patch] failed to write event:", writeError);
   });
+}
+
+type Database = ReturnType<typeof getDb>;
+
+// A move to "synced" is a true no-op only when the record is already
+// "synced" *and* already has a real syncedAt (mirrors resolveNoOpSyncedUuids
+// in index.patch.ts, the bulk endpoint). Status alone would wrongly skip
+// stamping a record created via POST with status "synced" but no syncedAt
+// yet; syncedAt alone would wrongly skip a genuine pending/error -> synced
+// re-sync that still carries an old syncedAt left over from before.
+async function isNoOpSyncedUpdate(
+  db: Database,
+  userId: string,
+  recordUuid: string,
+): Promise<boolean> {
+  const [existing] = await db
+    .select({ status: records.status, syncedAt: records.syncedAt })
+    .from(records)
+    .where(and(eq(records.userId, userId), eq(records.uuid, recordUuid)));
+
+  return existing?.status === SYNCED_STATUS && existing?.syncedAt != null;
+}
+
+// Stamps syncedAt with the current time when the update moves the record to
+// "synced" and doing so isn't a no-op; a move to pending/error (or no status
+// change at all) never touches syncedAt, preserving the record's real last
+// sync time. Returns a new payload rather than mutating the one it's given.
+async function withServerDerivedSyncedAt(
+  db: Database,
+  userId: string,
+  recordUuid: string,
+  payload: RecordUpdatePayload,
+): Promise<RecordUpdatePayload> {
+  if (payload.status !== SYNCED_STATUS) {
+    return payload;
+  }
+
+  const isNoOp = await isNoOpSyncedUpdate(db, userId, recordUuid);
+
+  if (isNoOp) {
+    return payload;
+  }
+
+  return { ...payload, syncedAt: new Date() };
 }
 
 async function updateUserRecord(
@@ -301,7 +326,18 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
       throw emptyUpdateError();
     }
 
-    const updated = await updateUserRecord(userId, recordUuid, payload);
+    const payloadWithSyncedAt = await withServerDerivedSyncedAt(
+      getDb(),
+      userId,
+      recordUuid,
+      payload,
+    );
+
+    const updated = await updateUserRecord(
+      userId,
+      recordUuid,
+      payloadWithSyncedAt,
+    );
 
     if (!updated) {
       throw recordNotFoundError();
