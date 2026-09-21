@@ -785,10 +785,13 @@ export function useRecords(initialFilter: RecordFilterValue = "all") {
   // Pushes a single record edited elsewhere (e.g. a title/content save in
   // RecordDetailModal) into the table row list, so the row reflects the edit
   // without a full reload. Reuses applyStatusUpdates's replace-in-place +
-  // filter-reconciliation logic — the same rules apply to any record update,
-  // not just a status change, and this edit never touches status anyway.
-  function applyRecordUpdate(updated: RecordResource): void {
-    applyStatusUpdates([updated]);
+  // filter-reconciliation logic since the same rules apply to any record
+  // update — the filter check only ever looks at status, so a title/content-
+  // only edit leaves it unchanged, and an update that also happens to carry a
+  // status change is reconciled against the active filter exactly like a
+  // dedicated status update would be.
+  function applyRecordUpdate(updatedRecord: RecordResource): void {
+    applyStatusUpdates([updatedRecord]);
   }
 
   // A rejected bulk PATCH can still have committed rows server-side (see

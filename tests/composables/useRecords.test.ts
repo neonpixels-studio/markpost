@@ -1752,6 +1752,32 @@ describe("useRecords applyRecordUpdate", () => {
     expect(records.value).toEqual([originalRecord]);
   });
 
+  it("keeps a record under the active filter when the edit doesn't touch status", async () => {
+    const errorRecord: RecordResource = {
+      ...makeRecordResource("uuid-1"),
+      attributes: {
+        ...makeRecordResource("uuid-1").attributes,
+        status: "error",
+      },
+    };
+    mockFetch.mockResolvedValueOnce({
+      data: [errorRecord],
+      meta: { hasMore: false },
+    });
+
+    const { loadRecords, records, applyRecordUpdate } = useRecords("errors");
+    await loadRecords();
+
+    applyRecordUpdate({
+      ...errorRecord,
+      attributes: { ...errorRecord.attributes, title: "Edited title" },
+    });
+
+    expect(records.value).toHaveLength(1);
+    expect(records.value[0]?.attributes.title).toBe("Edited title");
+    expect(records.value[0]?.attributes.status).toBe("error");
+  });
+
   it("drops the record from the 'errors' filter if the edit also carries a status change out of error", async () => {
     const errorRecord: RecordResource = {
       ...makeRecordResource("uuid-1"),
@@ -1765,9 +1791,7 @@ describe("useRecords applyRecordUpdate", () => {
       meta: { hasMore: false },
     });
 
-    const { loadRecords, records, filter, applyRecordUpdate } =
-      useRecords("errors");
-    filter.value = "errors";
+    const { loadRecords, records, applyRecordUpdate } = useRecords("errors");
     await loadRecords();
 
     applyRecordUpdate({

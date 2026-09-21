@@ -177,7 +177,7 @@ const globalConfig = {
         // tests to assert the emitted record without re-implementing the
         // real save flow.
         template:
-          '<div class="record-detail-modal" @click="$emit(\'close\')"><button class="detail-retry-btn" :disabled="isRetrying || isRetryDisabled" @click.stop="$emit(\'retry\', record?.attributes?.uuid)">{{ isRetrying ? "retrying…" : "retry" }}</button><span v-if="retryError" class="detail-retry-error">{{ retryError }}</span><button class="detail-save-btn" @click.stop="$emit(\'updated\', { ...record, attributes: { ...record.attributes, title: \'Edited title\' } })">save</button></div>',
+          '<div class="record-detail-modal" @click="$emit(\'close\')"><button class="detail-retry-btn" :disabled="isRetrying || isRetryDisabled" @click.stop="$emit(\'retry\', record?.attributes?.uuid)">{{ isRetrying ? "retrying…" : "retry" }}</button><span v-if="retryError" class="detail-retry-error">{{ retryError }}</span><button class="detail-save-btn" @click.stop="$emit(\'updated\', { ...record, attributes: { ...record?.attributes, title: \'Edited title\' } })">save</button></div>',
         props: [
           "record",
           "isLoading",
@@ -1177,13 +1177,39 @@ describe("inbox page", () => {
   });
 
   describe("record updated", () => {
-    it("pushes the saved record into the table row list when the modal emits updated", async () => {
-      routeQueryRef.value = { record: "query-uuid" };
-      const openRecord = makeRecord({ uuid: "query-uuid", title: "Before" });
+    async function mountWithOpenRecord(uuid: string) {
+      routeQueryRef.value = { record: uuid };
+      const openRecord = makeRecord({ uuid, title: "Before" });
       detailRecordRef.value = openRecord;
       recordsRef.value = [openRecord];
-
       const wrapper = mount(InboxPage, globalConfig);
+      await flushPromises();
+      return wrapper;
+    }
+
+    it("pushes the saved record into both the table row list and the detail view when the modal emits updated", async () => {
+      const wrapper = await mountWithOpenRecord("query-uuid");
+
+      await wrapper.find(".detail-save-btn").trigger("click");
+      await flushPromises();
+
+      const expectedRecord = expect.objectContaining({
+        attributes: expect.objectContaining({
+          uuid: "query-uuid",
+          title: "Edited title",
+        }),
+      });
+      expect(mockApplyRecordUpdate).toHaveBeenCalledWith(expectedRecord);
+      expect(mockApplyDetailUpdate).toHaveBeenCalledWith(expectedRecord);
+    });
+
+    it("still pushes a late save into the table row after the user has switched to a different record", async () => {
+      const wrapper = await mountWithOpenRecord("query-uuid");
+
+      // Switch to a different record before the save's "updated" event fires
+      // — the row update isn't scoped to the open record, same as
+      // retryRecord's status update.
+      routeQueryRef.value = { record: "other-uuid" };
       await flushPromises();
 
       await wrapper.find(".detail-save-btn").trigger("click");
@@ -1191,34 +1217,22 @@ describe("inbox page", () => {
 
       expect(mockApplyRecordUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          attributes: expect.objectContaining({
-            uuid: "query-uuid",
-            title: "Edited title",
-          }),
+          attributes: expect.objectContaining({ uuid: "query-uuid" }),
         }),
       );
     });
 
-    it("pushes the saved record into the detail view when the modal emits updated", async () => {
-      routeQueryRef.value = { record: "query-uuid" };
-      const openRecord = makeRecord({ uuid: "query-uuid", title: "Before" });
-      detailRecordRef.value = openRecord;
-      recordsRef.value = [openRecord];
+    it("does not push a stale save into the detail view once the user has switched to a different record", async () => {
+      const wrapper = await mountWithOpenRecord("query-uuid");
 
-      const wrapper = mount(InboxPage, globalConfig);
+      routeQueryRef.value = { record: "other-uuid" };
       await flushPromises();
+      mockApplyDetailUpdate.mockClear();
 
       await wrapper.find(".detail-save-btn").trigger("click");
       await flushPromises();
 
-      expect(mockApplyDetailUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          attributes: expect.objectContaining({
-            uuid: "query-uuid",
-            title: "Edited title",
-          }),
-        }),
-      );
+      expect(mockApplyDetailUpdate).not.toHaveBeenCalled();
     });
   });
 });
