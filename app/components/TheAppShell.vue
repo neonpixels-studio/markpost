@@ -7,14 +7,12 @@
       </NuxtLink>
 
       <nav class="col app-shell__nav gap-2">
-        <span class="kicker app-shell__label" style="padding: 4px 8px 8px"
-          >workspace</span
-        >
+        <span class="kicker app-shell__label">workspace</span>
         <NuxtLink
           v-for="navItem in navItems"
           :key="navItem.id"
           :to="navItem.path"
-          :title="navItem.label"
+          :title="navLinkTitle(navItem)"
           class="row app-shell__nav-link gap-3"
           :style="{
             border: 0,
@@ -39,7 +37,6 @@
             v-if="navItem.id === 'inbox' && pendingCount"
             tone="accent"
             class="app-shell__nav-badge"
-            style="margin-left: auto; font-size: 9.5px; padding: 1px 6px"
           >
             {{ pendingCount }}
           </AppBadge>
@@ -52,7 +49,7 @@
         <a
           href="/docs"
           title="Docs"
-          class="row app-shell__nav-link app-shell__docs-link gap-3"
+          class="row app-shell__nav-link gap-3"
           style="
             border: 0;
             cursor: pointer;
@@ -149,7 +146,7 @@
     </aside>
 
     <!-- main -->
-    <div style="display: flex; flex-direction: column; min-width: 0">
+    <div class="app-shell__main">
       <header class="row between app-shell__header">
         <div class="col app-shell__title-group">
           <span
@@ -271,6 +268,16 @@ async function loadPendingCount(): Promise<void> {
   pendingCount.value = stats?.pending ?? null;
 }
 
+// The pending-count badge shrinks to a corner dot in the compact icon rail
+// (see .app-shell__nav-badge's ≤1024px rule), so the hover title carries the
+// count too — otherwise a sighted rail user loses that signal entirely.
+function navLinkTitle(navItem: (typeof navItems)[number]): string {
+  if (navItem.id === "inbox" && pendingCount.value) {
+    return `${navItem.label} (${pendingCount.value})`;
+  }
+  return navItem.label;
+}
+
 // ── Plan card: billing usage & trial status ─────────────────────────────────
 const billingUsage = ref<BillingUsage | null>(null);
 
@@ -369,9 +376,25 @@ function goToActivity(): void {
    card (all remaining static per-instance style stays inline, per instance,
    since it differs between the three). Kept out of each inline style so the
    phone override below can win — an inline style always beats a stylesheet
-   rule of any specificity short of !important. */
+   rule of any specificity short of !important. `position: relative` gives
+   the pending-count badge (see .app-shell__nav-badge) an anchor to pin to
+   in the compact rail; it's a no-op at the default flow width below. */
 .app-shell__nav-link {
   width: 100%;
+  position: relative;
+}
+
+.app-shell__label {
+  padding: 4px 8px 8px;
+}
+
+/* Static layout for the pending-count badge (moved out of an inline style
+   for the same reason as .app-shell__nav-link above — the rail rule below
+   needs to reposition it, which an inline style would otherwise block). */
+.app-shell__nav-badge {
+  margin-left: auto;
+  font-size: 9.5px;
+  padding: 1px 6px;
 }
 
 .app-shell__header {
@@ -391,6 +414,19 @@ function goToActivity(): void {
   min-width: 0;
 }
 
+/* min-width: 0 so the main column can shrink to its grid track (rather than
+   the deepest unbreakable content forcing a wider track) at any breakpoint;
+   min-height: 0 does the equivalent for the phone breakpoint below, where
+   this becomes a grid row item — without it, the flex child's automatic
+   minimum size can keep it taller than its 1fr track, which would stop
+   .scroll below from ever needing to scroll internally. */
+.app-shell__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 @media (max-width: 1024px) {
   .app-shell {
     grid-template-columns: 76px 1fr;
@@ -406,8 +442,7 @@ function goToActivity(): void {
      nav link (screen readers) instead of losing it via display: none. Scoped
      to this media query only — must never apply at the full desktop width. */
   .app-shell__label,
-  .app-shell__nav-label,
-  .app-shell__nav-badge {
+  .app-shell__nav-label {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -417,6 +452,19 @@ function goToActivity(): void {
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+
+  /* The pending-count badge stays visible (unlike the label above) — it's
+     the only signal a sighted rail user has that records are waiting, and
+     the count is also echoed in the link's title (see navLinkTitle) for
+     hover/AT users. Pinned to the icon's corner via .app-shell__nav-link's
+     `position: relative` instead of sharing normal flow with the (now
+     hidden) label, so it can't force the rail wider. */
+  .app-shell__nav-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    margin-left: 0;
   }
 
   /* Collapse the sidebar to an icon rail: drop the plan card (promotional,
@@ -461,11 +509,12 @@ function goToActivity(): void {
     margin-bottom: 0;
   }
 
-  /* Compound selectors so these reliably beat the global .col utility
-     (display: flex; flex-direction: column) and the base
-     .app-shell__nav-link width above, regardless of stylesheet load order,
-     since those are single-class selectors otherwise. Without this, the
-     user card's inline-free width: 100% would still claim the full
+  /* Compound selectors so these reliably beat this same file's own base
+     .app-shell__nav (flex: 1) and .app-shell__nav-link (width: 100%) rules
+     above — both declared earlier in this scoped stylesheet at equal
+     (single-class) specificity, so a plain single-class override here would
+     depend on source order rather than winning outright. Without the
+     width override, the user card's width: 100% would still claim the full
      remaining row width in the horizontal top bar. */
   .app-shell__sidebar .app-shell__nav {
     flex-direction: row;

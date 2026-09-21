@@ -80,6 +80,10 @@ const tabs = [
   padding: 30px 36px 60px;
   max-width: 720px;
   overflow-y: auto;
+  /* Without this, wide unbreakable content (e.g. API tokens in SetTokens,
+     code blocks) can force this grid column — and the page — wider than the
+     viewport at the phone breakpoint below, where the grid becomes 1fr. */
+  min-width: 0;
 }
 
 /* Static layout props for each tab button (dynamic active-state props stay
@@ -116,9 +120,11 @@ const tabs = [
     overflow-x: auto;
   }
 
-  /* Compound selector so this reliably beats the global .col utility
-     (display: flex; flex-direction: column) regardless of stylesheet
-     load order, since both are single-class selectors otherwise. */
+  /* Overrides the global .col utility's flex-direction: column. Vue's
+     scoped-style attribute selector already gives a single local class here
+     more specificity than that global class, but this stays compound to
+     match the equivalent (load-bearing, see TheAppShell.vue) pattern used
+     for the tab-width override just below. */
   .settings-layout__nav .settings-layout__nav-list {
     flex-direction: row;
   }
