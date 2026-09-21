@@ -33,6 +33,23 @@ const expectedTooManyRequestsEnvelope = {
   },
 };
 
+// Distinct detail copy from expectedTooManyRequestsEnvelope above: that one
+// is enforceApiThrottle's (already-authenticated, userId-keyed) message, this
+// is enforceAuthFailureThrottle's (pre-authentication, IP-keyed) message.
+const expectedAuthFailureThrottleEnvelope = {
+  statusCode: 429,
+  data: {
+    errors: [
+      {
+        status: "429",
+        title: "Too Many Requests",
+        detail:
+          "Too many failed authentication attempts from this IP address. Slow down and try again shortly.",
+      },
+    ],
+  },
+};
+
 const selectMock = vi.fn();
 const updateMock = vi.fn();
 
@@ -58,6 +75,12 @@ vi.mock("../../../server/utils/apiThrottle", () => ({
   recordAuthedApiHit: mockRecordAuthedApiHit,
 }));
 
+const mockRecordAuthFailure = vi.fn();
+
+vi.mock("../../../server/utils/authFailureThrottle", () => ({
+  recordAuthFailure: mockRecordAuthFailure,
+}));
+
 const mockCreateError = vi.fn((options: object) => {
   const error = new Error("createError");
   Object.assign(error, options);
@@ -66,6 +89,7 @@ const mockCreateError = vi.fn((options: object) => {
 
 const mockGetHeader = vi.fn();
 const mockSetHeader = vi.fn();
+const mockGetRequestIP = vi.fn();
 
 vi.stubGlobal("defineEventHandler", (fn: unknown) => fn);
 
@@ -108,19 +132,27 @@ beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
   vi.stubGlobal("getHeader", mockGetHeader);
   vi.stubGlobal("setHeader", mockSetHeader);
+  vi.stubGlobal("getRequestIP", mockGetRequestIP);
   mockCreateError.mockClear();
   mockGetHeader.mockClear();
   mockSetHeader.mockClear();
+  mockGetRequestIP.mockClear();
   selectMock.mockReset();
   updateMock.mockReset();
   mockVerifyToken.mockReset();
   mockEnsureUserRegistered.mockReset();
   mockRecordAuthedApiHit.mockReset();
-  // Every existing test in this file predates the throttle and asserts on
-  // authentication behavior only; default to "allowed" so none of them have
-  // to know about it, and let the "authenticated API throttle" describe block
-  // below override this per-test.
+  mockRecordAuthFailure.mockReset();
+  // Every existing test in this file predates the throttles and asserts on
+  // authentication behavior only; default both to "allowed" so none of them
+  // have to know about either, and let the dedicated throttle describe
+  // blocks below override this per-test.
   mockRecordAuthedApiHit.mockResolvedValue({ allowed: true });
+  mockRecordAuthFailure.mockResolvedValue({ allowed: true });
+  // A resolvable client IP by default so the failure-throttle path is
+  // exercised (recordAuthFailure called) unless a test explicitly simulates
+  // an unresolvable IP.
+  mockGetRequestIP.mockReturnValue("203.0.113.10");
   process.env.NUXT_CLERK_SECRET_KEY = "test_secret";
 });
 
@@ -573,6 +605,110 @@ describe("auth middleware", () => {
       await expect(handler(event)).rejects.toThrow();
 
       expect(event.context.userId).toBeUndefined();
+    });
+  });
+
+  describe("failed-authentication IP throttle", () => {
+    it("spends failure-throttle budget by IP when the Authorization header is absent", async () => {
+      mockGetHeader.mockReturnValue(undefined);
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockRecordAuthFailure).toHaveBeenCalledWith("203.0.113.10");
+    });
+
+    it("spends failure-throttle budget when an mp_live_ token is unknown", async () => {
+      const rawToken = generateRawToken();
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([]);
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockRecordAuthFailure).toHaveBeenCalledWith("203.0.113.10");
+    });
+
+    it("spends failure-throttle budget when a Clerk JWT fails verification", async () => {
+      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
+      mockGetHeader.mockReturnValue(`Bearer ${clerkToken}`);
+      mockVerifyToken.mockRejectedValue(new Error("Invalid token"));
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockRecordAuthFailure).toHaveBeenCalledWith("203.0.113.10");
+    });
+
+    it("does not spend failure-throttle budget on a successful Clerk authentication", async () => {
+      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
+      mockGetHeader.mockReturnValue(`Bearer ${clerkToken}`);
+      mockVerifyToken.mockResolvedValue({ sub: userId });
+
+      await handler(buildEvent());
+
+      expect(mockRecordAuthFailure).not.toHaveBeenCalled();
+    });
+
+    it("does not spend failure-throttle budget on a successful API token authentication", async () => {
+      const rawToken = generateRawToken();
+      mockGetHeader.mockReturnValue(`Bearer ${rawToken}`);
+      stubSelectResult([{ id: tokenId, userId }]);
+      stubUpdateSuccess();
+
+      await handler(buildEvent());
+
+      expect(mockRecordAuthFailure).not.toHaveBeenCalled();
+    });
+
+    it("throws 429 with a Retry-After header once the IP is over the failed-auth limit", async () => {
+      mockGetHeader.mockReturnValue(undefined);
+      mockRecordAuthFailure.mockResolvedValue({
+        allowed: false,
+        retryAfterSeconds: 23,
+      });
+
+      const event = buildEvent();
+      await expect(handler(event)).rejects.toThrow();
+
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedAuthFailureThrottleEnvelope,
+      );
+      expect(mockSetHeader).toHaveBeenCalledWith(event, "Retry-After", "23");
+    });
+
+    it("throws the 429 instead of the 401 once the IP is over the failed-auth limit", async () => {
+      mockGetHeader.mockReturnValue(undefined);
+      mockRecordAuthFailure.mockResolvedValue({
+        allowed: false,
+        retryAfterSeconds: 23,
+      });
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockCreateError).not.toHaveBeenCalledWith(
+        expectedUnauthorizedEnvelope,
+      );
+    });
+
+    it("does not throttle (and still 401s) when no client IP can be resolved", async () => {
+      mockGetHeader.mockReturnValue(undefined);
+      mockGetRequestIP.mockReturnValue(undefined);
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockRecordAuthFailure).not.toHaveBeenCalled();
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedUnauthorizedEnvelope,
+      );
+    });
+
+    it("resolves the client IP honoring X-Forwarded-For", async () => {
+      mockGetHeader.mockReturnValue(undefined);
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockGetRequestIP).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ xForwardedFor: true }),
+      );
     });
   });
 });

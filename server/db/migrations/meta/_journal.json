@@ -169,6 +169,13 @@
       "when": 1789618262211,
       "tag": "0027_add_token_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790032982531,
+      "tag": "0028_clammy_tiger_shark",
+      "breakpoints": true
     }
   ]
 }

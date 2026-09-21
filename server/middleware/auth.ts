@@ -12,6 +12,7 @@ import {
   tooManyRequestsError,
 } from "../utils/errors";
 import { recordAuthedApiHit } from "../utils/apiThrottle";
+import { recordAuthFailure } from "../utils/authFailureThrottle";
 import { parseScopes } from "../utils/protectedResource";
 
 const BEARER_PREFIX = /^Bearer\s+/i;
@@ -112,6 +113,38 @@ async function enforceApiThrottle(
   );
 }
 
+// Throttles repeated *failed* authentication attempts (a bad-token guessing
+// loop) by client IP, ahead of throwUnauthorized() below. Distinct from
+// enforceApiThrottle above, which bounds already-authenticated traffic by
+// userId: this one only ever sees requests that are about to be rejected as
+// unauthenticated, and is keyed by IP (there is no userId yet to key on). A
+// missing IP (getRequestIP found neither a trusted X-Forwarded-For header nor
+// a socket address) is not throttled rather than lumped into a shared
+// "unknown" bucket, which would let one such request starve the budget for
+// every other client that also resolves to "unknown".
+async function enforceAuthFailureThrottle(event: H3Event): Promise<void> {
+  const clientIp = getRequestIP(event, { xForwardedFor: true });
+  if (!clientIp) {
+    return;
+  }
+
+  const throttleResult = await recordAuthFailure(clientIp);
+  if (throttleResult.allowed) {
+    return;
+  }
+
+  setHeader(
+    event,
+    RETRY_AFTER_HEADER,
+    String(throttleResult.retryAfterSeconds),
+  );
+  apiErrorHandler(
+    tooManyRequestsError(
+      "Too many failed authentication attempts from this IP address. Slow down and try again shortly.",
+    ),
+  );
+}
+
 export default defineEventHandler(async (event) => {
   if (!event.path.startsWith("/api/")) {
     return;
@@ -134,6 +167,7 @@ export default defineEventHandler(async (event) => {
     "",
   );
   if (!rawToken) {
+    await enforceAuthFailureThrottle(event);
     throwUnauthorized();
   }
 
@@ -146,6 +180,7 @@ export default defineEventHandler(async (event) => {
     : await authenticateViaClerk(rawToken);
 
   if (!userId) {
+    await enforceAuthFailureThrottle(event);
     throwUnauthorized();
   }
 

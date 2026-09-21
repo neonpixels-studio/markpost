@@ -49,6 +49,28 @@ export const users = pgTable("users", {
   apiThrottleCount: integer("api_throttle_count").default(0).notNull(),
 });
 
+// Fixed-window counter backing recordAuthFailure (server/utils/authFailureThrottle.ts),
+// which throttles repeated *failed* authentication attempts (bad-token
+// guessing) ahead of throwUnauthorized() in server/middleware/auth.ts.
+// Keyed by a SHA-256 hash of the client IP rather than the raw address —
+// equality matching is all a fixed-window counter needs, so there is no
+// reason to persist a reversible IP at rest. Unlike users.apiThrottle*
+// (a column on a row that always already exists) or sources.throttle*
+// (scoped to one source's webhook volume), there is no pre-existing row to
+// attach an IP counter to, so this is its own narrow table rather than a
+// wide column bolted onto a hot table — an INSERT ... ON CONFLICT DO UPDATE
+// creates the row on first failure and updates it on every failure after,
+// same atomic CASE-based window reset as the other two throttles. Persisted
+// in Postgres (not in-memory) so the budget survives Netlify's stateless
+// serverless invocations between requests, same rationale as apiThrottle.
+export const authFailureThrottle = pgTable("auth_failure_throttle", {
+  ipHash: text("ip_hash").primaryKey(),
+  windowStart: timestamp("window_start", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  count: integer("count").default(0).notNull(),
+});
+
 export const SUBSCRIPTION_PLANS = ["hobby", "pro"] as const;
 export type SubscriptionPlan = (typeof SUBSCRIPTION_PLANS)[number];
 
