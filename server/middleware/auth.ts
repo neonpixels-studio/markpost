@@ -13,8 +13,8 @@ import {
 } from "../utils/errors";
 import { recordAuthedApiHit } from "../utils/apiThrottle";
 import {
-  isAuthFailureThrottled,
-  recordAuthFailure,
+  refundAuthAttempt,
+  reserveAuthAttempt,
 } from "../utils/authFailureThrottle";
 import { parseScopes } from "../utils/protectedResource";
 
@@ -133,6 +133,16 @@ const NETLIFY_CLIENT_IP_HEADER = "x-nf-client-connection-ip";
 // resolve to the proxy's own address, coalescing many real clients into one
 // bucket), which is an acceptable degradation for a limiter that already
 // fails open on every other kind of infrastructure gap.
+//
+// The header is trusted unconditionally rather than gated behind an
+// env-var check for "are we actually running on Netlify" — there isn't a
+// reliable one to gate on: `process.env.NETLIFY` is a Netlify *build-time*
+// value and is not present in the deployed Function's runtime environment,
+// so a runtime check against it would always evaluate false and silently
+// disable the trusted header for every real request, not just non-Netlify
+// ones. This app deploys exclusively behind Netlify's edge (see envs/ and
+// the dotenvx .env.production setup), which is what actually makes trusting
+// this header safe; a future host migration would need to revisit this.
 function resolveClientIp(event: H3Event): string | undefined {
   return getHeader(event, NETLIFY_CLIENT_IP_HEADER) ?? getRequestIP(event);
 }
@@ -149,44 +159,26 @@ function throwAuthFailureThrottled(
   );
 }
 
-// Read-only pre-check, run before spending any work verifying a presented
-// token/session. Without this, an IP that already exhausted its budget would
-// still get a full verification pass on every subsequent request — a correct
-// guess would still authenticate, and only a wrong one would trade its 401
-// for a 429 — which does not actually stop a guessing loop, only relabel its
-// failures. Keyed by IP rather than by userId (enforceApiThrottle's key)
-// because nothing is authenticated yet at this point in the request.
-async function rejectIfAuthFailureThrottled(
+// Atomically reserves one unit of the IP's failed-auth budget *before*
+// verification runs, and throws the throttle's 429 immediately if that
+// reservation itself came back over budget. This has to happen before
+// verification, not after a failure, to actually stop a guessing loop:
+// Netlify runs requests concurrently, so a read-then-write pre-check (check,
+// then only record on failure) would let an entire burst of simultaneous
+// guesses past the check before any of them had recorded a failure — see the
+// comment on reserveAuthAttempt in authFailureThrottle.ts. Reserving instead
+// spends budget the moment an attempt is made, correct or not; a correct one
+// gets it back via refundAuthAttempt below.
+async function reserveAuthBudgetOrThrow(
   event: H3Event,
   clientIp: string,
 ): Promise<void> {
-  const throttleResult = await isAuthFailureThrottled(clientIp);
+  const throttleResult = await reserveAuthAttempt(clientIp);
   if (throttleResult.allowed) {
     return;
   }
 
   throwAuthFailureThrottled(event, throttleResult.retryAfterSeconds);
-}
-
-// Spends failure-throttle budget once verification has actually failed, then
-// throws the appropriate rejection: 429 if this failure is the one that tips
-// the IP over budget (so the caller gets immediate feedback rather than
-// waiting for its next request to hit the pre-check above), otherwise the
-// normal 401. Never called for a missing Authorization header — omitting the
-// header entirely is not a guess at a token value, and counting it here would
-// let a handful of logged-out/expired-session requests from a shared IP
-// (an office NAT, a carrier-grade NAT) exhaust the same budget a real
-// guessing loop would need to trip.
-async function recordAuthFailureAndThrow(
-  event: H3Event,
-  clientIp: string,
-): Promise<never> {
-  const throttleResult = await recordAuthFailure(clientIp);
-  if (!throttleResult.allowed) {
-    throwAuthFailureThrottled(event, throttleResult.retryAfterSeconds);
-  }
-
-  throwUnauthorized();
 }
 
 // True for every request this middleware does not gate: non-API routes, and
@@ -202,20 +194,21 @@ function isPublicPath(path: string): boolean {
 }
 
 type CredentialAuthResult = {
-  viaApiToken: boolean;
   apiTokenAuth: ApiTokenAuthResult | null;
   userId: string | undefined;
 };
 
 // Resolves whichever credential the request presented (mp_live_ API token vs
-// Clerk session token) into a userId. Split out of the handler so the
-// branching between the two credential kinds — and their different auth
-// result shapes — reads as one self-contained step rather than adding to the
-// handler's own branch count.
+// Clerk session token) into a userId. Takes viaApiToken rather than
+// recomputing isApiToken(rawToken) itself, since the caller already needs
+// that value to decide whether to throttle (see the handler below) — split
+// out so the branching between the two credential kinds, and their
+// different auth result shapes, reads as one self-contained step rather than
+// adding to the handler's own branch count.
 async function resolveCredentialAuth(
   rawToken: string,
+  viaApiToken: boolean,
 ): Promise<CredentialAuthResult> {
-  const viaApiToken = isApiToken(rawToken);
   const apiTokenAuth = viaApiToken
     ? await authenticateViaApiToken(rawToken)
     : null;
@@ -223,20 +216,7 @@ async function resolveCredentialAuth(
     ? apiTokenAuth?.userId
     : await authenticateViaClerk(rawToken);
 
-  return { viaApiToken, apiTokenAuth, userId };
-}
-
-// Throws (never returns) when authentication failed: spends failed-auth
-// throttle budget by IP when one was resolved, then always ends in either
-// the throttle's own 429 or the standard 401.
-async function rejectUnauthenticated(
-  event: H3Event,
-  clientIp: string | undefined,
-): Promise<never> {
-  if (clientIp) {
-    await recordAuthFailureAndThrow(event, clientIp);
-  }
-  throwUnauthorized();
+  return { apiTokenAuth, userId };
 }
 
 // Only the Clerk path can carry a brand-new identity; an API token can only
@@ -246,8 +226,8 @@ async function rejectUnauthenticated(
 // never spends the new user's own throttle budget on its way out.
 async function finalizeAuthenticatedRequest(
   event: H3Event,
+  viaApiToken: boolean,
   {
-    viaApiToken,
     apiTokenAuth,
     userId,
   }: CredentialAuthResult & {
@@ -288,17 +268,29 @@ export default defineEventHandler(async (event) => {
     throwUnauthorized();
   }
 
-  const clientIp = resolveClientIp(event);
+  // Only the mp_live_ API token path is throttled by IP: it is the only
+  // credential kind an external script can brute-force guess. A Clerk
+  // session is a Clerk-signed JWT — nothing short of Clerk's own signing key
+  // can forge one, so an expired/garbage value failing verification is never
+  // a guess worth budgeting, and counting it would risk throttling every
+  // user behind a shared IP (an office NAT, a carrier-grade NAT) over
+  // ordinary logged-out/expired-session traffic rather than an actual attack.
+  const viaApiToken = isApiToken(rawToken);
+  const clientIp = viaApiToken ? resolveClientIp(event) : undefined;
   if (clientIp) {
-    await rejectIfAuthFailureThrottled(event, clientIp);
+    await reserveAuthBudgetOrThrow(event, clientIp);
   }
 
-  const credentialAuth = await resolveCredentialAuth(rawToken);
+  const credentialAuth = await resolveCredentialAuth(rawToken, viaApiToken);
   if (!credentialAuth.userId) {
-    await rejectUnauthenticated(event, clientIp);
+    throwUnauthorized();
   }
 
-  await finalizeAuthenticatedRequest(event, {
+  if (clientIp) {
+    await refundAuthAttempt(clientIp);
+  }
+
+  await finalizeAuthenticatedRequest(event, viaApiToken, {
     ...credentialAuth,
     userId: credentialAuth.userId,
   });

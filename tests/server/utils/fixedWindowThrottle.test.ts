@@ -12,7 +12,6 @@ vi.mock("drizzle-orm", () => ({
 const {
   buildWindowResetSet,
   evaluateThrottleCounter,
-  isWindowExpired,
   secondsRemainingInWindow,
   windowExpiredCondition,
 } = await import("../../../server/utils/fixedWindowThrottle");
@@ -78,18 +77,6 @@ describe("evaluateThrottleCounter", () => {
       expect(result.retryAfterSeconds).toBeGreaterThan(0);
       expect(result.retryAfterSeconds).toBeLessThanOrEqual(11);
     }
-  });
-});
-
-describe("isWindowExpired", () => {
-  it("is false when the window has not yet elapsed", () => {
-    const windowStart = new Date(Date.now() - (WINDOW_SECONDS - 10) * 1000);
-    expect(isWindowExpired(windowStart, WINDOW_SECONDS)).toBe(false);
-  });
-
-  it("is true once the window has elapsed", () => {
-    const windowStart = new Date(Date.now() - (WINDOW_SECONDS + 10) * 1000);
-    expect(isWindowExpired(windowStart, WINDOW_SECONDS)).toBe(true);
   });
 });
 

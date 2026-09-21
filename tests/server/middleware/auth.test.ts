@@ -35,7 +35,7 @@ const expectedTooManyRequestsEnvelope = {
 
 // Distinct detail copy from expectedTooManyRequestsEnvelope above: that one
 // is enforceApiThrottle's (already-authenticated, userId-keyed) message, this
-// is the failed-auth IP throttle's (pre-authentication, IP-keyed) message.
+// is the failed-auth IP throttle's (pre-verification, IP-keyed) message.
 const expectedAuthFailureThrottleEnvelope = {
   statusCode: 429,
   data: {
@@ -84,12 +84,12 @@ vi.mock("../../../server/utils/apiThrottle", () => ({
   recordAuthedApiHit: mockRecordAuthedApiHit,
 }));
 
-const mockRecordAuthFailure = vi.fn();
-const mockIsAuthFailureThrottled = vi.fn();
+const mockReserveAuthAttempt = vi.fn();
+const mockRefundAuthAttempt = vi.fn();
 
 vi.mock("../../../server/utils/authFailureThrottle", () => ({
-  recordAuthFailure: mockRecordAuthFailure,
-  isAuthFailureThrottled: mockIsAuthFailureThrottled,
+  reserveAuthAttempt: mockReserveAuthAttempt,
+  refundAuthAttempt: mockRefundAuthAttempt,
 }));
 
 const mockCreateError = vi.fn((options: object) => {
@@ -179,15 +179,15 @@ beforeEach(() => {
   mockVerifyToken.mockReset();
   mockEnsureUserRegistered.mockReset();
   mockRecordAuthedApiHit.mockReset();
-  mockRecordAuthFailure.mockReset();
-  mockIsAuthFailureThrottled.mockReset();
+  mockReserveAuthAttempt.mockReset();
+  mockRefundAuthAttempt.mockReset();
   // Every existing test in this file predates the throttles and asserts on
-  // authentication behavior only; default all three to "allowed"/unresolved
-  // fallback so none of them have to know about the throttles, and let the
-  // dedicated throttle describe blocks below override per-test.
+  // authentication behavior only; default all to "allowed"/no-op so none of
+  // them have to know about either throttle, and let the dedicated throttle
+  // describe blocks below override per-test.
   mockRecordAuthedApiHit.mockResolvedValue({ allowed: true });
-  mockRecordAuthFailure.mockResolvedValue({ allowed: true });
-  mockIsAuthFailureThrottled.mockResolvedValue({ allowed: true });
+  mockReserveAuthAttempt.mockResolvedValue({ allowed: true });
+  mockRefundAuthAttempt.mockResolvedValue(undefined);
   mockGetRequestIP.mockReturnValue(undefined);
   stubHeaders({});
   process.env.NUXT_CLERK_SECRET_KEY = "test_secret";
@@ -254,8 +254,19 @@ describe("auth middleware", () => {
 
       await expect(handler(buildEvent())).rejects.toThrow();
 
-      expect(mockIsAuthFailureThrottled).not.toHaveBeenCalled();
-      expect(mockRecordAuthFailure).not.toHaveBeenCalled();
+      expect(mockReserveAuthAttempt).not.toHaveBeenCalled();
+      expect(mockRefundAuthAttempt).not.toHaveBeenCalled();
+    });
+
+    it("throws 401 without touching the throttle for a bare 'Bearer ' header (empty token)", async () => {
+      stubHeaders({ authorization: "Bearer " });
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockCreateError).toHaveBeenCalledWith(
+        expectedUnauthorizedEnvelope,
+      );
+      expect(mockReserveAuthAttempt).not.toHaveBeenCalled();
     });
   });
 
@@ -654,8 +665,8 @@ describe("auth middleware", () => {
     });
   });
 
-  describe("failed-authentication IP throttle — pre-check", () => {
-    it("checks the throttle before verifying a presented API token", async () => {
+  describe("failed-authentication IP throttle — scoped to API tokens only", () => {
+    it("reserves budget for a presented mp_live_ token before verification runs", async () => {
       const rawToken = generateRawToken();
       stubHeaders({ authorization: `Bearer ${rawToken}` });
       stubSelectResult([{ id: tokenId, userId }]);
@@ -663,27 +674,37 @@ describe("auth middleware", () => {
 
       await handler(buildEvent());
 
-      expect(mockIsAuthFailureThrottled).toHaveBeenCalledWith(
-        DEFAULT_CLIENT_IP,
-      );
+      expect(mockReserveAuthAttempt).toHaveBeenCalledWith(DEFAULT_CLIENT_IP);
     });
 
-    it("checks the throttle before verifying a Clerk JWT", async () => {
+    it("never touches the throttle for a Clerk JWT, valid or not (not guessable)", async () => {
       const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
       stubHeaders({ authorization: `Bearer ${clerkToken}` });
       mockVerifyToken.mockResolvedValue({ sub: userId });
 
       await handler(buildEvent());
 
-      expect(mockIsAuthFailureThrottled).toHaveBeenCalledWith(
-        DEFAULT_CLIENT_IP,
-      );
+      expect(mockReserveAuthAttempt).not.toHaveBeenCalled();
+      expect(mockRefundAuthAttempt).not.toHaveBeenCalled();
+      // No throttle interaction also means no client-IP resolution work.
+      expect(mockGetRequestIP).not.toHaveBeenCalled();
     });
 
-    it("rejects with 429 before running verification when the IP is already over budget", async () => {
+    it("never touches the throttle for a Clerk JWT that fails verification", async () => {
+      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
+      stubHeaders({ authorization: `Bearer ${clerkToken}` });
+      mockVerifyToken.mockRejectedValue(new Error("Invalid token"));
+
+      await expect(handler(buildEvent())).rejects.toThrow();
+
+      expect(mockReserveAuthAttempt).not.toHaveBeenCalled();
+      expect(mockRefundAuthAttempt).not.toHaveBeenCalled();
+    });
+
+    it("rejects with 429 before running verification when the reservation is over budget", async () => {
       const rawToken = generateRawToken();
       stubHeaders({ authorization: `Bearer ${rawToken}` });
-      mockIsAuthFailureThrottled.mockResolvedValue({
+      mockReserveAuthAttempt.mockResolvedValue({
         allowed: false,
         retryAfterSeconds: 30,
       });
@@ -695,77 +716,12 @@ describe("auth middleware", () => {
         expectedAuthFailureThrottleEnvelope,
       );
       expect(mockSetHeader).toHaveBeenCalledWith(event, "Retry-After", "30");
-      // The whole point of the pre-check: an over-budget IP never gets its
-      // guess evaluated at all, correct or not.
+      // The whole point of reserving up front: an over-budget IP never gets
+      // its guess evaluated at all, correct or not.
       expect(selectMock).not.toHaveBeenCalled();
     });
 
-    it("rejects a Clerk JWT with 429 before calling Clerk when the IP is already over budget", async () => {
-      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
-      stubHeaders({ authorization: `Bearer ${clerkToken}` });
-      mockIsAuthFailureThrottled.mockResolvedValue({
-        allowed: false,
-        retryAfterSeconds: 30,
-      });
-
-      await expect(handler(buildEvent())).rejects.toThrow();
-
-      expect(mockVerifyToken).not.toHaveBeenCalled();
-    });
-
-    it("does not check the throttle for a missing Authorization header", async () => {
-      stubHeaders({ authorization: undefined });
-
-      await expect(handler(buildEvent())).rejects.toThrow();
-
-      expect(mockIsAuthFailureThrottled).not.toHaveBeenCalled();
-    });
-
-    it("does not check the throttle when no client IP can be resolved", async () => {
-      const rawToken = generateRawToken();
-      stubHeaders({ authorization: `Bearer ${rawToken}`, clientIp: undefined });
-      mockGetRequestIP.mockReturnValue(undefined);
-      stubSelectResult([{ id: tokenId, userId }]);
-      stubUpdateSuccess();
-
-      await handler(buildEvent());
-
-      expect(mockIsAuthFailureThrottled).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("failed-authentication IP throttle — recording on failure", () => {
-    it("spends failure-throttle budget when an mp_live_ token is unknown", async () => {
-      const rawToken = generateRawToken();
-      stubHeaders({ authorization: `Bearer ${rawToken}` });
-      stubSelectResult([]);
-
-      await expect(handler(buildEvent())).rejects.toThrow();
-
-      expect(mockRecordAuthFailure).toHaveBeenCalledWith(DEFAULT_CLIENT_IP);
-    });
-
-    it("spends failure-throttle budget when a Clerk JWT fails verification", async () => {
-      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
-      stubHeaders({ authorization: `Bearer ${clerkToken}` });
-      mockVerifyToken.mockRejectedValue(new Error("Invalid token"));
-
-      await expect(handler(buildEvent())).rejects.toThrow();
-
-      expect(mockRecordAuthFailure).toHaveBeenCalledWith(DEFAULT_CLIENT_IP);
-    });
-
-    it("does not spend failure-throttle budget on a successful Clerk authentication", async () => {
-      const clerkToken = "eyJhbGciOiJSUzI1NiJ9.payload.signature";
-      stubHeaders({ authorization: `Bearer ${clerkToken}` });
-      mockVerifyToken.mockResolvedValue({ sub: userId });
-
-      await handler(buildEvent());
-
-      expect(mockRecordAuthFailure).not.toHaveBeenCalled();
-    });
-
-    it("does not spend failure-throttle budget on a successful API token authentication", async () => {
+    it("refunds budget once a reserved API token attempt succeeds", async () => {
       const rawToken = generateRawToken();
       stubHeaders({ authorization: `Bearer ${rawToken}` });
       stubSelectResult([{ id: tokenId, userId }]);
@@ -773,32 +729,24 @@ describe("auth middleware", () => {
 
       await handler(buildEvent());
 
-      expect(mockRecordAuthFailure).not.toHaveBeenCalled();
+      expect(mockRefundAuthAttempt).toHaveBeenCalledWith(DEFAULT_CLIENT_IP);
     });
 
-    it("throws 429 with a Retry-After header when recording tips the IP over the limit", async () => {
+    it("does not refund budget when a reserved API token attempt fails (budget stays spent)", async () => {
       const rawToken = generateRawToken();
       stubHeaders({ authorization: `Bearer ${rawToken}` });
       stubSelectResult([]);
-      mockRecordAuthFailure.mockResolvedValue({
-        allowed: false,
-        retryAfterSeconds: 23,
-      });
 
-      const event = buildEvent();
-      await expect(handler(event)).rejects.toThrow();
+      await expect(handler(buildEvent())).rejects.toThrow();
 
-      expect(mockCreateError).toHaveBeenCalledWith(
-        expectedAuthFailureThrottleEnvelope,
-      );
-      expect(mockSetHeader).toHaveBeenCalledWith(event, "Retry-After", "23");
+      expect(mockRefundAuthAttempt).not.toHaveBeenCalled();
     });
 
-    it("throws the normal 401 (not 429) when recording keeps the IP under the limit", async () => {
+    it("gives the normal 401 (not 429) for a failed API token attempt that stayed within the reservation's budget", async () => {
       const rawToken = generateRawToken();
       stubHeaders({ authorization: `Bearer ${rawToken}` });
       stubSelectResult([]);
-      mockRecordAuthFailure.mockResolvedValue({ allowed: true });
+      mockReserveAuthAttempt.mockResolvedValue({ allowed: true });
 
       await expect(handler(buildEvent())).rejects.toThrow();
 
@@ -807,15 +755,23 @@ describe("auth middleware", () => {
       );
     });
 
-    it("does not record a failure when no client IP can be resolved", async () => {
+    it("does not reserve or refund when no client IP can be resolved", async () => {
       const rawToken = generateRawToken();
-      stubHeaders({ authorization: `Bearer ${rawToken}`, clientIp: undefined });
+      stubHeaders({
+        authorization: `Bearer ${rawToken}`,
+        clientIp: undefined,
+      });
       mockGetRequestIP.mockReturnValue(undefined);
-      stubSelectResult([]);
+      stubSelectResult([{ id: tokenId, userId }]);
+      stubUpdateSuccess();
 
-      await expect(handler(buildEvent())).rejects.toThrow();
+      await handler(buildEvent());
 
-      expect(mockRecordAuthFailure).not.toHaveBeenCalled();
+      expect(mockReserveAuthAttempt).not.toHaveBeenCalled();
+      expect(mockRefundAuthAttempt).not.toHaveBeenCalled();
+      // Skipping the throttle must never skip authentication itself.
+      expect(mockVerifyToken).not.toHaveBeenCalled();
+      expect(selectMock).toHaveBeenCalled();
     });
   });
 
@@ -829,16 +785,17 @@ describe("auth middleware", () => {
 
       await handler(buildEvent());
 
-      expect(mockIsAuthFailureThrottled).toHaveBeenCalledWith(
-        DEFAULT_CLIENT_IP,
-      );
+      expect(mockReserveAuthAttempt).toHaveBeenCalledWith(DEFAULT_CLIENT_IP);
       expect(mockGetRequestIP).not.toHaveBeenCalled();
     });
 
     it("falls back to getRequestIP without trusting X-Forwarded-For when the Netlify header is absent", async () => {
       const rawToken = generateRawToken();
       const socketIp = "198.51.100.9";
-      stubHeaders({ authorization: `Bearer ${rawToken}`, clientIp: undefined });
+      stubHeaders({
+        authorization: `Bearer ${rawToken}`,
+        clientIp: undefined,
+      });
       mockGetRequestIP.mockReturnValue(socketIp);
       stubSelectResult([{ id: tokenId, userId }]);
       stubUpdateSuccess();
@@ -854,7 +811,7 @@ describe("auth middleware", () => {
         expect.anything(),
         expect.objectContaining({ xForwardedFor: true }),
       );
-      expect(mockIsAuthFailureThrottled).toHaveBeenCalledWith(socketIp);
+      expect(mockReserveAuthAttempt).toHaveBeenCalledWith(socketIp);
     });
   });
 });

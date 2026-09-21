@@ -3,13 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spyConsoleError } from "../helpers";
 
 const insertMock = vi.fn();
-const selectMock = vi.fn();
+const updateMock = vi.fn();
 const deleteMock = vi.fn();
 
 vi.mock("../../../server/db", () => ({
   getDb: () => ({
     insert: insertMock,
-    select: selectMock,
+    update: updateMock,
     delete: deleteMock,
   }),
 }));
@@ -39,16 +39,17 @@ vi.mock("drizzle-orm", () => ({
 const { authFailureThrottle } = await import("../../../server/db/schema");
 
 const {
-  recordAuthFailure,
-  isAuthFailureThrottled,
+  reserveAuthAttempt,
+  refundAuthAttempt,
+  throttleKeyForIp,
   AUTH_FAILURE_THROTTLE_MAX_HITS,
   AUTH_FAILURE_THROTTLE_WINDOW_SECONDS,
 } = await import("../../../server/utils/authFailureThrottle");
 
 const CLIENT_IP = "203.0.113.10";
 
-function expectedHash(pepper: string): string {
-  return createHmac("sha256", pepper).update(CLIENT_IP).digest("hex");
+function expectedHash(key: string, pepper: string): string {
+  return createHmac("sha256", pepper).update(key).digest("hex");
 }
 
 function stubInsertReturning(rows: unknown[]) {
@@ -66,19 +67,17 @@ function stubInsertFailure(error: Error) {
   insertMock.mockReturnValue({ values });
 }
 
-function stubSelectResult(rows: unknown[]) {
-  const limit = vi.fn(() => Promise.resolve(rows));
-  const where = vi.fn(() => ({ limit }));
-  const from = vi.fn(() => ({ where }));
-  selectMock.mockReturnValue({ from });
-  return { from, where, limit };
+function stubUpdateSuccess() {
+  const where = vi.fn(() => Promise.resolve());
+  const set = vi.fn(() => ({ where }));
+  updateMock.mockReturnValue({ set });
+  return { set, where };
 }
 
-function stubSelectFailure(error: Error) {
-  const limit = vi.fn(() => Promise.reject(error));
-  const where = vi.fn(() => ({ limit }));
-  const from = vi.fn(() => ({ where }));
-  selectMock.mockReturnValue({ from });
+function stubUpdateFailure(error: Error) {
+  const where = vi.fn(() => Promise.reject(error));
+  const set = vi.fn(() => ({ where }));
+  updateMock.mockReturnValue({ set });
 }
 
 function stubDeleteSuccess() {
@@ -89,15 +88,13 @@ function stubDeleteSuccess() {
 
 beforeEach(() => {
   insertMock.mockReset();
-  selectMock.mockReset();
+  updateMock.mockReset();
   deleteMock.mockReset();
   stubDeleteSuccess();
   delete process.env.AUTH_THROTTLE_IP_PEPPER;
-  // Deterministic by default: pruneExpiredRows' own 1% opportunistic trigger
-  // would otherwise flake this suite (an untriggered run never touches
-  // `delete`, a triggered one logs via its own swallowed-error path if
-  // `delete` isn't stubbed for that test) — pin it off here and turn it back
-  // on explicitly in the pruning describe block below.
+  // Deterministic by default: reserveAndFetchCounter's own 1% opportunistic
+  // prune trigger would otherwise flake this suite — pin it off here and
+  // turn it back on explicitly in the pruning describe block below.
   vi.spyOn(Math, "random").mockReturnValue(1);
 });
 
@@ -105,28 +102,77 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("recordAuthFailure IP hashing", () => {
-  it("keys the row by an HMAC-SHA256 of the IP, not the raw address", async () => {
+describe("throttleKeyForIp", () => {
+  it("passes an IPv4 address through unchanged", () => {
+    expect(throttleKeyForIp("203.0.113.10")).toBe("203.0.113.10");
+  });
+
+  it("extracts the embedded IPv4 address from an IPv4-mapped IPv6 address", () => {
+    expect(throttleKeyForIp("::ffff:203.0.113.10")).toBe("203.0.113.10");
+  });
+
+  it("truncates a fully-written IPv6 address to its /64 prefix", () => {
+    expect(throttleKeyForIp("2001:db8:1234:5678:aaaa:bbbb:cccc:dddd")).toBe(
+      "2001:db8:1234:5678",
+    );
+  });
+
+  it("truncates a compressed IPv6 address to its /64 prefix", () => {
+    expect(throttleKeyForIp("2001:db8:1234:5678::1")).toBe(
+      "2001:db8:1234:5678",
+    );
+  });
+
+  it("keys two addresses in the same /64 identically", () => {
+    const first = throttleKeyForIp("2001:db8:1234:5678:1111:2222:3333:4444");
+    const second = throttleKeyForIp("2001:db8:1234:5678:5555:6666:7777:8888");
+    expect(first).toBe(second);
+  });
+
+  it("keys addresses in different /64s differently", () => {
+    const first = throttleKeyForIp("2001:db8:1234:5678::1");
+    const second = throttleKeyForIp("2001:db8:1234:5679::1");
+    expect(first).not.toBe(second);
+  });
+});
+
+describe("reserveAuthAttempt IP hashing", () => {
+  it("keys the row by an HMAC-SHA256 of the normalized IP, not the raw address", async () => {
     const { values } = stubInsertReturning([
       { count: 1, windowStart: new Date() },
     ]);
 
-    await recordAuthFailure(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
 
     expect(values).toHaveBeenCalledWith(
-      expect.objectContaining({ ipHash: expectedHash("") }),
+      expect.objectContaining({ ipHash: expectedHash(CLIENT_IP, "") }),
     );
     const insertedValues = values.mock.calls[0][0] as { ipHash: string };
     expect(insertedValues.ipHash).not.toBe(CLIENT_IP);
   });
 
-  it("hashes the same IP identically across calls (so repeated failures hit one row)", async () => {
+  it("hashes the same IP identically across calls (so repeated attempts hit one row)", async () => {
     const { values } = stubInsertReturning([
       { count: 1, windowStart: new Date() },
     ]);
 
-    await recordAuthFailure(CLIENT_IP);
-    await recordAuthFailure(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
+
+    const [firstCallValues] = values.mock.calls[0];
+    const [secondCallValues] = values.mock.calls[1];
+    expect((firstCallValues as { ipHash: string }).ipHash).toBe(
+      (secondCallValues as { ipHash: string }).ipHash,
+    );
+  });
+
+  it("hashes two IPv6 addresses in the same /64 to the same row", async () => {
+    const { values } = stubInsertReturning([
+      { count: 1, windowStart: new Date() },
+    ]);
+
+    await reserveAuthAttempt("2001:db8:1234:5678:1111:2222:3333:4444");
+    await reserveAuthAttempt("2001:db8:1234:5678:5555:6666:7777:8888");
 
     const [firstCallValues] = values.mock.calls[0];
     const [secondCallValues] = values.mock.calls[1];
@@ -141,21 +187,21 @@ describe("recordAuthFailure IP hashing", () => {
       { count: 1, windowStart: new Date() },
     ]);
 
-    await recordAuthFailure(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
 
     const insertedValues = values.mock.calls[0][0] as { ipHash: string };
-    expect(insertedValues.ipHash).toBe(expectedHash("test-pepper"));
-    expect(insertedValues.ipHash).not.toBe(expectedHash(""));
+    expect(insertedValues.ipHash).toBe(expectedHash(CLIENT_IP, "test-pepper"));
+    expect(insertedValues.ipHash).not.toBe(expectedHash(CLIENT_IP, ""));
   });
 });
 
-describe("recordAuthFailure atomic upsert shape", () => {
+describe("reserveAuthAttempt atomic upsert shape", () => {
   it("does not stamp windowStart from the app clock, so a fresh row uses the column default (the database's own now())", async () => {
     const { values } = stubInsertReturning([
       { count: 1, windowStart: new Date() },
     ]);
 
-    await recordAuthFailure(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
 
     const insertedValues = values.mock.calls[0][0] as Record<string, unknown>;
     expect(insertedValues).toEqual({ ipHash: expect.any(String), count: 1 });
@@ -167,7 +213,7 @@ describe("recordAuthFailure atomic upsert shape", () => {
       { count: 1, windowStart: new Date() },
     ]);
 
-    await recordAuthFailure(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
 
     expect(onConflictDoUpdate).toHaveBeenCalledOnce();
     const conflictArgument = onConflictDoUpdate.mock.calls[0][0] as {
@@ -181,7 +227,7 @@ describe("recordAuthFailure atomic upsert shape", () => {
       { count: 1, windowStart: new Date() },
     ]);
 
-    await recordAuthFailure(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
 
     const conflictArgument = onConflictDoUpdate.mock.calls[0][0] as {
       set: {
@@ -219,26 +265,26 @@ describe("recordAuthFailure atomic upsert shape", () => {
   });
 });
 
-describe("recordAuthFailure threshold behavior", () => {
-  it("allows a failure under the limit", async () => {
+describe("reserveAuthAttempt threshold behavior", () => {
+  it("allows an attempt under the limit", async () => {
     stubInsertReturning([{ count: 1, windowStart: new Date() }]);
 
-    const result = await recordAuthFailure(CLIENT_IP);
+    const result = await reserveAuthAttempt(CLIENT_IP);
 
     expect(result).toEqual({ allowed: true });
   });
 
-  it("allows a failure exactly at the limit", async () => {
+  it("allows an attempt exactly at the limit", async () => {
     stubInsertReturning([
       { count: AUTH_FAILURE_THROTTLE_MAX_HITS, windowStart: new Date() },
     ]);
 
-    const result = await recordAuthFailure(CLIENT_IP);
+    const result = await reserveAuthAttempt(CLIENT_IP);
 
     expect(result).toEqual({ allowed: true });
   });
 
-  it("denies a failure over the limit and reports retryAfterSeconds", async () => {
+  it("denies an attempt over the limit and reports retryAfterSeconds", async () => {
     const windowStart = new Date(
       Date.now() - (AUTH_FAILURE_THROTTLE_WINDOW_SECONDS - 15) * 1000,
     );
@@ -249,7 +295,7 @@ describe("recordAuthFailure threshold behavior", () => {
       },
     ]);
 
-    const result = await recordAuthFailure(CLIENT_IP);
+    const result = await reserveAuthAttempt(CLIENT_IP);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
@@ -265,22 +311,22 @@ describe("recordAuthFailure threshold behavior", () => {
         windowStart: new Date(),
       },
     ]);
-    const denied = await recordAuthFailure(CLIENT_IP);
+    const denied = await reserveAuthAttempt(CLIENT_IP);
     expect(denied.allowed).toBe(false);
 
     stubInsertReturning([{ count: 1, windowStart: new Date() }]);
-    const allowed = await recordAuthFailure(CLIENT_IP);
+    const allowed = await reserveAuthAttempt(CLIENT_IP);
     expect(allowed).toEqual({ allowed: true });
   });
 
   it("fails open and logs when the counter write itself rejects", async () => {
-    // Mirrors apiThrottle's fail-open contract: a broken limiter must not
-    // itself become the reason every failed login gets blocked. The caller
-    // (server/middleware/auth.ts) still throws its normal 401 either way.
+    // A broken limiter must not itself become the reason every login
+    // attempt gets blocked. The caller (server/middleware/auth.ts) still
+    // runs verification normally either way.
     stubInsertFailure(new Error("connection reset"));
     const consoleErrorSpy = spyConsoleError();
 
-    const result = await recordAuthFailure(CLIENT_IP);
+    const result = await reserveAuthAttempt(CLIENT_IP);
 
     expect(result).toEqual({ allowed: true });
     expect(consoleErrorSpy).toHaveBeenCalled();
@@ -293,7 +339,7 @@ describe("recordAuthFailure threshold behavior", () => {
     });
     const consoleErrorSpy = spyConsoleError();
 
-    const result = await recordAuthFailure(CLIENT_IP);
+    const result = await reserveAuthAttempt(CLIENT_IP);
 
     expect(result).toEqual({ allowed: true });
     expect(consoleErrorSpy).toHaveBeenCalled();
@@ -301,12 +347,12 @@ describe("recordAuthFailure threshold behavior", () => {
   });
 });
 
-describe("recordAuthFailure opportunistic pruning", () => {
+describe("reserveAuthAttempt opportunistic pruning", () => {
   it("does not prune on a typical call (low-probability trigger not hit)", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     stubInsertReturning([{ count: 1, windowStart: new Date() }]);
 
-    await recordAuthFailure(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
 
     expect(deleteMock).not.toHaveBeenCalled();
   });
@@ -316,7 +362,7 @@ describe("recordAuthFailure opportunistic pruning", () => {
     const { where } = stubDeleteSuccess();
     stubInsertReturning([{ count: 1, windowStart: new Date() }]);
 
-    await recordAuthFailure(CLIENT_IP);
+    await reserveAuthAttempt(CLIENT_IP);
 
     expect(deleteMock).toHaveBeenCalledWith(authFailureThrottle);
     const condition = where.mock.calls[0][0] as SqlFragment;
@@ -336,7 +382,7 @@ describe("recordAuthFailure opportunistic pruning", () => {
     stubInsertReturning([{ count: 1, windowStart: new Date() }]);
     const consoleErrorSpy = spyConsoleError();
 
-    const result = await recordAuthFailure(CLIENT_IP);
+    const result = await reserveAuthAttempt(CLIENT_IP);
 
     expect(result).toEqual({ allowed: true });
     expect(consoleErrorSpy).toHaveBeenCalled();
@@ -344,102 +390,50 @@ describe("recordAuthFailure opportunistic pruning", () => {
   });
 });
 
-describe("isAuthFailureThrottled", () => {
-  it("allows when there is no row for the IP yet", async () => {
-    stubSelectResult([]);
+describe("refundAuthAttempt", () => {
+  it("decrements the count for the same hash reserveAuthAttempt writes under", async () => {
+    const { set, where } = stubUpdateSuccess();
 
-    const result = await isAuthFailureThrottled(CLIENT_IP);
+    await refundAuthAttempt(CLIENT_IP);
 
-    expect(result).toEqual({ allowed: true });
-  });
-
-  it("queries by the same HMAC-SHA256 hash recordAuthFailure writes under", async () => {
-    const { where } = stubSelectResult([]);
-
-    await isAuthFailureThrottled(CLIENT_IP);
-
+    expect(updateMock).toHaveBeenCalledWith(authFailureThrottle);
+    expect(set).toHaveBeenCalledOnce();
     expect(where).toHaveBeenCalledWith({
       column: authFailureThrottle.ipHash,
-      value: expectedHash(""),
+      value: expectedHash(CLIENT_IP, ""),
     });
   });
 
-  it("allows when the stored count is under the limit", async () => {
-    stubSelectResult([{ count: 1, windowStart: new Date() }]);
+  it("floors the decrement at 0 via GREATEST, so it can never go negative", async () => {
+    const { set } = stubUpdateSuccess();
 
-    const result = await isAuthFailureThrottled(CLIENT_IP);
+    await refundAuthAttempt(CLIENT_IP);
 
-    expect(result).toEqual({ allowed: true });
-  });
-
-  it("denies when the stored count is over the limit and the window is still live", async () => {
-    const windowStart = new Date(
-      Date.now() - (AUTH_FAILURE_THROTTLE_WINDOW_SECONDS - 20) * 1000,
+    const setArgument = set.mock.calls[0][0] as { count: SqlFragment };
+    expect(setArgument.count.strings.join("<expr>")).toBe(
+      "GREATEST(<expr> - 1, 0)",
     );
-    stubSelectResult([
-      { count: AUTH_FAILURE_THROTTLE_MAX_HITS + 1, windowStart },
-    ]);
-
-    const result = await isAuthFailureThrottled(CLIENT_IP);
-
-    expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.retryAfterSeconds).toBeGreaterThan(0);
-      expect(result.retryAfterSeconds).toBeLessThanOrEqual(21);
-    }
+    expect(setArgument.count.values).toEqual([authFailureThrottle.count]);
   });
 
-  it("allows once the window has expired even though the stored count still reads over the limit", async () => {
-    // No write has happened yet to apply the CASE reset server-side, so this
-    // is the one case a pure read has to reproduce that decision itself
-    // (see isWindowExpired in fixedWindowThrottle.ts) rather than trusting
-    // the stored count at face value.
-    const expiredWindowStart = new Date(
-      Date.now() - (AUTH_FAILURE_THROTTLE_WINDOW_SECONDS + 5) * 1000,
-    );
-    stubSelectResult([
-      {
-        count: AUTH_FAILURE_THROTTLE_MAX_HITS + 5,
-        windowStart: expiredWindowStart,
-      },
-    ]);
-
-    const result = await isAuthFailureThrottled(CLIENT_IP);
-
-    expect(result).toEqual({ allowed: true });
-  });
-
-  it("does not write anything (pure read)", async () => {
-    stubSelectResult([
-      { count: AUTH_FAILURE_THROTTLE_MAX_HITS + 1, windowStart: new Date() },
-    ]);
-
-    await isAuthFailureThrottled(CLIENT_IP);
-
-    expect(insertMock).not.toHaveBeenCalled();
-    expect(deleteMock).not.toHaveBeenCalled();
-  });
-
-  it("fails open and logs when the read itself rejects", async () => {
-    stubSelectFailure(new Error("connection reset"));
+  it("swallows a write failure without throwing", async () => {
+    stubUpdateFailure(new Error("connection reset"));
     const consoleErrorSpy = spyConsoleError();
 
-    const result = await isAuthFailureThrottled(CLIENT_IP);
+    await expect(refundAuthAttempt(CLIENT_IP)).resolves.toBeUndefined();
 
-    expect(result).toEqual({ allowed: true });
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
   });
 
-  it("fails open when getDb() itself throws", async () => {
-    selectMock.mockImplementation(() => {
+  it("swallows a getDb() failure without throwing", async () => {
+    updateMock.mockImplementation(() => {
       throw new Error("no database connection configured");
     });
     const consoleErrorSpy = spyConsoleError();
 
-    const result = await isAuthFailureThrottled(CLIENT_IP);
+    await expect(refundAuthAttempt(CLIENT_IP)).resolves.toBeUndefined();
 
-    expect(result).toEqual({ allowed: true });
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
   });

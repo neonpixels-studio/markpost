@@ -35,22 +35,6 @@ export function secondsRemainingInWindow(
   return Math.max(1, Math.ceil(remainingSeconds));
 }
 
-// App-clock counterpart to windowExpiredCondition's SQL version, for callers
-// that read a counter without also atomically resetting it in the same
-// statement (a read-only "is this key currently throttled" peek, as opposed
-// to the UPDATE/INSERT...ON CONFLICT writers below, which apply the reset
-// server-side before evaluateThrottleCounter ever sees the row). A peek that
-// used evaluateThrottleCounter directly on a stale row would treat an
-// already-expired window as still over budget, since nothing has told it the
-// window doesn't apply anymore.
-export function isWindowExpired(
-  windowStart: Date,
-  windowSeconds: number,
-): boolean {
-  const elapsedSeconds = (Date.now() - windowStart.getTime()) / 1000;
-  return elapsedSeconds >= windowSeconds;
-}
-
 export type WindowResetSet = {
   windowStart: SQL;
   count: SQL;
