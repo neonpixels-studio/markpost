@@ -36,7 +36,7 @@
             style="height: 34px; width: 200px; font-size: 13px"
             @keydown.esc="searchQuery = ''"
           />
-          <span class="addon"><AppKbd>/</AppKbd></span>
+          <span v-if="!searchQuery" class="addon"><AppKbd>/</AppKbd></span>
         </div>
         <a class="icon-btn" :href="REPO_URL" style="color: var(--ink-2)">
           <AppIcon name="github" :size="18" />

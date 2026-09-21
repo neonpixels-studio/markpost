@@ -137,16 +137,26 @@ describe("docs page", () => {
   });
 
   it("links every GitHub affordance on the page to the real repository", () => {
+    // AppBtn is auto-stubbed by `shallow` (it renders as `<appbtn>`, not
+    // `<a>`), so select by href rather than tag to catch both the header
+    // icon link and the "need a hand?" card's AppBtn.
     const wrapper = mountDocsPage();
     const githubHrefs = wrapper
-      .findAll("a")
-      .map((link) => link.attributes("href"))
-      .filter((href): href is string => !!href?.includes("github.com"));
+      .findAll('[href*="github.com"]')
+      .map((element) => element.attributes("href"));
 
-    expect(githubHrefs.length).toBeGreaterThan(0);
+    expect(githubHrefs).toHaveLength(2);
     for (const href of githubHrefs) {
       expect(href).toBe(REPO_URL);
     }
+  });
+
+  it("hides the '/' shortcut hint once the user has typed a query", async () => {
+    const wrapper = mountDocsPage();
+    expect(wrapper.find("kbd").exists()).toBe(true);
+
+    await wrapper.find("input").setValue("auth");
+    expect(wrapper.find("kbd").exists()).toBe(false);
   });
 
   it("focuses the search input when '/' is pressed outside a text field", () => {
