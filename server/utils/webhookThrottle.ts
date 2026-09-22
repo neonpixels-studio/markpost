@@ -1,9 +1,9 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { sources } from "../db/schema";
 import {
+  buildWindowResetSet,
   evaluateThrottleCounter,
-  windowExpiredCondition,
   type ThrottleResult,
 } from "./fixedWindowThrottle";
 
@@ -28,16 +28,17 @@ async function recordHitAndFetchCounter(
   sourceId: string,
 ): Promise<ThrottleCounterRow | null> {
   const database = getDb();
-  const windowExpired = windowExpiredCondition(
+  const resetSet = buildWindowResetSet(
     sources.throttleWindowStart,
+    sources.throttleCount,
     WEBHOOK_THROTTLE_WINDOW_SECONDS,
   );
 
   const [row] = await database
     .update(sources)
     .set({
-      throttleWindowStart: sql`CASE WHEN ${windowExpired} THEN now() ELSE ${sources.throttleWindowStart} END`,
-      throttleCount: sql`CASE WHEN ${windowExpired} THEN 1 ELSE ${sources.throttleCount} + 1 END`,
+      throttleWindowStart: resetSet.windowStart,
+      throttleCount: resetSet.count,
     })
     .where(eq(sources.uuid, sourceId))
     .returning({

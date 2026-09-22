@@ -49,6 +49,31 @@ export const users = pgTable("users", {
   apiThrottleCount: integer("api_throttle_count").default(0).notNull(),
 });
 
+// Fixed-window counter backing reserveAuthAttempt/refundAuthAttempt
+// (server/utils/authFailureThrottle.ts — see the doc comment on
+// reserveAuthAttempt there for the full reserve-before-verify/refund-on-
+// success design and why), which throttles a bad mp_live_ API-token
+// guessing loop in server/middleware/auth.ts. Its own narrow table rather
+// than a column on an existing row (unlike users.apiThrottle*/
+// sources.throttle*): no row exists for an IP until its first attempt.
+// Persisted in Postgres (not in-memory) so the budget survives Netlify's
+// stateless serverless invocations between requests. Pruned opportunistically
+// once a row's window has expired (pruneExpiredRows) so this does not grow
+// without bound; window_start is indexed to keep that prune query cheap.
+export const authFailureThrottle = pgTable(
+  "auth_failure_throttle",
+  {
+    ipHash: text("ip_hash").primaryKey(),
+    windowStart: timestamp("window_start", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    count: integer("count").default(0).notNull(),
+  },
+  (table) => [
+    index("auth_failure_throttle_window_start_idx").on(table.windowStart),
+  ],
+);
+
 export const SUBSCRIPTION_PLANS = ["hobby", "pro"] as const;
 export type SubscriptionPlan = (typeof SUBSCRIPTION_PLANS)[number];
 

@@ -12,6 +12,10 @@ import {
   tooManyRequestsError,
 } from "../utils/errors";
 import { recordAuthedApiHit } from "../utils/apiThrottle";
+import {
+  refundAuthAttempt,
+  reserveAuthAttempt,
+} from "../utils/authFailureThrottle";
 import { parseScopes } from "../utils/protectedResource";
 
 const BEARER_PREFIX = /^Bearer\s+/i;
@@ -112,32 +116,93 @@ async function enforceApiThrottle(
   );
 }
 
-export default defineEventHandler(async (event) => {
-  if (!event.path.startsWith("/api/")) {
-    return;
-  }
+// Netlify's edge sets this to the real client IP on every function invocation
+// (https://docs.netlify.com/functions/api/#netlify-specific-context-object /
+// request headers). Unlike X-Forwarded-For, a client cannot set or append to
+// this header themselves — Netlify's edge overwrites it — so it is the only
+// IP source here that is safe to key a rate limit on. getRequestIP's own
+// `xForwardedFor` option would trust the client-suppliable X-Forwarded-For
+// header instead, which a script can set to a fresh value on every request
+// to mint itself a fresh throttle bucket each time, defeating the limiter
+// entirely.
+const NETLIFY_CLIENT_IP_HEADER = "x-nf-client-connection-ip";
 
-  if (event.path.startsWith(HOOKS_PATH_PREFIX)) {
-    return;
-  }
+// Falls back to h3's own socket-derived getRequestIP (no xForwardedFor trust)
+// for non-Netlify environments (local dev, tests) where the Netlify header is
+// absent. That fallback can be inaccurate behind an unknown proxy (it may
+// resolve to the proxy's own address, coalescing many real clients into one
+// bucket), which is an acceptable degradation for a limiter that already
+// fails open on every other kind of infrastructure gap.
+//
+// The header is trusted unconditionally rather than gated behind an
+// env-var check for "are we actually running on Netlify" — there isn't a
+// reliable one to gate on: `process.env.NETLIFY` is a Netlify *build-time*
+// value and is not present in the deployed Function's runtime environment,
+// so a runtime check against it would always evaluate false and silently
+// disable the trusted header for every real request, not just non-Netlify
+// ones. This app deploys exclusively behind Netlify's edge (see envs/ and
+// the dotenvx .env.production setup), which is what actually makes trusting
+// this header safe; a future host migration would need to revisit this.
+function resolveClientIp(event: H3Event): string | undefined {
+  return getHeader(event, NETLIFY_CLIENT_IP_HEADER) ?? getRequestIP(event);
+}
 
-  if (event.path === BILLING_WEBHOOK_PATH) {
-    return;
-  }
-
-  if (event.path === CLERK_WEBHOOK_PATH) {
-    return;
-  }
-
-  const rawToken = getHeader(event, "authorization")?.replace(
-    BEARER_PREFIX,
-    "",
+function throwAuthFailureThrottled(
+  event: H3Event,
+  retryAfterSeconds: number,
+): never {
+  setHeader(event, RETRY_AFTER_HEADER, String(retryAfterSeconds));
+  apiErrorHandler(
+    tooManyRequestsError(
+      "Too many failed authentication attempts from this IP address. Slow down and try again shortly.",
+    ),
   );
-  if (!rawToken) {
-    throwUnauthorized();
+}
+
+// Reserves budget before verification and throws the throttle's 429
+// immediately if that reservation came back over budget — see the doc
+// comment on reserveAuthAttempt (authFailureThrottle.ts) for why this has to
+// happen before verification rather than after a failure.
+async function reserveAuthBudgetOrThrow(
+  event: H3Event,
+  clientIp: string,
+): Promise<void> {
+  const throttleResult = await reserveAuthAttempt(clientIp);
+  if (throttleResult.allowed) {
+    return;
   }
 
-  const viaApiToken = isApiToken(rawToken);
+  throwAuthFailureThrottled(event, throttleResult.retryAfterSeconds);
+}
+
+// True for every request this middleware does not gate: non-API routes, and
+// the three webhook paths verified by their own signature instead of a
+// bearer token/session (see the constants' own comments above).
+function isPublicPath(path: string): boolean {
+  return (
+    !path.startsWith("/api/") ||
+    path.startsWith(HOOKS_PATH_PREFIX) ||
+    path === BILLING_WEBHOOK_PATH ||
+    path === CLERK_WEBHOOK_PATH
+  );
+}
+
+type CredentialAuthResult = {
+  apiTokenAuth: ApiTokenAuthResult | null;
+  userId: string | undefined;
+};
+
+// Resolves whichever credential the request presented (mp_live_ API token vs
+// Clerk session token) into a userId. Takes viaApiToken rather than
+// recomputing isApiToken(rawToken) itself, since the caller already needs
+// that value to decide whether to throttle (see the handler below) — split
+// out so the branching between the two credential kinds, and their
+// different auth result shapes, reads as one self-contained step rather than
+// adding to the handler's own branch count.
+async function resolveCredentialAuth(
+  rawToken: string,
+  viaApiToken: boolean,
+): Promise<CredentialAuthResult> {
   const apiTokenAuth = viaApiToken
     ? await authenticateViaApiToken(rawToken)
     : null;
@@ -145,13 +210,46 @@ export default defineEventHandler(async (event) => {
     ? apiTokenAuth?.userId
     : await authenticateViaClerk(rawToken);
 
-  if (!userId) {
-    throwUnauthorized();
-  }
+  return { apiTokenAuth, userId };
+}
 
-  // Only the Clerk path can carry a brand-new identity; an API token can only
-  // exist for an already-registered user. Runs outside authenticateViaClerk's
-  // try/catch so a disabled-signups 403 is not swallowed into a 401.
+// A thrown (not merely "no userId") failure out of resolveCredentialAuth
+// means credential resolution itself broke — e.g. the DB select inside
+// authenticateViaApiToken rejecting — not a wrong guess. Refunds the
+// reservation before rethrowing so an infrastructure hiccup doesn't quietly
+// erode a legitimate IP's guessing budget the way an actual wrong guess is
+// meant to; the original error still propagates unchanged, this only
+// corrects the throttle side effect.
+async function resolveCredentialAuthOrRefund(
+  rawToken: string,
+  viaApiToken: boolean,
+  clientIp: string | undefined,
+): Promise<CredentialAuthResult> {
+  try {
+    return await resolveCredentialAuth(rawToken, viaApiToken);
+  } catch (error) {
+    if (clientIp) {
+      await refundAuthAttempt(clientIp);
+    }
+    throw error;
+  }
+}
+
+// Only the Clerk path can carry a brand-new identity; an API token can only
+// exist for an already-registered user. Registration runs outside
+// authenticateViaClerk's own try/catch so a disabled-signups 403 is not
+// swallowed into a 401, and ahead of enforceApiThrottle so a signup rejection
+// never spends the new user's own throttle budget on its way out.
+async function finalizeAuthenticatedRequest(
+  event: H3Event,
+  viaApiToken: boolean,
+  {
+    apiTokenAuth,
+    userId,
+  }: CredentialAuthResult & {
+    userId: string;
+  },
+): Promise<void> {
   if (!viaApiToken) {
     await ensureUserRegistered(userId);
   }
@@ -171,4 +269,49 @@ export default defineEventHandler(async (event) => {
   event.context.tokenExpiresAt = viaApiToken
     ? (apiTokenAuth?.expiresAt ?? null)
     : null;
+}
+
+export default defineEventHandler(async (event) => {
+  if (isPublicPath(event.path)) {
+    return;
+  }
+
+  const rawToken = getHeader(event, "authorization")?.replace(
+    BEARER_PREFIX,
+    "",
+  );
+  if (!rawToken) {
+    throwUnauthorized();
+  }
+
+  // Only the mp_live_ API token path is throttled by IP: it is the only
+  // credential kind an external script can brute-force guess. A Clerk
+  // session is a Clerk-signed JWT — nothing short of Clerk's own signing key
+  // can forge one, so an expired/garbage value failing verification is never
+  // a guess worth budgeting, and counting it would risk throttling every
+  // user behind a shared IP (an office NAT, a carrier-grade NAT) over
+  // ordinary logged-out/expired-session traffic rather than an actual attack.
+  const viaApiToken = isApiToken(rawToken);
+  const clientIp = viaApiToken ? resolveClientIp(event) : undefined;
+  if (clientIp) {
+    await reserveAuthBudgetOrThrow(event, clientIp);
+  }
+
+  const credentialAuth = await resolveCredentialAuthOrRefund(
+    rawToken,
+    viaApiToken,
+    clientIp,
+  );
+  if (!credentialAuth.userId) {
+    throwUnauthorized();
+  }
+
+  if (clientIp) {
+    await refundAuthAttempt(clientIp);
+  }
+
+  await finalizeAuthenticatedRequest(event, viaApiToken, {
+    ...credentialAuth,
+    userId: credentialAuth.userId,
+  });
 });

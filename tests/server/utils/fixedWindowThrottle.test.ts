@@ -10,6 +10,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 const {
+  buildWindowResetSet,
   evaluateThrottleCounter,
   secondsRemainingInWindow,
   windowExpiredCondition,
@@ -76,6 +77,36 @@ describe("evaluateThrottleCounter", () => {
       expect(result.retryAfterSeconds).toBeGreaterThan(0);
       expect(result.retryAfterSeconds).toBeLessThanOrEqual(11);
     }
+  });
+});
+
+describe("buildWindowResetSet", () => {
+  it("builds the same reset-vs-increment CASE pair as windowExpiredCondition backs, keyed by the given columns", () => {
+    const windowStartColumn = { name: "fake_window_start" };
+    const countColumn = { name: "fake_count" };
+
+    const resetSet = buildWindowResetSet(
+      windowStartColumn as never,
+      countColumn as never,
+      WINDOW_SECONDS,
+    ) as unknown as { windowStart: SqlFragment; count: SqlFragment };
+
+    expect(resetSet.windowStart.strings.join("<expr>")).toBe(
+      "CASE WHEN <expr> THEN now() ELSE <expr> END",
+    );
+    expect(resetSet.count.strings.join("<expr>")).toBe(
+      "CASE WHEN <expr> THEN 1 ELSE <expr> + 1 END",
+    );
+
+    const [windowCondition, windowElse] = resetSet.windowStart.values;
+    const [countCondition, countElse] = resetSet.count.values;
+
+    // Both branches read back their own column in the ELSE case, and gate on
+    // the exact same shared condition, so the window can never reset in one
+    // column but not the other.
+    expect(windowElse).toBe(windowStartColumn);
+    expect(countElse).toBe(countColumn);
+    expect(windowCondition).toBe(countCondition);
   });
 });
 
