@@ -1,45 +1,45 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`inbox page > matches snapshot in empty state 1`] = `
-"<div active="inbox" crumb="WORKSPACE / DAN'S VAULT" title="Inbox"><button class="app-btn">sync now</button><button class="app-btn">export all records</button>
-  <div style="padding: 22px 26px 40px; max-width: 1080px;">
+"<div data-v-e13af01a="" active="inbox" crumb="WORKSPACE / DAN'S VAULT" title="Inbox"><button data-v-e13af01a="" class="app-btn">sync now</button><button data-v-e13af01a="" class="app-btn">export all records</button>
+  <div data-v-e13af01a="" class="inbox-layout">
     <!--v-if-->
     <!--v-if-->
     <!--v-if-->
     <!--v-if-->
     <!-- stat row -->
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px;">
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">synced today</span><span name="checkCircle" size="15" style="color: var(--ok);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">12</span>
+    <div data-v-e13af01a="" class="inbox-stats">
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">synced today</span><span data-v-e13af01a="" name="checkCircle" size="15" style="color: var(--ok);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">12</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">pending</span><span name="clock" size="15" style="color: var(--warn);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">pending</span><span data-v-e13af01a="" name="clock" size="15" style="color: var(--warn);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">errors</span><span name="triangle" size="15" style="color: var(--err);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">errors</span><span data-v-e13af01a="" name="triangle" size="15" style="color: var(--err);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">this month</span><span name="fileText" size="15" style="color: var(--ink-3);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">284</span><span class="mono faint" style="font-size: 12px;">/ ∞</span></div>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">this month</span><span data-v-e13af01a="" name="fileText" size="15" style="color: var(--ink-3);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">284</span><span data-v-e13af01a="" class="mono faint" style="font-size: 12px;">/ ∞</span></div>
       </div>
     </div><!-- filters -->
-    <div class="row between wrap gap-3" style="margin-bottom: 14px;">
-      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
+    <div data-v-e13af01a="" class="row between wrap gap-3" style="margin-bottom: 14px;">
+      <div data-v-e13af01a="" class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span data-v-e13af01a="" class="mono faint" style="font-size: 12px;">0 records</span>
     </div><!-- bulk action toolbar -->
     <!--v-if-->
     <!-- loading state -->
     <!-- table -->
     <!-- empty state -->
-    <div class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px; text-align: center;"><span name="inbox" size="32"></span><span style="font-size: 15px; font-weight: 500; color: var(--ink-2);">No records yet</span><span class="mono" style="font-size: 13px;">Records will appear here once a source delivers them.</span></div>
+    <div data-v-e13af01a="" class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px; text-align: center;"><span data-v-e13af01a="" name="inbox" size="32"></span><span data-v-e13af01a="" style="font-size: 15px; font-weight: 500; color: var(--ink-2);">No records yet</span><span data-v-e13af01a="" class="mono" style="font-size: 13px;">Records will appear here once a source delivers them.</span></div>
   </div>
   <!--v-if-->
   <!--v-if-->
@@ -47,44 +47,44 @@ exports[`inbox page > matches snapshot in empty state 1`] = `
 `;
 
 exports[`inbox page > matches snapshot in error state 1`] = `
-"<div active="inbox" crumb="WORKSPACE / DAN'S VAULT" title="Inbox"><button class="app-btn">sync now</button><button class="app-btn" disabled="">export all records</button>
-  <div style="padding: 22px 26px 40px; max-width: 1080px;">
+"<div data-v-e13af01a="" active="inbox" crumb="WORKSPACE / DAN'S VAULT" title="Inbox"><button data-v-e13af01a="" class="app-btn">sync now</button><button data-v-e13af01a="" class="app-btn" disabled="">export all records</button>
+  <div data-v-e13af01a="" class="inbox-layout">
     <!--v-if-->
     <!--v-if-->
     <!--v-if-->
     <!--v-if-->
     <!-- stat row -->
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px;">
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">synced today</span><span name="checkCircle" size="15" style="color: var(--ok);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">12</span>
+    <div data-v-e13af01a="" class="inbox-stats">
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">synced today</span><span data-v-e13af01a="" name="checkCircle" size="15" style="color: var(--ok);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">12</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">pending</span><span name="clock" size="15" style="color: var(--warn);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">pending</span><span data-v-e13af01a="" name="clock" size="15" style="color: var(--warn);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">errors</span><span name="triangle" size="15" style="color: var(--err);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">errors</span><span data-v-e13af01a="" name="triangle" size="15" style="color: var(--err);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">this month</span><span name="fileText" size="15" style="color: var(--ink-3);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">284</span><span class="mono faint" style="font-size: 12px;">/ ∞</span></div>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">this month</span><span data-v-e13af01a="" name="fileText" size="15" style="color: var(--ink-3);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">284</span><span data-v-e13af01a="" class="mono faint" style="font-size: 12px;">/ ∞</span></div>
       </div>
     </div><!-- filters -->
-    <div class="row between wrap gap-3" style="margin-bottom: 14px;">
-      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
+    <div data-v-e13af01a="" class="row between wrap gap-3" style="margin-bottom: 14px;">
+      <div data-v-e13af01a="" class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span data-v-e13af01a="" class="mono faint" style="font-size: 12px;">0 records</span>
     </div><!-- bulk action toolbar -->
     <!--v-if-->
     <!-- loading state -->
     <!-- load error state -->
-    <div class="app-alert" data-tone="err">Failed to load records. Please try again.</div>
+    <div data-v-e13af01a="" class="app-alert" data-tone="err">Failed to load records. Please try again.</div>
   </div>
   <!--v-if-->
   <!--v-if-->
@@ -92,43 +92,43 @@ exports[`inbox page > matches snapshot in error state 1`] = `
 `;
 
 exports[`inbox page > matches snapshot in loading state 1`] = `
-"<div active="inbox" crumb="WORKSPACE / DAN'S VAULT" title="Inbox"><button class="app-btn">sync now</button><button class="app-btn" disabled="">export all records</button>
-  <div style="padding: 22px 26px 40px; max-width: 1080px;">
+"<div data-v-e13af01a="" active="inbox" crumb="WORKSPACE / DAN'S VAULT" title="Inbox"><button data-v-e13af01a="" class="app-btn">sync now</button><button data-v-e13af01a="" class="app-btn" disabled="">export all records</button>
+  <div data-v-e13af01a="" class="inbox-layout">
     <!--v-if-->
     <!--v-if-->
     <!--v-if-->
     <!--v-if-->
     <!-- stat row -->
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px;">
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">synced today</span><span name="checkCircle" size="15" style="color: var(--ok);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">12</span>
+    <div data-v-e13af01a="" class="inbox-stats">
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">synced today</span><span data-v-e13af01a="" name="checkCircle" size="15" style="color: var(--ok);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">12</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">pending</span><span name="clock" size="15" style="color: var(--warn);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">pending</span><span data-v-e13af01a="" name="clock" size="15" style="color: var(--warn);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">errors</span><span name="triangle" size="15" style="color: var(--err);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">errors</span><span data-v-e13af01a="" name="triangle" size="15" style="color: var(--err);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">this month</span><span name="fileText" size="15" style="color: var(--ink-3);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">284</span><span class="mono faint" style="font-size: 12px;">/ ∞</span></div>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">this month</span><span data-v-e13af01a="" name="fileText" size="15" style="color: var(--ink-3);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">284</span><span data-v-e13af01a="" class="mono faint" style="font-size: 12px;">/ ∞</span></div>
       </div>
     </div><!-- filters -->
-    <div class="row between wrap gap-3" style="margin-bottom: 14px;">
-      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">0 records</span>
+    <div data-v-e13af01a="" class="row between wrap gap-3" style="margin-bottom: 14px;">
+      <div data-v-e13af01a="" class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span data-v-e13af01a="" class="mono faint" style="font-size: 12px;">0 records</span>
     </div><!-- bulk action toolbar -->
     <!--v-if-->
     <!-- loading state -->
-    <div class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px;"><span name="refresh" size="24"></span><span class="mono" style="font-size: 13px;">loading records…</span></div>
+    <div data-v-e13af01a="" class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px;"><span data-v-e13af01a="" name="refresh" size="24"></span><span data-v-e13af01a="" class="mono" style="font-size: 13px;">loading records…</span></div>
   </div>
   <!--v-if-->
   <!--v-if-->
@@ -136,49 +136,49 @@ exports[`inbox page > matches snapshot in loading state 1`] = `
 `;
 
 exports[`inbox page > matches snapshot with records 1`] = `
-"<div active="inbox" crumb="WORKSPACE / DAN'S VAULT" title="Inbox"><button class="app-btn">sync now</button><button class="app-btn">export all records</button>
-  <div style="padding: 22px 26px 40px; max-width: 1080px;">
+"<div data-v-e13af01a="" active="inbox" crumb="WORKSPACE / DAN'S VAULT" title="Inbox"><button data-v-e13af01a="" class="app-btn">sync now</button><button data-v-e13af01a="" class="app-btn">export all records</button>
+  <div data-v-e13af01a="" class="inbox-layout">
     <!--v-if-->
     <!--v-if-->
     <!--v-if-->
     <!--v-if-->
     <!-- stat row -->
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px;">
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">synced today</span><span name="checkCircle" size="15" style="color: var(--ok);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">12</span>
+    <div data-v-e13af01a="" class="inbox-stats">
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">synced today</span><span data-v-e13af01a="" name="checkCircle" size="15" style="color: var(--ok);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">12</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">pending</span><span name="clock" size="15" style="color: var(--warn);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">pending</span><span data-v-e13af01a="" name="clock" size="15" style="color: var(--warn);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">errors</span><span name="triangle" size="15" style="color: var(--err);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">errors</span><span data-v-e13af01a="" name="triangle" size="15" style="color: var(--err);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">1</span>
           <!--v-if-->
         </div>
       </div>
-      <div class="card" style="padding: 16px;">
-        <div class="row between"><span class="kicker">this month</span><span name="fileText" size="15" style="color: var(--ink-3);"></span></div>
-        <div class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">284</span><span class="mono faint" style="font-size: 12px;">/ ∞</span></div>
+      <div data-v-e13af01a="" class="card" style="padding: 16px;">
+        <div data-v-e13af01a="" class="row between"><span data-v-e13af01a="" class="kicker">this month</span><span data-v-e13af01a="" name="fileText" size="15" style="color: var(--ink-3);"></span></div>
+        <div data-v-e13af01a="" class="row" style="align-items: baseline; gap: 4px; margin-top: 10px;"><span data-v-e13af01a="" style="font-size: 28px; font-weight: 600; letter-spacing: -0.02em;" class="tnum">284</span><span data-v-e13af01a="" class="mono faint" style="font-size: 12px;">/ ∞</span></div>
       </div>
     </div><!-- filters -->
-    <div class="row between wrap gap-3" style="margin-bottom: 14px;">
-      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span class="mono faint" style="font-size: 12px;">2 records</span>
+    <div data-v-e13af01a="" class="row between wrap gap-3" style="margin-bottom: 14px;">
+      <div data-v-e13af01a="" class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">webhook</button><button class="seg-option" role="radio" aria-checked="false">email</button><button class="seg-option" role="radio" aria-checked="false">stripe</button><button class="seg-option" role="radio" aria-checked="false">github</button><button class="seg-option" role="radio" aria-checked="false">zapier</button><button class="seg-option" role="radio" aria-checked="false">shortcuts</button><button class="seg-option" role="radio" aria-checked="false">errors</button></div><span data-v-e13af01a="" class="mono faint" style="font-size: 12px;">2 records</span>
     </div><!-- bulk action toolbar -->
     <!--v-if-->
     <!-- loading state -->
     <!-- table -->
     <!-- empty state -->
-    <div class="card" style="overflow: hidden;">
-      <div class="row" style="padding: 10px 18px; background: var(--bg-2); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); border-bottom-width: var(--line); border-bottom-style: var(--line); border-bottom-color: var(--line);"><span style="width: 28px;"><input type="checkbox" class="input-checkbox" aria-label="Select 2 records"></span><span style="width: 120px;">source</span><span style="flex-grow: 1; flex-shrink: 1; flex-basis: 0%;">record</span><span style="width: 230px;">file</span><span style="width: 90px;">status</span><span style="width: 80px; text-align: right;">time</span><span style="width: 44px;"></span></div>
-      <div class="divide-y">
-        <div class="record-row"><button class="row-open">Test Record</button><button class="row-select">select</button><button class="row-delete">delete</button></div>
-        <div class="record-row"><button class="row-open">Another</button><button class="row-select">select</button><button class="row-delete">delete</button></div>
+    <div data-v-e13af01a="" class="card inbox-table-card">
+      <div data-v-e13af01a="" class="row inbox-table-head" style="padding: 10px 18px; background: var(--bg-2); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); border-bottom-width: var(--line); border-bottom-style: var(--line); border-bottom-color: var(--line);"><span data-v-e13af01a="" style="width: 28px;"><input data-v-e13af01a="" type="checkbox" class="input-checkbox" aria-label="Select 2 records"></span><span data-v-e13af01a="" style="width: 120px;">source</span><span data-v-e13af01a="" style="flex-grow: 1; flex-shrink: 1; flex-basis: 0%;">record</span><span data-v-e13af01a="" style="width: 230px;">file</span><span data-v-e13af01a="" style="width: 90px;">status</span><span data-v-e13af01a="" style="width: 80px; text-align: right;">time</span><span data-v-e13af01a="" style="width: 44px;"></span></div>
+      <div data-v-e13af01a="" class="divide-y">
+        <div data-v-e13af01a="" class="record-row"><button class="row-open">Test Record</button><button class="row-select">select</button><button class="row-delete">delete</button></div>
+        <div data-v-e13af01a="" class="record-row"><button class="row-open">Another</button><button class="row-select">select</button><button class="row-delete">delete</button></div>
       </div>
     </div>
     <!--v-if-->

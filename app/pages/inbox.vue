@@ -18,7 +18,7 @@
       >
     </template>
 
-    <div style="padding: 22px 26px 40px; max-width: 1080px">
+    <div class="inbox-layout">
       <div v-if="showToast" style="margin-bottom: 18px">
         <AppAlert
           tone="ok"
@@ -64,14 +64,7 @@
       </AppAlert>
 
       <!-- stat row -->
-      <div
-        style="
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: 14px;
-          margin-bottom: 22px;
-        "
-      >
+      <div class="inbox-stats">
         <div
           v-for="stat in statsDisplay"
           :key="stat.k"
@@ -175,9 +168,9 @@
         </div>
 
         <template v-else>
-          <div class="card" style="overflow: hidden">
+          <div class="card inbox-table-card">
             <div
-              class="row"
+              class="row inbox-table-head"
               style="
                 padding: 10px 18px;
                 border-bottom: 1px solid var(--line);
@@ -586,3 +579,59 @@ onMounted(async () => {
   await Promise.all([loadRecords(), refreshStats()]);
 });
 </script>
+
+<style scoped>
+/* Breakpoints kept in sync with TheAppShell.vue / settings.vue / sources.vue:
+   tablet: max-width 1024px, phone: max-width 640px.
+   .inbox-stats also adds an inbox-only 480px step to drop from 2 to 1
+   column on the narrowest phones. */
+
+.inbox-layout {
+  padding: 22px 26px 40px;
+  max-width: 1080px;
+}
+
+.inbox-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.inbox-table-card {
+  overflow: hidden;
+}
+
+@media (max-width: 1024px) {
+  .inbox-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .inbox-layout {
+    padding: 16px 14px 32px;
+  }
+
+  /* The record table's columns (checkbox 28 + source 120 + file 230 +
+     status 90 + time 80 + actions 44 = 592px fixed, plus the flexible
+     record-title column) don't fit a phone viewport. Rather than clip or
+     crush them unreadably, let the table scroll horizontally: the header
+     row and RecordRow.vue's root share the same min-width (kept in sync —
+     see the comment on .record-row in RecordRow.vue) so columns stay
+     aligned while scrolling. */
+  .inbox-table-card {
+    overflow-x: auto;
+  }
+
+  .inbox-table-head {
+    min-width: 760px;
+  }
+}
+
+@media (max-width: 480px) {
+  .inbox-stats {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

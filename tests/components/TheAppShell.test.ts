@@ -146,6 +146,46 @@ describe("TheAppShell", () => {
     expect(wrapper.html()).toMatchSnapshot();
   });
 
+  // Guards the compact icon rail (app/components/TheAppShell.vue's
+  // ≤1024px breakpoint): the visible nav label text is visually hidden
+  // there via CSS, not removed from the DOM, so each link keeps an
+  // accessible name. jsdom doesn't evaluate media queries, so nothing else
+  // in this file would catch the label markup (or the title fallback)
+  // being dropped by accident.
+  describe("nav accessibility", () => {
+    it("keeps an .app-shell__nav-label with the item's text for every nav link", async () => {
+      const wrapper = mountShell();
+      await flushPromises();
+
+      for (const navItem of [
+        { label: "Inbox", path: "/inbox" },
+        { label: "Sources", path: "/sources" },
+        { label: "Activity", path: "/activity" },
+        { label: "Settings", path: "/settings" },
+      ]) {
+        const link = wrapper.find(`a[href="${navItem.path}"]`);
+        expect(link.exists()).toBe(true);
+        expect(link.find(".app-shell__nav-label").text()).toBe(navItem.label);
+      }
+    });
+
+    it("sets a title on each nav link so icon-only mode keeps a hover label", async () => {
+      const wrapper = mountShell();
+      await flushPromises();
+
+      const sourcesLink = wrapper.find('a[href="/sources"]');
+      expect(sourcesLink.attributes("title")).toBe("Sources");
+    });
+
+    it("includes the pending count in the inbox link's title", async () => {
+      const wrapper = mountShell();
+      await flushPromises();
+
+      const inboxLink = wrapper.find('a[href="/inbox"]');
+      expect(inboxLink.attributes("title")).toBe("Inbox (3)");
+    });
+  });
+
   describe("inbox badge", () => {
     it("shows the pending record count from the stats endpoint", async () => {
       const wrapper = mountShell();
@@ -167,6 +207,19 @@ describe("TheAppShell", () => {
         .findAll("a")
         .find((link) => link.text().includes("Inbox"));
       expect(inboxLink?.find(".badge").exists()).toBe(false);
+    });
+
+    it("falls back to the plain label in the title when there's no pending count", async () => {
+      mockFetchRecordStats.mockResolvedValue({
+        syncedToday: 1,
+        pending: 0,
+        errors: 0,
+        thisMonth: 10,
+      });
+      const wrapper = mountShell();
+      await flushPromises();
+      const inboxLink = wrapper.find('a[href="/inbox"]');
+      expect(inboxLink.attributes("title")).toBe("Inbox");
     });
   });
 

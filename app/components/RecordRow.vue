@@ -1,5 +1,5 @@
 <template>
-  <div class="row" style="padding: 13px 18px">
+  <div class="row record-row" style="padding: 13px 18px">
     <span style="width: 28px">
       <InputCheckbox
         :model-value="selected"
@@ -137,5 +137,15 @@ const emit = defineEmits<{
 
 .record-open-btn:hover {
   background: var(--bg-2);
+}
+
+/* Breakpoint kept in sync with app/pages/inbox.vue's .inbox-table-head —
+   both need the same min-width so columns stay aligned when the wrapping
+   .inbox-table-card switches to horizontal scroll on narrow phones (the
+   row's own fixed-width columns don't fit there; see that file's comment). */
+@media (max-width: 640px) {
+  .record-row {
+    min-width: 760px;
+  }
 }
 </style>
