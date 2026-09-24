@@ -1,3 +1,5 @@
+import type { ScopeName } from "#shared/utils/scopes";
+
 export type ApiToken = {
   id: string;
   name: string;
@@ -5,6 +7,8 @@ export type ApiToken = {
   createdAt: Date | null;
   lastUsedAt: Date | null;
   expiresAt: Date | null;
+  // NULL means full access — see server/db/schema.ts apiTokens.scopes.
+  scopes: ScopeName[] | null;
 };
 
 // Wire-level types use string for date fields because JSON serializes Date as ISO string.
@@ -17,6 +21,7 @@ type TokenResource = {
     createdAt: string | null;
     lastUsedAt: string | null;
     expiresAt: string | null;
+    scopes: ScopeName[] | null;
   };
 };
 
@@ -89,14 +94,30 @@ function deserializeToken(resource: TokenResource): ApiToken {
     expiresAt: resource.attributes.expiresAt
       ? new Date(resource.attributes.expiresAt)
       : null,
+    // Defaults to full access if the server response ever omits the field
+    // (e.g. an older fixture/test response), matching parseScopes' own
+    // "NULL means full access" rule server-side.
+    scopes: resource.attributes.scopes ?? null,
   };
 }
 
-function buildMintBody(name: string, expiresInDays?: number) {
-  const attributes: { name: string; expiresInDays?: number } = { name };
+function buildMintBody(
+  name: string,
+  expiresInDays?: number,
+  scopes?: ScopeName[],
+) {
+  const attributes: {
+    name: string;
+    expiresInDays?: number;
+    scopes?: ScopeName[];
+  } = { name };
 
   if (expiresInDays !== undefined) {
     attributes.expiresInDays = expiresInDays;
+  }
+
+  if (scopes !== undefined) {
+    attributes.scopes = scopes;
   }
 
   return {
@@ -152,7 +173,11 @@ export function useApiTokens() {
     await fetchAndApplyTokens();
   }
 
-  async function mintToken(name: string, expiresInDays?: number) {
+  async function mintToken(
+    name: string,
+    expiresInDays?: number,
+    scopes?: ScopeName[],
+  ) {
     if (isMinting.value) {
       return;
     }
@@ -165,7 +190,7 @@ export function useApiTokens() {
     try {
       const response = await $fetch<MintTokenResponse>(API_TOKENS_ENDPOINT, {
         method: "POST",
-        body: buildMintBody(name, expiresInDays),
+        body: buildMintBody(name, expiresInDays, scopes),
       });
 
       if (isErrorBody(response)) {

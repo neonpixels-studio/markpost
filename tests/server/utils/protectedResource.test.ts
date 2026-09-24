@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   PROTECTED_RESOURCE_PATH,
-  SCOPE_NAMES,
   buildProtectedResourceMetadata,
-  isScopeName,
   parseScopes,
 } from "../../../server/utils/protectedResource";
+import { SCOPE_NAMES, isScopeName } from "#shared/utils/scopes";
 
 const APP_URL = "https://custom-domain.example.com";
 

@@ -77,6 +77,11 @@
           v-model:expiry-days="pendingExpiryDays"
           :disabled="isMinting"
         />
+        <TokenScopeFields
+          v-model:wants-scopes="wantsScopes"
+          v-model:scopes="pendingScopes"
+          :disabled="isMinting"
+        />
         <div class="row gap-3">
           <AppBtn
             variant="accent"
@@ -147,6 +152,12 @@
                 {{ formatDate(token.lastUsedAt) }} ·
                 {{ formatExpiry(token.expiresAt) }}
               </span>
+              <div class="chip-row">
+                <AppChip v-if="!token.scopes" accent>full access</AppChip>
+                <AppChip v-for="scope in token.scopes" :key="scope">{{
+                  scope
+                }}</AppChip>
+              </div>
             </div>
           </div>
           <button
@@ -187,6 +198,7 @@
 <script setup lang="ts">
 import SetHead from "./SetHead.vue";
 import TokenExpiryFields from "./TokenExpiryFields.vue";
+import TokenScopeFields from "./TokenScopeFields.vue";
 import {
   DEFAULT_TOKEN_EXPIRY_DAYS,
   MAX_TOKEN_EXPIRY_DAYS,
@@ -194,6 +206,7 @@ import {
   MIN_TOKEN_EXPIRY_DAYS,
   isTokenExpired,
 } from "#shared/utils/tokens";
+import type { ScopeName } from "#shared/utils/scopes";
 
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
   month: "short",
@@ -258,6 +271,11 @@ const pendingTokenName = ref("");
 // uncheck it for a never-expiring token, or raise/lower the day count.
 const wantsExpiry = ref(true);
 const pendingExpiryDays = ref(DEFAULT_TOKEN_EXPIRY_DAYS);
+// Opt-in, unlike expiry: full access (the pre-scoping, still-documented
+// default — see server/api/tokens/index.post.ts normalizeScopes) is the
+// unsurprising choice for whoever hasn't thought about scoping yet.
+const wantsScopes = ref(false);
+const pendingScopes = ref<ScopeName[]>([]);
 
 // Whole days only, and only relevant while the expiry checkbox is checked
 // (it is by default) — mirrors the bounds server/api/tokens/index.post.ts
@@ -271,10 +289,18 @@ const isExpiryDaysValid = computed(
     pendingExpiryDays.value <= MAX_TOKEN_EXPIRY_DAYS,
 );
 
+// A scoped mint requires at least one scope — an empty array would silently
+// request full access server-side (normalizeScopes rejects an empty array,
+// but so the form doesn't even round-trip a doomed request).
+const isScopesValid = computed(
+  () => !wantsScopes.value || pendingScopes.value.length > 0,
+);
+
 const isConfirmGenerateDisabled = computed(
   () =>
     !pendingTokenName.value.trim() ||
     (wantsExpiry.value && !isExpiryDaysValid.value) ||
+    !isScopesValid.value ||
     isMinting.value,
 );
 
@@ -282,6 +308,8 @@ function resetGenerateForm() {
   pendingTokenName.value = "";
   wantsExpiry.value = true;
   pendingExpiryDays.value = DEFAULT_TOKEN_EXPIRY_DAYS;
+  wantsScopes.value = false;
+  pendingScopes.value = [];
 }
 
 function startGenerate() {
@@ -305,9 +333,14 @@ async function confirmGenerate() {
     return;
   }
 
-  const expiresInDays = wantsExpiry.value ? pendingExpiryDays.value : undefined;
+  if (!isScopesValid.value) {
+    return;
+  }
 
-  await mintToken(name, expiresInDays);
+  const expiresInDays = wantsExpiry.value ? pendingExpiryDays.value : undefined;
+  const scopes = wantsScopes.value ? pendingScopes.value : undefined;
+
+  await mintToken(name, expiresInDays, scopes);
 
   if (mintError.value) {
     return;

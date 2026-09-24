@@ -4,12 +4,8 @@ import type { ApiRequest } from "../../types/api.types";
 import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
 import type { ApiResponse } from "../../types/api.types";
-import {
-  isScopeName,
-  parseScopes,
-  SCOPE_NAMES,
-  type ScopeName,
-} from "../../utils/protectedResource";
+import { parseScopes } from "../../utils/protectedResource";
+import { isScopeName, SCOPE_NAMES, type ScopeName } from "#shared/utils/scopes";
 import { apiValidate, type AttributeRule } from "../../utils/validate";
 import {
   computeExpiresAt,

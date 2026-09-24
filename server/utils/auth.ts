@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { users } from "../db/schema";
 import { throwForbiddenScope, throwUnauthorized } from "./errors";
-import type { ScopeName } from "./protectedResource";
+import type { ScopeName } from "#shared/utils/scopes";
 
 export function requireUser(event: H3Event): string {
   const userId = event.context.userId as string | undefined;

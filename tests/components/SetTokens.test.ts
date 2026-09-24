@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { ref } from "vue";
 import type { ApiToken } from "../../app/composables/useApiTokens";
 import { DEFAULT_TOKEN_EXPIRY_DAYS } from "#shared/utils/tokens";
@@ -12,6 +12,7 @@ const STUB_TOKENS: ApiToken[] = [
     createdAt: new Date("2026-04-02T00:00:00.000Z"),
     lastUsedAt: new Date("2026-06-27T00:00:00.000Z"),
     expiresAt: null,
+    scopes: null,
   },
   {
     id: "uuid-2",
@@ -20,6 +21,7 @@ const STUB_TOKENS: ApiToken[] = [
     createdAt: new Date("2026-03-18T00:00:00.000Z"),
     lastUsedAt: null,
     expiresAt: null,
+    scopes: ["records:read", "records:write"],
   },
 ];
 
@@ -275,7 +277,11 @@ describe("SetTokens", () => {
     await confirmButton?.trigger("click");
     await flushPromises();
 
-    expect(mockMintToken).toHaveBeenCalledWith("my-new-token", undefined);
+    expect(mockMintToken).toHaveBeenCalledWith(
+      "my-new-token",
+      undefined,
+      undefined,
+    );
   });
 
   it("calls mintToken with the default 90-day expiry when the generate form is confirmed unchanged", async () => {
@@ -304,6 +310,7 @@ describe("SetTokens", () => {
     expect(mockMintToken).toHaveBeenCalledWith(
       "my-new-token",
       DEFAULT_TOKEN_EXPIRY_DAYS,
+      undefined,
     );
   });
 
@@ -530,7 +537,7 @@ describe("SetTokens", () => {
     await confirmButton?.trigger("click");
     await flushPromises();
 
-    expect(mockMintToken).toHaveBeenCalledWith("expiring-token", 30);
+    expect(mockMintToken).toHaveBeenCalledWith("expiring-token", 30, undefined);
   });
 
   it("does not call mintToken when the (default-checked) days field is cleared", async () => {
@@ -636,5 +643,196 @@ describe("SetTokens", () => {
     await flushPromises();
     expect(wrapper.html()).toContain("Failed to revoke token.");
     expect(wrapper.html()).toContain("Failed to revoke token");
+  });
+
+  describe("scopes", () => {
+    // The "restrict to specific scopes" checkbox and each per-scope
+    // InputCheckbox all render a <label> wrapping their <input>, so finding
+    // by the label's own text uniquely locates each one regardless of
+    // render order.
+    function findCheckboxByLabelText(wrapper: VueWrapper, text: string) {
+      const label = wrapper
+        .findAll("label")
+        .find((candidate) => candidate.text().includes(text));
+      return label?.find("input[type='checkbox']");
+    }
+
+    it("shows a 'full access' chip for a token with null scopes", async () => {
+      mockTokens.value = [STUB_TOKENS[0]];
+      const SetTokens = (
+        await import("../../app/components/settings/SetTokens.vue")
+      ).default;
+      const wrapper = mount(SetTokens, globalConfig);
+      await flushPromises();
+      expect(wrapper.html()).toContain("full access");
+    });
+
+    it("shows a chip per scope for a token with a scoped list", async () => {
+      mockTokens.value = [STUB_TOKENS[1]];
+      const SetTokens = (
+        await import("../../app/components/settings/SetTokens.vue")
+      ).default;
+      const wrapper = mount(SetTokens, globalConfig);
+      await flushPromises();
+      expect(wrapper.html()).toContain("records:read");
+      expect(wrapper.html()).toContain("records:write");
+    });
+
+    it("hides the scope checklist until 'restrict to specific scopes' is checked", async () => {
+      const SetTokens = (
+        await import("../../app/components/settings/SetTokens.vue")
+      ).default;
+      const wrapper = mount(SetTokens, globalConfig);
+      await flushPromises();
+
+      const generateButton = wrapper
+        .findAll("button")
+        .find((button) => button.text().includes("generate token"));
+      await generateButton?.trigger("click");
+
+      expect(wrapper.html()).not.toContain("tokens:write");
+
+      const restrictCheckbox = findCheckboxByLabelText(
+        wrapper,
+        "Restrict to specific scopes",
+      );
+      await restrictCheckbox?.setValue(true);
+
+      expect(wrapper.html()).toContain("tokens:write");
+    });
+
+    it("disables generate when scopes are restricted but none are selected", async () => {
+      const SetTokens = (
+        await import("../../app/components/settings/SetTokens.vue")
+      ).default;
+      const wrapper = mount(SetTokens, globalConfig);
+      await flushPromises();
+
+      const generateButton = wrapper
+        .findAll("button")
+        .find((button) => button.text().includes("generate token"));
+      await generateButton?.trigger("click");
+      await wrapper.find("input.input").setValue("scoped-token");
+
+      const restrictCheckbox = findCheckboxByLabelText(
+        wrapper,
+        "Restrict to specific scopes",
+      );
+      await restrictCheckbox?.setValue(true);
+
+      const confirmButton = wrapper
+        .findAll("button")
+        .find(
+          (button) =>
+            button.text() === "generate" || button.text() === "generating…",
+        );
+      await confirmButton?.trigger("click");
+      await flushPromises();
+
+      expect(mockMintToken).not.toHaveBeenCalled();
+    });
+
+    it("calls mintToken with the selected scopes", async () => {
+      const SetTokens = (
+        await import("../../app/components/settings/SetTokens.vue")
+      ).default;
+      const wrapper = mount(SetTokens, globalConfig);
+      await flushPromises();
+
+      const generateButton = wrapper
+        .findAll("button")
+        .find((button) => button.text().includes("generate token"));
+      await generateButton?.trigger("click");
+      await wrapper.find("input.input").setValue("scoped-token");
+
+      const restrictCheckbox = findCheckboxByLabelText(
+        wrapper,
+        "Restrict to specific scopes",
+      );
+      await restrictCheckbox?.setValue(true);
+
+      const recordsReadCheckbox = findCheckboxByLabelText(
+        wrapper,
+        "records:read",
+      );
+      await recordsReadCheckbox?.setValue(true);
+
+      const confirmButton = wrapper
+        .findAll("button")
+        .find(
+          (button) =>
+            button.text() === "generate" || button.text() === "generating…",
+        );
+      await confirmButton?.trigger("click");
+      await flushPromises();
+
+      expect(mockMintToken).toHaveBeenCalledWith(
+        "scoped-token",
+        DEFAULT_TOKEN_EXPIRY_DAYS,
+        ["records:read"],
+      );
+    });
+
+    it("calls mintToken with undefined scopes when full access (the default) is left unchanged", async () => {
+      const SetTokens = (
+        await import("../../app/components/settings/SetTokens.vue")
+      ).default;
+      const wrapper = mount(SetTokens, globalConfig);
+      await flushPromises();
+
+      const generateButton = wrapper
+        .findAll("button")
+        .find((button) => button.text().includes("generate token"));
+      await generateButton?.trigger("click");
+      await wrapper.find("input.input").setValue("full-access-token");
+
+      const confirmButton = wrapper
+        .findAll("button")
+        .find(
+          (button) =>
+            button.text() === "generate" || button.text() === "generating…",
+        );
+      await confirmButton?.trigger("click");
+      await flushPromises();
+
+      expect(mockMintToken).toHaveBeenCalledWith(
+        "full-access-token",
+        DEFAULT_TOKEN_EXPIRY_DAYS,
+        undefined,
+      );
+    });
+
+    it("resets the scope selection when the generate form is cancelled and reopened", async () => {
+      const SetTokens = (
+        await import("../../app/components/settings/SetTokens.vue")
+      ).default;
+      const wrapper = mount(SetTokens, globalConfig);
+      await flushPromises();
+
+      const findGenerateButton = () =>
+        wrapper
+          .findAll("button")
+          .find((button) => button.text().includes("generate token"));
+      const findCancelButton = () =>
+        wrapper
+          .findAll("button")
+          .find((button) => button.text().includes("cancel"));
+
+      await findGenerateButton()?.trigger("click");
+      const restrictCheckbox = findCheckboxByLabelText(
+        wrapper,
+        "Restrict to specific scopes",
+      );
+      await restrictCheckbox?.setValue(true);
+      await findCancelButton()?.trigger("click");
+
+      await findGenerateButton()?.trigger("click");
+
+      const reopenedRestrictCheckbox = findCheckboxByLabelText(
+        wrapper,
+        "Restrict to specific scopes",
+      )?.element as HTMLInputElement;
+      expect(reopenedRestrictCheckbox.checked).toBe(false);
+    });
   });
 });

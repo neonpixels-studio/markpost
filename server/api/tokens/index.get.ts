@@ -3,7 +3,8 @@ import { getDb } from "../../db";
 import { apiTokens } from "../../db/schema";
 import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler } from "../../utils/errors";
-import { parseScopes, type ScopeName } from "../../utils/protectedResource";
+import { parseScopes } from "../../utils/protectedResource";
+import type { ScopeName } from "#shared/utils/scopes";
 import type { ApiResponse } from "../../types/api.types";
 
 type TokenListItem = {
