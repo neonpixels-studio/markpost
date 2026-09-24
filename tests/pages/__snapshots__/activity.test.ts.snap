@@ -6,9 +6,13 @@ exports[`activity page > matches snapshot in empty state 1`] = `
     <!--v-if-->
     <div style="margin-bottom: 18px;" data-testid="retention-notice">
       <div class="app-alert" data-tone="info">Activity older than 90 days is automatically removed. Export your log to keep a copy.</div>
+    </div>
+    <div class="row between wrap gap-3" style="margin-bottom: 18px;" data-testid="activity-filters">
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">ok</button><button class="seg-option" role="radio" aria-checked="false">dim</button><button class="seg-option" role="radio" aria-checked="false">warn</button><button class="seg-option" role="radio" aria-checked="false">err</button></div>
+      <!--v-if-->
     </div><!-- loading state -->
     <!-- empty state -->
-    <div class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px; text-align: center;"><span name="fileText" size="32"></span><span style="font-size: 15px; font-weight: 500; color: var(--ink-2);">No activity yet</span><span class="mono" style="font-size: 13px;"> Events will appear here once sources start delivering records. </span></div>
+    <div class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px; text-align: center;"><span name="fileText" size="32"></span><span style="font-size: 15px; font-weight: 500; color: var(--ink-2);">No activity yet</span><span class="mono" style="font-size: 13px;">Events will appear here once sources start delivering records.</span></div>
   </div>
 </div>"
 `;
@@ -18,7 +22,10 @@ exports[`activity page > matches snapshot in error state 1`] = `
   <div style="padding: 22px 26px 40px; max-width: 920px;">
     <!--v-if-->
     <!--v-if-->
-    <!-- loading state -->
+    <div class="row between wrap gap-3" style="margin-bottom: 18px;" data-testid="activity-filters">
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">ok</button><button class="seg-option" role="radio" aria-checked="false">dim</button><button class="seg-option" role="radio" aria-checked="false">warn</button><button class="seg-option" role="radio" aria-checked="false">err</button></div>
+      <!--v-if-->
+    </div><!-- loading state -->
     <!-- error state -->
     <div class="app-alert" data-tone="err">Failed to load activity. Please try again.</div>
   </div>
@@ -30,28 +37,60 @@ exports[`activity page > matches snapshot in loading state 1`] = `
   <div style="padding: 22px 26px 40px; max-width: 920px;">
     <!--v-if-->
     <!--v-if-->
-    <!-- loading state -->
+    <div class="row between wrap gap-3" style="margin-bottom: 18px;" data-testid="activity-filters">
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true" disabled="">all</button><button class="seg-option" role="radio" aria-checked="false" disabled="">ok</button><button class="seg-option" role="radio" aria-checked="false" disabled="">dim</button><button class="seg-option" role="radio" aria-checked="false" disabled="">warn</button><button class="seg-option" role="radio" aria-checked="false" disabled="">err</button></div>
+      <!--v-if-->
+    </div><!-- loading state -->
     <div class="col" style="align-items: center; padding: 60px 0px; color: var(--ink-3); gap: 12px;"><span name="refresh" size="24"></span><span class="mono" style="font-size: 13px;">loading activity…</span></div>
   </div>
 </div>"
 `;
 
-exports[`activity page > matches snapshot with events 1`] = `
+exports[`activity page > matches snapshot with events and a load-more control 1`] = `
 "<div active="activity" crumb="WORKSPACE / DAN'S VAULT" title="Activity"><button class="app-btn">export log</button>
   <div style="padding: 22px 26px 40px; max-width: 920px;">
     <!--v-if-->
     <div style="margin-bottom: 18px;" data-testid="retention-notice">
       <div class="app-alert" data-tone="info">Activity older than 90 days is automatically removed. Export your log to keep a copy.</div>
+    </div>
+    <div class="row between wrap gap-3" style="margin-bottom: 18px;" data-testid="activity-filters">
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">ok</button><button class="seg-option" role="radio" aria-checked="false">dim</button><button class="seg-option" role="radio" aria-checked="false">warn</button><button class="seg-option" role="radio" aria-checked="false">err</button></div>
+      <!--v-if-->
     </div><!-- loading state -->
-    <!-- log terminal -->
     <div class="term">
-      <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="t-title">markpost sync --watch</span><span class="grow"></span><span class="t-title" style="margin-left: auto;">live</span></div>
+      <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="t-title">markpost sync --watch</span><span class="grow"></span><span class="t-title" style="margin-left:auto;">live</span></div>
+      <div class="term-body" style="max-height: 420px; overflow-y: auto;">
+        <div style="display: flex; gap: 12px;"><span class="c-dim" style="flex-grow: 0; flex-shrink: 0; flex-basis: auto;">09:41:02</span><span class="c-ok">✓ webhook github:push → 99-incoming/deploy.md</span></div>
+        <div style="display: flex; gap: 12px;"><span class="c-dim" style="flex-grow: 0; flex-shrink: 0; flex-basis: auto;">07:48:30</span><span class="" style="color: var(--err);">✗ conflict: file exists, skipped</span></div>
+        <div style="display: flex; gap: 12px; margin-top: 6px;"><span class="pr">$</span><span style="border-left-width: var(--accent); border-left-style: var(--accent); border-left-color: var(--accent);">&nbsp;</span></div>
+      </div>
+    </div><button class="app-btn app-load-more">load more</button>
+  </div>
+</div>"
+`;
+
+exports[`activity page > matches snapshot with the source filter visible 1`] = `
+"<div active="activity" crumb="WORKSPACE / DAN'S VAULT" title="Activity"><button class="app-btn">export log</button>
+  <div style="padding: 22px 26px 40px; max-width: 920px;">
+    <!--v-if-->
+    <div style="margin-bottom: 18px;" data-testid="retention-notice">
+      <div class="app-alert" data-tone="info">Activity older than 90 days is automatically removed. Export your log to keep a copy.</div>
+    </div>
+    <div class="row between wrap gap-3" style="margin-bottom: 18px;" data-testid="activity-filters">
+      <div class="seg" role="radiogroup"><button class="seg-option on" role="radio" aria-checked="true">all</button><button class="seg-option" role="radio" aria-checked="false">ok</button><button class="seg-option" role="radio" aria-checked="false">dim</button><button class="seg-option" role="radio" aria-checked="false">warn</button><button class="seg-option" role="radio" aria-checked="false">err</button></div><select class="input-select" style="max-width: 220px;" value="all">
+        <option value="all">all sources</option>
+        <option value="source-1">Prod deploys</option>
+      </select>
+    </div><!-- loading state -->
+    <div class="term">
+      <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="t-title">markpost sync --watch</span><span class="grow"></span><span class="t-title" style="margin-left:auto;">live</span></div>
       <div class="term-body" style="max-height: 420px; overflow-y: auto;">
         <div style="display: flex; gap: 12px;"><span class="c-dim" style="flex-grow: 0; flex-shrink: 0; flex-basis: auto;">09:41:02</span><span class="c-ok">✓ webhook github:push → 99-incoming/deploy.md</span></div>
         <div style="display: flex; gap: 12px;"><span class="c-dim" style="flex-grow: 0; flex-shrink: 0; flex-basis: auto;">07:48:30</span><span class="" style="color: var(--err);">✗ conflict: file exists, skipped</span></div>
         <div style="display: flex; gap: 12px; margin-top: 6px;"><span class="pr">$</span><span style="border-left-width: var(--accent); border-left-style: var(--accent); border-left-color: var(--accent);">&nbsp;</span></div>
       </div>
     </div>
+    <!--v-if-->
   </div>
 </div>"
 `;

@@ -1,0 +1,18 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ActivityFilters > matches snapshot with no sources 1`] = `
+"<div class="row between wrap gap-3" style="margin-bottom: 18px;" data-testid="activity-filters">
+  <div class="seg" role="radiogroup"><button class="on" type="button" role="radio" aria-checked="true">all</button><button class="" type="button" role="radio" aria-checked="false">ok</button><button class="" type="button" role="radio" aria-checked="false">dim</button><button class="" type="button" role="radio" aria-checked="false">warn</button><button class="" type="button" role="radio" aria-checked="false">err</button></div>
+  <!--v-if-->
+</div>"
+`;
+
+exports[`ActivityFilters > matches snapshot with sources loaded 1`] = `
+"<div class="row between wrap gap-3" style="margin-bottom: 18px;" data-testid="activity-filters">
+  <div class="seg" role="radiogroup"><button class="on" type="button" role="radio" aria-checked="true">all</button><button class="" type="button" role="radio" aria-checked="false">ok</button><button class="" type="button" role="radio" aria-checked="false">dim</button><button class="" type="button" role="radio" aria-checked="false">warn</button><button class="" type="button" role="radio" aria-checked="false">err</button></div>
+  <appfield req="false" opt="false" state="" style="max-width: 220px;"><select class="select" value="all">
+      <option value="all">all sources</option>
+      <option value="source-1">Prod deploys</option>
+    </select></appfield>
+</div>"
+`;

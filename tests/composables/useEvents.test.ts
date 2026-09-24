@@ -15,17 +15,21 @@ import {
   eventToLogRow,
   triggerExportDownload,
   useEvents,
+  buildEventsFetchUrl,
+  EVENT_KIND_FILTER_OPTIONS,
+  EVENT_SOURCE_FILTER_ALL,
   type EventResource,
 } from "../../app/composables/useEvents";
 
 function makeEvent(
   overrides: Partial<EventResource["attributes"]> = {},
 ): EventResource {
+  const id = overrides.id ?? "evt-1";
   return {
     type: "events",
-    id: "evt-1",
+    id,
     attributes: {
-      id: "evt-1",
+      id,
       userId: "user-1",
       ts: "2026-06-27T09:41:02.000Z",
       kind: "ok",
@@ -34,7 +38,7 @@ function makeEvent(
       sourceId: null,
       ...overrides,
     },
-    links: { self: "/api/events/evt-1" },
+    links: { self: `/api/events/${id}` },
   };
 }
 
@@ -90,16 +94,59 @@ describe("triggerExportDownload", () => {
   });
 });
 
+describe("EVENT_KIND_FILTER_OPTIONS", () => {
+  it("includes 'all' plus every event kind", () => {
+    expect(EVENT_KIND_FILTER_OPTIONS.map((option) => option.value)).toEqual([
+      "all",
+      "ok",
+      "dim",
+      "warn",
+      "err",
+    ]);
+  });
+});
+
+describe("buildEventsFetchUrl", () => {
+  it("returns the bare endpoint with no filters or cursor", () => {
+    expect(buildEventsFetchUrl("all", EVENT_SOURCE_FILTER_ALL)).toBe(
+      "/api/events",
+    );
+  });
+
+  it("adds filter[kind] when a kind filter is active", () => {
+    expect(buildEventsFetchUrl("err", EVENT_SOURCE_FILTER_ALL)).toBe(
+      "/api/events?filter%5Bkind%5D=err",
+    );
+  });
+
+  it("adds filter[sourceId] when a source filter is active", () => {
+    expect(buildEventsFetchUrl("all", "source-uuid-1")).toBe(
+      "/api/events?filter%5BsourceId%5D=source-uuid-1",
+    );
+  });
+
+  it("combines both filters and a page[after] cursor", () => {
+    const url = buildEventsFetchUrl("err", "source-uuid-1", "evt-1");
+    expect(url).toBe(
+      "/api/events?filter%5Bkind%5D=err&filter%5BsourceId%5D=source-uuid-1&page%5Bafter%5D=evt-1",
+    );
+  });
+});
+
 describe("useEvents", () => {
   beforeEach(() => {
     mockFetch.mockReset();
   });
 
-  it("starts with empty events and isLoading true", () => {
-    const { events, isLoading, loadError } = useEvents();
+  it("starts with empty events, isLoading true, and no active filters", () => {
+    const { events, isLoading, loadError, hasMore, kindFilter, sourceFilter } =
+      useEvents();
     expect(events.value).toEqual([]);
     expect(isLoading.value).toBe(true);
     expect(loadError.value).toBeNull();
+    expect(hasMore.value).toBe(false);
+    expect(kindFilter.value).toBe("all");
+    expect(sourceFilter.value).toBe(EVENT_SOURCE_FILTER_ALL);
   });
 
   it("sets isLoading during fetch", async () => {
@@ -121,15 +168,17 @@ describe("useEvents", () => {
     expect(isLoading.value).toBe(false);
   });
 
-  it("populates events from fetch response", async () => {
+  it("fetches a single page and does not loop over further pages", async () => {
     const event = makeEvent();
-    mockFetch.mockResolvedValue({ data: [event] });
+    mockFetch.mockResolvedValue({ data: [event], meta: { hasMore: true } });
 
-    const { events, loadEvents } = useEvents();
+    const { events, hasMore, loadEvents } = useEvents();
     await loadEvents();
 
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith("/api/events");
     expect(events.value).toHaveLength(1);
-    expect(events.value[0].id).toBe("evt-1");
+    expect(hasMore.value).toBe(true);
   });
 
   it("derives log rows from events", async () => {
@@ -174,58 +223,120 @@ describe("useEvents", () => {
 
     expect(events.value).toEqual([]);
     expect(log.value).toEqual([]);
+    expect(events.value).toHaveLength(0);
   });
 
-  it("stops fetching when links.next is null", async () => {
-    const event = makeEvent();
-    mockFetch.mockResolvedValue({ data: [event], links: { next: null } });
+  it("hasMore is false when meta.hasMore is absent", async () => {
+    mockFetch.mockResolvedValue({ data: [makeEvent()] });
 
-    const { events, loadEvents } = useEvents();
+    const { hasMore, loadEvents } = useEvents();
     await loadEvents();
 
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(events.value).toHaveLength(1);
+    expect(hasMore.value).toBe(false);
   });
 
-  it("breaks out of a cyclic links.next instead of looping forever", async () => {
-    const event = makeEvent();
-    mockFetch.mockResolvedValue({
-      data: [event],
-      links: { next: "/api/events" },
-    });
-
-    const { events, loadEvents } = useEvents();
-    await loadEvents();
-
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(events.value).toHaveLength(1);
-  });
-
-  it("follows pagination links.next to load all pages", async () => {
-    const eventPage1 = makeEvent();
-    const eventPage2: EventResource = {
-      ...makeEvent(),
-      id: "evt-2",
-      attributes: { ...makeEvent().attributes, id: "evt-2" },
-      links: { self: "/api/events/evt-2" },
-    };
-
-    mockFetch
-      .mockResolvedValueOnce({
-        data: [eventPage1],
-        links: { next: "/api/events?page[after]=evt-1" },
-      })
-      .mockResolvedValueOnce({
-        data: [eventPage2],
-        links: { next: null },
+  describe("loadMore", () => {
+    it("does nothing when hasMore is false", async () => {
+      mockFetch.mockResolvedValue({
+        data: [makeEvent()],
+        meta: { hasMore: false },
       });
 
-    const { events, loadEvents } = useEvents();
-    await loadEvents();
+      const { loadEvents, loadMore, events } = useEvents();
+      await loadEvents();
+      mockFetch.mockClear();
 
-    expect(events.value).toHaveLength(2);
-    expect(events.value[0].id).toBe("evt-1");
-    expect(events.value[1].id).toBe("evt-2");
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+      await loadMore();
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(events.value).toHaveLength(1);
+    });
+
+    it("fetches the next page using page[after] set to the last loaded event's id and appends", async () => {
+      const eventPage1 = makeEvent({ id: "evt-1" });
+      const eventPage2 = makeEvent({ id: "evt-2" });
+
+      mockFetch
+        .mockResolvedValueOnce({ data: [eventPage1], meta: { hasMore: true } })
+        .mockResolvedValueOnce({
+          data: [eventPage2],
+          meta: { hasMore: false },
+        });
+
+      const { events, hasMore, loadEvents, loadMore } = useEvents();
+      await loadEvents();
+      await loadMore();
+
+      expect(mockFetch).toHaveBeenNthCalledWith(1, "/api/events");
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        "/api/events?page%5Bafter%5D=evt-1",
+      );
+      expect(events.value).toHaveLength(2);
+      expect(events.value[0].id).toBe("evt-1");
+      expect(events.value[1].id).toBe("evt-2");
+      expect(hasMore.value).toBe(false);
+    });
+
+    it("is a no-op when there are no events loaded yet", async () => {
+      const { loadMore, events } = useEvents();
+      await loadMore();
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(events.value).toEqual([]);
+    });
+
+    it("sets a distinct loadError message on failure", async () => {
+      mockFetch
+        .mockResolvedValueOnce({ data: [makeEvent()], meta: { hasMore: true } })
+        .mockRejectedValueOnce(new Error("network error"));
+
+      const { loadEvents, loadMore, loadError } = useEvents();
+      await loadEvents();
+      await loadMore();
+
+      expect(loadError.value).toBe(
+        "Failed to load more activity. Please try again.",
+      );
+    });
+  });
+
+  describe("filters", () => {
+    it("applies kindFilter to the request and resets pagination", async () => {
+      mockFetch.mockResolvedValue({
+        data: [makeEvent()],
+        meta: { hasMore: true },
+      });
+
+      const { loadEvents, kindFilter, events } = useEvents();
+      await loadEvents();
+      mockFetch.mockClear();
+      mockFetch.mockResolvedValue({ data: [makeEvent({ id: "evt-2" })] });
+
+      kindFilter.value = "err";
+      await vi.waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledWith(
+          "/api/events?filter%5Bkind%5D=err",
+        );
+      });
+
+      // The filter change replaced the page rather than appending to it.
+      expect(events.value).toHaveLength(1);
+      expect(events.value[0].id).toBe("evt-2");
+    });
+
+    it("applies sourceFilter to the request", async () => {
+      mockFetch.mockResolvedValue({ data: [] });
+
+      const { loadEvents, sourceFilter } = useEvents();
+      await loadEvents();
+      mockFetch.mockClear();
+
+      sourceFilter.value = "source-uuid-1";
+      await vi.waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledWith(
+          "/api/events?filter%5BsourceId%5D=source-uuid-1",
+        );
+      });
+    });
   });
 });

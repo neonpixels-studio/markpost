@@ -36,6 +36,13 @@
         </AppAlert>
       </div>
 
+      <ActivityFilters
+        v-model:kind-filter="kindFilter"
+        v-model:source-filter="sourceFilter"
+        :sources="sources"
+        :disabled="isLoading"
+      />
+
       <!-- loading state -->
       <div
         v-if="isLoading"
@@ -74,64 +81,34 @@
         "
       >
         <AppIcon name="fileText" :size="32" />
-        <span style="font-size: 15px; font-weight: 500; color: var(--ink-2)"
-          >No activity yet</span
-        >
+        <span style="font-size: 15px; font-weight: 500; color: var(--ink-2)">{{
+          emptyStateTitle
+        }}</span>
         <span class="mono" style="font-size: 13px">
-          Events will appear here once sources start delivering records.
+          {{ emptyStateHint }}
         </span>
       </div>
 
-      <!-- log terminal -->
-      <div v-else class="term">
-        <div class="term-bar">
-          <span class="dots"><i /><i /><i /></span>
-          <span class="t-title">markpost sync --watch</span>
-          <span class="grow" />
-          <span class="t-title" style="margin-left: auto">live</span>
-        </div>
-        <div class="term-body" style="max-height: 420px; overflow-y: auto">
-          <div
-            v-for="([time, kind, message], index) in log"
-            :key="index"
-            style="display: flex; gap: 12px"
-          >
-            <span class="c-dim" style="flex: none">{{ time }}</span>
-            <span
-              :class="
-                kind === 'ok'
-                  ? 'c-ok'
-                  : kind === 'dim'
-                    ? 'c-dim'
-                    : kind === 'warn'
-                      ? 'c-warn'
-                      : ''
-              "
-              :style="kind === 'err' ? { color: 'var(--err)' } : {}"
-            >
-              {{
-                kind === "err"
-                  ? "✗ "
-                  : kind === "warn"
-                    ? "! "
-                    : kind === "ok"
-                      ? "✓ "
-                      : "  "
-              }}{{ message }}
-            </span>
-          </div>
-          <div style="display: flex; gap: 12px; margin-top: 6px">
-            <span class="pr">$</span>
-            <span style="border-left: 7px solid var(--accent)">&nbsp;</span>
-          </div>
-        </div>
-      </div>
+      <template v-else>
+        <ActivityLogTerminal :log="log" />
+
+        <AppLoadMore
+          v-if="hasMore"
+          :is-loading="isLoadingMore"
+          @load="loadMore"
+        />
+      </template>
     </div>
   </TheAppShell>
 </template>
 
 <script setup lang="ts">
-import { useEvents, triggerExportDownload } from "~/composables/useEvents";
+import {
+  useEvents,
+  triggerExportDownload,
+  EVENT_SOURCE_FILTER_ALL,
+} from "~/composables/useEvents";
+import { useSources } from "~/composables/useSources";
 import { useExportNotice } from "~/composables/useExportNotice";
 import {
   RETENTION_NOTICE_TITLE,
@@ -145,7 +122,35 @@ useHead({ title: "Activity" });
 const retentionTitle = RETENTION_NOTICE_TITLE;
 const retentionMessage = retentionNoticeMessage();
 
-const { log, isLoading, loadError, loadEvents } = useEvents();
+const {
+  log,
+  isLoading,
+  isLoadingMore,
+  loadError,
+  hasMore,
+  kindFilter,
+  sourceFilter,
+  loadEvents,
+  loadMore,
+} = useEvents();
+
+const { sources, loadSources } = useSources();
+
+const hasActiveFilter = computed(
+  () =>
+    kindFilter.value !== "all" ||
+    sourceFilter.value !== EVENT_SOURCE_FILTER_ALL,
+);
+
+const emptyStateTitle = computed(() =>
+  hasActiveFilter.value ? "No matching activity" : "No activity yet",
+);
+
+const emptyStateHint = computed(() =>
+  hasActiveFilter.value
+    ? "Try a different filter."
+    : "Events will appear here once sources start delivering records.",
+);
 
 const {
   notice: exportNotice,
@@ -153,5 +158,7 @@ const {
   run: exportLog,
 } = useExportNotice(triggerExportDownload);
 
-onMounted(loadEvents);
+onMounted(async () => {
+  await Promise.all([loadEvents(), loadSources()]);
+});
 </script>

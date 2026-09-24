@@ -16,12 +16,15 @@
 </template>
 
 <script setup lang="ts">
-type Option = string | { value: string; label: string };
+import {
+  normalizeSelectOptions,
+  type SelectOption,
+} from "../utils/selectOptions";
 
 const props = withDefaults(
   defineProps<{
     modelValue: string;
-    options: readonly Option[];
+    options: readonly SelectOption[];
     disabled?: boolean;
   }>(),
   {
@@ -33,12 +36,5 @@ const emit = defineEmits<{
   "update:modelValue": [value: string];
 }>();
 
-const normalizedOptions = computed(() =>
-  props.options.map((option) => {
-    if (typeof option === "string") {
-      return { value: option, label: option };
-    }
-    return option;
-  }),
-);
+const normalizedOptions = computed(() => normalizeSelectOptions(props.options));
 </script>
