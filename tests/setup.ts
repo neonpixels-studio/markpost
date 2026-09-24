@@ -26,10 +26,14 @@ import { useApiTokens } from "../app/composables/useApiTokens";
 // in the test process captureException/captureMessage are harmless no-ops
 // today, but that's incidental, not guaranteed — mock the module globally so
 // the suite never depends on that, and no test accidentally makes a real
-// Sentry call. Tests that need to assert reportError's Sentry wiring (see
+// Sentry call. Spreads the real module first so any other export server code
+// starts using later (setUser, startSpan, etc.) still resolves to the real
+// thing instead of `undefined` in every test file that transitively imports
+// it. Tests that need to assert reportError's Sentry wiring (see
 // tests/server/utils/errorReporting.test.ts) declare their own more specific
 // vi.mock for this module, which takes precedence in that file.
-vi.mock("@sentry/nuxt", () => ({
+vi.mock("@sentry/nuxt", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@sentry/nuxt")>()),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
 }));

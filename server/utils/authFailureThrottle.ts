@@ -267,16 +267,23 @@ export async function reserveAuthAttempt(
 // not surfaced) rather than turning a refund hiccup into a user-visible
 // error for a request that already succeeded.
 export async function refundAuthAttempt(ipAddress: string): Promise<void> {
+  // Computed inside the try (not hoisted above it) so a hash failure is
+  // covered by the same never-throw guarantee as the DB write below — see the
+  // comment on this function.
+  let ipHash: string | undefined;
+
   try {
+    ipHash = hashIp(ipAddress);
     const database = getDb();
     await database
       .update(authFailureThrottle)
       .set({ count: sql`GREATEST(${authFailureThrottle.count} - 1, 0)` })
-      .where(eq(authFailureThrottle.ipHash, hashIp(ipAddress)));
+      .where(eq(authFailureThrottle.ipHash, ipHash));
   } catch (error) {
     reportError(
       "[authFailureThrottle] failed to refund a successful auth attempt",
       error,
+      ipHash ? { ipHash } : undefined,
     );
   }
 }

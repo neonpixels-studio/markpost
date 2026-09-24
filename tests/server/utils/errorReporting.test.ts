@@ -36,7 +36,7 @@ describe("reportError", () => {
     );
   });
 
-  it("sends the error to Sentry, tagged by the report site", () => {
+  it("sends the error to Sentry, tagged and fingerprinted by the report site", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const error = new Error("database exploded");
 
@@ -45,6 +45,7 @@ describe("reportError", () => {
     expect(captureExceptionMock).toHaveBeenCalledOnce();
     expect(captureExceptionMock).toHaveBeenCalledWith(error, {
       tags: { reportSite: "[test] something failed" },
+      fingerprint: ["{{ default }}", "[test] something failed"],
       extra: undefined,
     });
   });
@@ -55,16 +56,17 @@ describe("reportError", () => {
 
     reportError("[test] something failed", error, { userId: "user_abc" });
 
-    expect(captureExceptionMock).toHaveBeenCalledWith(error, {
-      tags: { reportSite: "[test] something failed" },
-      extra: { userId: "user_abc" },
-    });
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      error,
+      expect.objectContaining({ extra: { userId: "user_abc" } }),
+    );
   });
 
-  it("tags two different call sites distinctly, even when they share an underlying error", () => {
-    // Sentry otherwise groups by exception type + stack alone, which would
-    // collapse two unrelated best-effort failures raising the same
-    // underlying DB error into a single issue.
+  it("fingerprints two different call sites distinctly, even when they share an underlying error", () => {
+    // Sentry groups by exception type + stack trace by default, which would
+    // otherwise collapse two unrelated best-effort failures raising the same
+    // underlying DB error into a single issue — the fingerprint (not the tag)
+    // is what actually keeps them apart.
     vi.spyOn(console, "error").mockImplementation(() => {});
     const sharedError = new Error("connection timeout");
 
@@ -76,14 +78,20 @@ describe("reportError", () => {
       1,
       sharedError,
       expect.objectContaining({
-        tags: { reportSite: "[hooks/ingest] failed to update source stats:" },
+        fingerprint: [
+          "{{ default }}",
+          "[hooks/ingest] failed to update source stats:",
+        ],
       }),
     );
     expect(captureExceptionMock).toHaveBeenNthCalledWith(
       2,
       sharedError,
       expect.objectContaining({
-        tags: { reportSite: "[hooks/ingest] failed to write ping event:" },
+        fingerprint: [
+          "{{ default }}",
+          "[hooks/ingest] failed to write ping event:",
+        ],
       }),
     );
   });
@@ -99,6 +107,25 @@ describe("reportError", () => {
         tags: { reportSite: "[test] something failed" },
       }),
     );
+  });
+
+  it("never throws when the Sentry SDK call itself fails", () => {
+    // Every call site wraps a best-effort operation specifically so a
+    // reporting failure can't turn a handled/swallowed error into an
+    // unhandled one — see the comment on captureSafely in errorReporting.ts.
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    captureExceptionMock.mockImplementation(() => {
+      throw new Error("Sentry SDK not initialized");
+    });
+
+    expect(() =>
+      reportError("[test] something failed", new Error("boom")),
+    ).not.toThrow();
+
+    // Both the original failure and the reporting failure are still logged.
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -132,8 +159,27 @@ describe("reportErrorCondition", () => {
 
     expect(captureMessageMock).toHaveBeenCalledWith(
       "[test] missing required field",
-      { level: "error", extra: { userId: "u1" } },
+      {
+        level: "error",
+        fingerprint: ["{{ default }}", "[test] missing required field"],
+        extra: { userId: "u1" },
+      },
     );
     expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("never throws when the Sentry SDK call itself fails", () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    captureMessageMock.mockImplementation(() => {
+      throw new Error("Sentry SDK not initialized");
+    });
+
+    expect(() =>
+      reportErrorCondition("[test] missing required field"),
+    ).not.toThrow();
+
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(2);
   });
 });

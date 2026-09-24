@@ -45,7 +45,11 @@ export async function resolveSourceTypes(
   } catch (error) {
     reportError("[sourceType] failed to resolve source types", error, {
       userId,
-      sourceIds: uniqueSourceIds,
+      sourceIdCount: uniqueSourceIds.length,
+      // Bounded sample, not the full list — a bulk request's source list is
+      // caller-controlled and Sentry truncates oversized `extra` payloads,
+      // which would otherwise cost the rest of the event's context.
+      sourceIdSample: uniqueSourceIds.slice(0, 10),
     });
     return new Map();
   }

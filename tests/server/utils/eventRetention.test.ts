@@ -10,9 +10,14 @@ import {
 
 const selectMock = vi.fn();
 const deleteMock = vi.fn();
+const reportErrorMock = vi.fn();
 
 vi.mock("../../../server/db", () => ({
   getDb: () => ({ select: selectMock, delete: deleteMock }),
+}));
+
+vi.mock("../../../server/utils/errorReporting", () => ({
+  reportError: (...args: unknown[]) => reportErrorMock(...args),
 }));
 
 // Stub the query-builder operators so the test can assert exactly which column
@@ -54,6 +59,7 @@ function stubDelete(rowCount: number) {
 beforeEach(() => {
   selectMock.mockReset();
   deleteMock.mockReset();
+  reportErrorMock.mockReset();
 });
 
 afterEach(() => {
@@ -146,17 +152,22 @@ describe("maybePruneEventsForUser", () => {
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
-  it("swallows and logs prune failures so the triggering write is never broken", async () => {
+  it("swallows and reports prune failures so the triggering write is never broken", async () => {
     vi.spyOn(Math, "random").mockReturnValue(EVENT_PRUNE_PROBABILITY / 2);
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     selectMock.mockImplementation(() => {
       throw new Error("db down");
     });
 
     await expect(maybePruneEventsForUser(userId)).resolves.toBeUndefined();
-    expect(errorSpy).toHaveBeenCalledWith(
+
+    // The static message (not interpolated with userId — see the comment on
+    // this call site) is what reportError tags/fingerprints Sentry events by;
+    // userId must still reach it, just via `extra`, or this failure becomes
+    // unattributable to a tenant.
+    expect(reportErrorMock).toHaveBeenCalledWith(
       "[eventRetention] failed to prune events for user:",
       expect.any(Error),
+      { userId },
     );
   });
 });

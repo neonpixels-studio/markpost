@@ -349,7 +349,7 @@ async function applyStatsBump(
   // recordCount, so this is safe either way) — a served 202 should never leave
   // the hit timestamp stale for longer than the debounce window.
   const claimed = await claimStatsBump(recordUuid).catch((claimError) => {
-    logStatsError(claimError);
+    logStatsError(sourceId, claimError);
     return false;
   });
 
@@ -779,12 +779,16 @@ function okEventInput(
   };
 }
 
-function logStatsError(updateError: unknown): void {
-  reportError("[hooks/ingest] failed to update source stats:", updateError);
+function logStatsError(sourceId: string, updateError: unknown): void {
+  reportError("[hooks/ingest] failed to update source stats:", updateError, {
+    sourceId,
+  });
 }
 
-function logPingEventError(writeError: unknown): void {
-  reportError("[hooks/ingest] failed to write ping event:", writeError);
+function logPingEventError(sourceId: string, writeError: unknown): void {
+  reportError("[hooks/ingest] failed to write ping event:", writeError, {
+    sourceId,
+  });
 }
 
 // The two best-effort side effects for a discarded GitHub ping: refresh
@@ -795,13 +799,15 @@ function logPingEventError(writeError: unknown): void {
 // neither failure may turn this discard's 2xx into a 500.
 async function discardGithubPing(source: SourceRow): Promise<void> {
   await Promise.allSettled([
-    touchLastHitAt(source.uuid).catch(logStatsError),
+    touchLastHitAt(source.uuid).catch((updateError) =>
+      logStatsError(source.uuid, updateError),
+    ),
     writeEvent({
       userId: source.userId,
       kind: EVENT_KIND_DIM,
       message: PING_DISCARDED_MESSAGE,
       sourceId: source.uuid,
-    }).catch(logPingEventError),
+    }).catch((writeError) => logPingEventError(source.uuid, writeError)),
   ]);
 }
 
@@ -830,7 +836,7 @@ async function writeIngestSideEffects(
 ): Promise<void> {
   await Promise.allSettled([
     applyStatsBump(source.uuid, record.uuid, source.lastHitAt).catch(
-      logStatsError,
+      (updateError) => logStatsError(source.uuid, updateError),
     ),
     writeOkEvent(okEventInput(source, record)).catch((writeError) =>
       recordIngestEventFailure(source, record, writeError),
