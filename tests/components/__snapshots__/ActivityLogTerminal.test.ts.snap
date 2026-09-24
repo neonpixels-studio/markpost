@@ -1,0 +1,14 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ActivityLogTerminal > matches snapshot 1`] = `
+"<div class="term">
+  <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="t-title">markpost sync --watch</span><span class="grow"></span><span class="t-title" style="margin-left:auto;">live</span></div>
+  <div class="term-body" style="max-height: 420px; overflow-y: auto;">
+    <div style="display: flex; gap: 12px;"><span class="c-dim" style="flex-grow: 0; flex-shrink: 0; flex-basis: auto;">09:41:02</span><span class="c-ok">✓ webhook github:push → 99-incoming/deploy.md</span></div>
+    <div style="display: flex; gap: 12px;"><span class="c-dim" style="flex-grow: 0; flex-shrink: 0; flex-basis: auto;">09:42:11</span><span class="c-dim">  no-op: nothing changed</span></div>
+    <div style="display: flex; gap: 12px;"><span class="c-dim" style="flex-grow: 0; flex-shrink: 0; flex-basis: auto;">09:43:05</span><span class="c-warn">! retrying delivery</span></div>
+    <div style="display: flex; gap: 12px;"><span class="c-dim" style="flex-grow: 0; flex-shrink: 0; flex-basis: auto;">07:48:30</span><span class="" style="color: var(--err);">✗ conflict: file exists, skipped</span></div>
+    <div style="display: flex; gap: 12px; margin-top: 6px;"><span class="pr">$</span><span style="border-left-width: var(--accent); border-left-style: var(--accent); border-left-color: var(--accent);">&nbsp;</span></div>
+  </div>
+</div>"
+`;
