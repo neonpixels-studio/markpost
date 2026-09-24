@@ -51,7 +51,7 @@ type PatchRecordBody = ApiRequest & {
 
 type RecordUpdatePayload = {
   status?: string;
-  syncedAt?: Date;
+  syncedAt?: Date | null;
   filePath?: string | null;
   errorMessage?: string | null;
   title?: string;
@@ -172,16 +172,14 @@ function validateAttributes(attributes: PatchRecordAttributes): void {
   }
 }
 
-// Deliberately database-only: editing title/content does not touch
-// filePath, status, or syncedAt. filePath is derived from the pre-edit
-// title at creation time (server/utils/markdown.ts's buildFilename) and is
-// left as-is here, and an already-synced record stays "synced" — a title or
-// content fix does not re-queue the record for the CLI's next sync pass, so
-// the file already written to the vault keeps its pre-edit name and body
-// until some other event (a manual retry, a future re-sync feature) touches
-// it. Re-deriving filePath and resetting status/syncedAt on every edit is a
-// larger, separate decision (collision handling, whether every edit should
-// force a re-sync) tracked as a follow-up rather than guessed at here.
+// filePath is deliberately left untouched by an edit, even now that a
+// title/content change can re-queue the record (see withResyncOnEdit below):
+// the CLI (markpost-cli's writeMarkdown) derives the on-disk filename fresh
+// from the *current* title on every sync pass and never reads this column to
+// decide where to write — it's a display/export value only (see the export
+// endpoint and `markpost export`). Re-deriving it here would just relabel a
+// value the CLI ignores, while regenerating it could also collide with
+// another record's stored filePath for no behavioral gain.
 function buildUpdatePayload(
   attributes: PatchRecordAttributes,
 ): RecordUpdatePayload {
@@ -235,6 +233,27 @@ function logRecordEdit(
 
 type Database = ReturnType<typeof getDb>;
 
+type RecordSyncState = {
+  status: string;
+  syncedAt: Date | null;
+} | null;
+
+// Shared by isNoOpSyncedUpdate and withResyncOnEdit below — both need to know
+// this record's current status/syncedAt before deciding how to touch either
+// one, and there's exactly one row to look it up from.
+async function fetchRecordSyncState(
+  db: Database,
+  userId: string,
+  recordUuid: string,
+): Promise<RecordSyncState> {
+  const [existing] = await db
+    .select({ status: records.status, syncedAt: records.syncedAt })
+    .from(records)
+    .where(and(eq(records.userId, userId), eq(records.uuid, recordUuid)));
+
+  return existing ?? null;
+}
+
 // A move to "synced" is a true no-op only when the record is already
 // "synced" *and* already has a real syncedAt (mirrors resolveNoOpSyncedUuids
 // in index.patch.ts, the bulk endpoint). Status alone would wrongly skip
@@ -246,12 +265,46 @@ async function isNoOpSyncedUpdate(
   userId: string,
   recordUuid: string,
 ): Promise<boolean> {
-  const [existing] = await db
-    .select({ status: records.status, syncedAt: records.syncedAt })
-    .from(records)
-    .where(and(eq(records.userId, userId), eq(records.uuid, recordUuid)));
+  const existing = await fetchRecordSyncState(db, userId, recordUuid);
 
   return existing?.status === SYNCED_STATUS && existing?.syncedAt != null;
+}
+
+// A title/content edit on a record the CLI already synced leaves that
+// record's on-disk file stale (pre-edit name and body) until something
+// re-queues it — this is that something (markpost#306). Scoped narrowly:
+// - Only fires on a title/content edit; a status/filePath/errorMessage-only
+//   ("metadata-only") update never touches the file the CLI writes, so it
+//   must not re-queue.
+// - Only fires when the client isn't already setting status itself — an
+//   explicit status in the same request is the caller's own intent and wins
+//   over this inference.
+// - Only fires when the record's *current* status is "synced". A "pending"
+//   record is already queued (the next sync pass reads this same row's
+//   fresh title/content), and an "error" record has its own explicit retry
+//   path rather than being silently re-queued as a side effect of fixing a
+//   typo.
+// filePath is intentionally left alone here (see buildUpdatePayload above).
+async function withResyncOnEdit(
+  db: Database,
+  userId: string,
+  recordUuid: string,
+  payload: RecordUpdatePayload,
+): Promise<RecordUpdatePayload> {
+  const isEditingTitleOrContent =
+    payload.title !== undefined || payload.content !== undefined;
+
+  if (!isEditingTitleOrContent || payload.status !== undefined) {
+    return payload;
+  }
+
+  const existing = await fetchRecordSyncState(db, userId, recordUuid);
+
+  if (existing?.status !== SYNCED_STATUS) {
+    return payload;
+  }
+
+  return { ...payload, status: "pending", syncedAt: null };
 }
 
 // Stamps syncedAt with the current time when the update moves the record to
@@ -326,11 +379,18 @@ export default defineEventHandler(async (event): Promise<RecordApiResponse> => {
       throw emptyUpdateError();
     }
 
-    const payloadWithSyncedAt = await withServerDerivedSyncedAt(
+    const payloadWithResync = await withResyncOnEdit(
       getDb(),
       userId,
       recordUuid,
       payload,
+    );
+
+    const payloadWithSyncedAt = await withServerDerivedSyncedAt(
+      getDb(),
+      userId,
+      recordUuid,
+      payloadWithResync,
     );
 
     const updated = await updateUserRecord(
