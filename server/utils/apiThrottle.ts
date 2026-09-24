@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { users } from "../db/schema";
 import { throwUnauthorized } from "./errors";
+import { reportError } from "./errorReporting";
 import {
   buildWindowResetSet,
   evaluateThrottleCounter,
@@ -61,10 +62,9 @@ async function recordHitAndFetchCounter(
 
     return row ? { status: "ok", counter: row } : { status: "not-found" };
   } catch (error) {
-    console.error(
-      "[apiThrottle] failed to record authenticated API hit",
-      error,
-    );
+    reportError("[apiThrottle] failed to record authenticated API hit", error, {
+      userId,
+    });
     return { status: "error" };
   }
 }

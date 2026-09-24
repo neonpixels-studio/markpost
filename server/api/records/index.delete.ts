@@ -3,6 +3,7 @@ import { getDb } from "../../db";
 import { records } from "../../db/schema";
 import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
+import { reportError } from "../../utils/errorReporting";
 import { apiValidate } from "../../utils/validate";
 import { isValidUuid } from "../../utils/uuid";
 import type { ApiRequest } from "../../types/api.types";
@@ -96,7 +97,9 @@ export default defineEventHandler(
           kind: "dim",
           message: `Deleted ${deletedCount} record${deletedCount === 1 ? "" : "s"}`,
         }).catch((writeError) => {
-          console.error("[records/delete] failed to write event:", writeError);
+          reportError("[records/delete] failed to write event:", writeError, {
+            deletedCount,
+          });
         });
       }
 

@@ -9,6 +9,7 @@ import {
   windowExpiredCondition,
   type ThrottleResult,
 } from "./fixedWindowThrottle";
+import { reportError } from "./errorReporting";
 
 // reserveAuthAttempt spends one unit of budget on *every* mp_live_ attempt,
 // not just failed ones (see the comment on reserveAuthAttempt below for why
@@ -171,7 +172,7 @@ async function pruneExpiredRows(): Promise<void> {
         ),
       );
   } catch (error) {
-    console.error("[authFailureThrottle] failed to prune expired rows", error);
+    reportError("[authFailureThrottle] failed to prune expired rows", error);
   }
 }
 
@@ -221,9 +222,10 @@ async function reserveAndFetchCounter(
 
     return row ?? null;
   } catch (error) {
-    console.error(
+    reportError(
       "[authFailureThrottle] failed to reserve an auth attempt",
       error,
+      { ipHash },
     );
     return null;
   }
@@ -265,16 +267,19 @@ export async function reserveAuthAttempt(
 // not surfaced) rather than turning a refund hiccup into a user-visible
 // error for a request that already succeeded.
 export async function refundAuthAttempt(ipAddress: string): Promise<void> {
+  const ipHash = hashIp(ipAddress);
+
   try {
     const database = getDb();
     await database
       .update(authFailureThrottle)
       .set({ count: sql`GREATEST(${authFailureThrottle.count} - 1, 0)` })
-      .where(eq(authFailureThrottle.ipHash, hashIp(ipAddress)));
+      .where(eq(authFailureThrottle.ipHash, ipHash));
   } catch (error) {
-    console.error(
+    reportError(
       "[authFailureThrottle] failed to refund a successful auth attempt",
       error,
+      { ipHash },
     );
   }
 }

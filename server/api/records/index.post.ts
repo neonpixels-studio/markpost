@@ -9,6 +9,7 @@ import {
 import type { ApiRequest } from "../../types/api.types";
 import { requireScope, requireUser } from "../../utils/auth";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
+import { reportError } from "../../utils/errorReporting";
 import {
   parseWebhookPayload,
   parseEmailPayload,
@@ -459,7 +460,9 @@ async function writeRecordCreatedEvent(
     recordUuid: record.uuid,
     sourceId: record.sourceId ?? null,
   }).catch((writeError) => {
-    console.error("[records/create] failed to write event:", writeError);
+    reportError("[records/create] failed to write event:", writeError, {
+      recordUuid: record.uuid,
+    });
   });
 }
 

@@ -1,5 +1,6 @@
 import Stripe from "stripe";
 import { TRIAL_PERIOD_DAYS } from "../utils/billing";
+import { reportError } from "../utils/errorReporting";
 
 const STRIPE_SECRET_KEY_ENV = "STRIPE_SECRET_KEY";
 
@@ -403,9 +404,10 @@ async function isScheduleNoLongerSweepable(
     if (isResourceMissingError(error)) {
       return true;
     }
-    console.error(
+    reportError(
       "[stripe] could not re-read schedule to classify a refused cancel",
-      { scheduleId, error },
+      error,
+      { scheduleId },
     );
     return false;
   }
@@ -512,9 +514,8 @@ async function attemptCancel(
     const canceledCount = await cancelIfBillable(gateway, subscription);
     return { canceledCount, failedSubscriptionIds: [] };
   } catch (error) {
-    console.error("[stripe] cancel failed; continuing sweep", {
+    reportError("[stripe] cancel failed; continuing sweep", error, {
       subscriptionId: subscription.id,
-      error,
     });
     return { canceledCount: 0, failedSubscriptionIds: [subscription.id] };
   }
@@ -670,9 +671,8 @@ async function attemptCancelSchedule(
       failedScheduleIds: [],
     };
   } catch (error) {
-    console.error("[stripe] schedule cancel failed; continuing sweep", {
+    reportError("[stripe] schedule cancel failed; continuing sweep", error, {
       scheduleId: schedule.id,
-      error,
     });
     return { canceledScheduleCount: 0, failedScheduleIds: [schedule.id] };
   }

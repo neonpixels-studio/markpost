@@ -4,6 +4,7 @@ import { records, type RecordStatus } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
 import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
+import { reportError } from "../../utils/errorReporting";
 import { recordSerializer, type RecordApiResponse } from "../../utils/response";
 import { isValidUuid } from "../../utils/uuid";
 import { isFilePathUniqueViolation } from "../../utils/filePathCollision";
@@ -229,7 +230,9 @@ function logRecordEdit(
     recordUuid,
     message: `Edited record "${title}"`,
   }).catch((writeError) => {
-    console.error("[records/:uuid/patch] failed to write event:", writeError);
+    reportError("[records/:uuid/patch] failed to write event:", writeError, {
+      recordUuid,
+    });
   });
 }
 

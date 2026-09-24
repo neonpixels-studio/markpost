@@ -3,6 +3,7 @@ import type { H3Event } from "h3";
 import { getDb } from "../../db";
 import { records, sources, userSettings } from "../../db/schema";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
+import { reportError } from "../../utils/errorReporting";
 import { applyFieldMapping } from "../../utils/fieldMapper";
 import { parseWebhookPayload, type UserSettings } from "../../utils/markdown";
 import {
@@ -424,8 +425,10 @@ async function markRecordHealed(recordUuid: string): Promise<void> {
   }
 }
 
-function logHealError(healError: unknown): void {
-  console.error("[hooks/ingest] failed to heal record status:", healError);
+function logHealError(recordUuid: string, healError: unknown): void {
+  reportError("[hooks/ingest] failed to heal record status:", healError, {
+    recordUuid,
+  });
 }
 
 function toErrorMessage(error: unknown): string {
@@ -727,7 +730,10 @@ async function recordIngestEventFailure(
   record: { uuid: string; title: string },
   writeError: unknown,
 ): Promise<void> {
-  console.error("[hooks/ingest] failed to write event:", writeError);
+  reportError("[hooks/ingest] failed to write event:", writeError, {
+    sourceId: source.uuid,
+    recordUuid: record.uuid,
+  });
 
   // Prefixed once and reused for both writes below, so the record's
   // errorMessage and the err event's message always agree AND the record
@@ -740,7 +746,10 @@ async function recordIngestEventFailure(
   await Promise.all([
     markRecordError(record.uuid, confirmationErrorMessage).catch(
       (markError) => {
-        console.error("[hooks/ingest] failed to mark record error:", markError);
+        reportError("[hooks/ingest] failed to mark record error:", markError, {
+          sourceId: source.uuid,
+          recordUuid: record.uuid,
+        });
       },
     ),
     // Deduped by record so a provider that retries a persistently-failing
@@ -771,11 +780,11 @@ function okEventInput(
 }
 
 function logStatsError(updateError: unknown): void {
-  console.error("[hooks/ingest] failed to update source stats:", updateError);
+  reportError("[hooks/ingest] failed to update source stats:", updateError);
 }
 
 function logPingEventError(writeError: unknown): void {
-  console.error("[hooks/ingest] failed to write ping event:", writeError);
+  reportError("[hooks/ingest] failed to write ping event:", writeError);
 }
 
 // The two best-effort side effects for a discarded GitHub ping: refresh
@@ -876,7 +885,9 @@ async function writeOkEventAndHeal(
     return;
   }
 
-  await markRecordHealed(input.recordUuid).catch(logHealError);
+  await markRecordHealed(input.recordUuid).catch((healError) =>
+    logHealError(input.recordUuid, healError),
+  );
 }
 
 // Plain writeEventOncePerRecord, discarding its outcome, for a dedup-path

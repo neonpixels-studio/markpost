@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { getDb } from "../db";
 import { sources } from "../db/schema";
+import { reportError } from "./errorReporting";
 
 type Database = ReturnType<typeof getDb>;
 
@@ -42,10 +43,9 @@ export async function resolveSourceTypes(
 
     return new Map(rows.map((row) => [row.uuid, row.type]));
   } catch (error) {
-    console.error("[sourceType] failed to resolve source types", {
+    reportError("[sourceType] failed to resolve source types", error, {
       userId,
       sourceIds: uniqueSourceIds,
-      error,
     });
     return new Map();
   }

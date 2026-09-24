@@ -9,6 +9,7 @@ import {
 import { findUserStripeCustomerId } from "../utils/users";
 import { deleteClerkUser } from "../utils/clerk";
 import { ApiError } from "../utils/errors";
+import { reportError } from "../utils/errorReporting";
 
 export type ReconcileAccountDeletionOptions = {
   // The in-app DELETE path still has a live Clerk identity to remove; the Clerk
@@ -131,7 +132,7 @@ function logNothingToSweep(userId: string, hasSubscriptionRow: boolean): void {
     return;
   }
 
-  console.error(
+  reportError(
     "[account] subscription row missing Stripe customer id; nothing to sweep",
     { userId },
   );
