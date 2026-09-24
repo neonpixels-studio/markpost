@@ -1,4 +1,5 @@
 import type { ApiError as ApiErrorObject } from "../types/api.types";
+import { reportError } from "./errorReporting";
 
 const UNAUTHORIZED_STATUS = 401;
 const FORBIDDEN_STATUS = 403;
@@ -118,7 +119,7 @@ export function apiErrorHandler(error: unknown): never {
     throw error;
   }
 
-  console.error("[apiErrorHandler] Unexpected error:", error);
+  reportError("[apiErrorHandler] Unexpected error:", error);
 
   throw createError({
     statusCode: 500,

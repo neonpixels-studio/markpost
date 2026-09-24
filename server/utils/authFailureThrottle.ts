@@ -9,6 +9,7 @@ import {
   windowExpiredCondition,
   type ThrottleResult,
 } from "./fixedWindowThrottle";
+import { reportError } from "./errorReporting";
 
 // reserveAuthAttempt spends one unit of budget on *every* mp_live_ attempt,
 // not just failed ones (see the comment on reserveAuthAttempt below for why
@@ -171,7 +172,7 @@ async function pruneExpiredRows(): Promise<void> {
         ),
       );
   } catch (error) {
-    console.error("[authFailureThrottle] failed to prune expired rows", error);
+    reportError("[authFailureThrottle] failed to prune expired rows", error);
   }
 }
 
@@ -221,7 +222,11 @@ async function reserveAndFetchCounter(
 
     return row ?? null;
   } catch (error) {
-    console.error(
+    // Not passing ipHash as context: without AUTH_THROTTLE_IP_PEPPER set (see
+    // the module-load warning above), this hash is reversible to the raw IP
+    // by brute force, and this project does not enable Sentry's
+    // sendDefaultPii — shipping it to a third party would defeat that.
+    reportError(
       "[authFailureThrottle] failed to reserve an auth attempt",
       error,
     );
@@ -266,13 +271,18 @@ export async function reserveAuthAttempt(
 // error for a request that already succeeded.
 export async function refundAuthAttempt(ipAddress: string): Promise<void> {
   try {
+    // hashIp is called here, inside the try, so a hash failure is covered by
+    // the same never-throw guarantee as the DB write below — see the comment
+    // on this function.
     const database = getDb();
     await database
       .update(authFailureThrottle)
       .set({ count: sql`GREATEST(${authFailureThrottle.count} - 1, 0)` })
       .where(eq(authFailureThrottle.ipHash, hashIp(ipAddress)));
   } catch (error) {
-    console.error(
+    // Not passing an ipHash as context — see the comment in
+    // reserveAndFetchCounter's catch above.
+    reportError(
       "[authFailureThrottle] failed to refund a successful auth attempt",
       error,
     );

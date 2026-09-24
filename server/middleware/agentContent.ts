@@ -14,6 +14,7 @@ import {
   buildProtectedResourceMetadata,
 } from "../utils/protectedResource";
 import { buildAppUrl } from "../utils/appUrl";
+import { reportError } from "../utils/errorReporting";
 
 // Resolve the configured app URL, or null when it cannot be resolved, so an
 // agent route degrades instead of throwing a 500 on a misconfigured deploy. The
@@ -23,7 +24,7 @@ function resolveConfiguredAppUrl(): string | null {
   try {
     return buildAppUrl();
   } catch (error) {
-    console.error("[agentContent] app URL unresolved", error);
+    reportError("[agentContent] app URL unresolved", error);
     return null;
   }
 }

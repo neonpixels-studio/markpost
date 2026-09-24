@@ -13,9 +13,16 @@ const mockCreateError = vi.fn((options: object) => {
   return error;
 });
 
+const reportErrorMock = vi.fn();
+
+vi.mock("../../../server/utils/errorReporting", () => ({
+  reportError: (...args: unknown[]) => reportErrorMock(...args),
+}));
+
 beforeEach(() => {
   vi.stubGlobal("createError", mockCreateError);
   mockCreateError.mockClear();
+  reportErrorMock.mockClear();
 });
 
 afterEach(() => {
@@ -136,25 +143,28 @@ describe("apiErrorHandler", () => {
   });
 
   it("logs and throws a generic 500 createError for unknown errors", () => {
-    const consoleErrorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+    const error = new Error("database exploded");
 
-    expect(() => apiErrorHandler(new Error("database exploded"))).toThrow();
+    expect(() => apiErrorHandler(error)).toThrow();
     expect(mockCreateError).toHaveBeenCalledWith({
       statusCode: 500,
       statusMessage: "Internal Server Error",
     });
-    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(reportErrorMock).toHaveBeenCalledOnce();
+  });
 
-    consoleErrorSpy.mockRestore();
+  it("reports the unexpected error to Sentry via the shared error-reporting helper", () => {
+    const error = new Error("database exploded");
+
+    expect(() => apiErrorHandler(error)).toThrow();
+
+    expect(reportErrorMock).toHaveBeenCalledWith(
+      "[apiErrorHandler] Unexpected error:",
+      error,
+    );
   });
 
   it("re-throws pre-formed HTTP errors untouched instead of masking them as a 500", () => {
-    const consoleErrorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
-
     const httpError = Object.assign(new Error("Unauthorized"), {
       statusCode: 401,
       statusMessage: "Unauthorized",
@@ -169,9 +179,7 @@ describe("apiErrorHandler", () => {
 
     expect(thrown).toBe(httpError);
     expect(mockCreateError).not.toHaveBeenCalled();
-    expect(consoleErrorSpy).not.toHaveBeenCalled();
-
-    consoleErrorSpy.mockRestore();
+    expect(reportErrorMock).not.toHaveBeenCalled();
   });
 
   it("handles non-Error unknown values for the 500 fallback", () => {

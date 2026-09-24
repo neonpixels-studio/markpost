@@ -1,4 +1,5 @@
 import { getDb } from "../db";
+import { reportError } from "./errorReporting";
 import {
   events,
   EVENT_KINDS,
@@ -178,7 +179,11 @@ export async function writeEventOncePerRecord(
 
   const inserted = await insertEventRow(input, validatedKind).catch(
     (insertError) => {
-      console.error(describeInsertFailure(insertError), insertError);
+      reportError(describeInsertFailure(insertError), insertError, {
+        userId: input.userId,
+        recordUuid: input.recordUuid,
+        kind: validatedKind,
+      });
       return null;
     },
   );

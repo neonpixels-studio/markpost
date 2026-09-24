@@ -1,8 +1,14 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { getDb } from "../db";
 import { sources } from "../db/schema";
+import { reportError } from "./errorReporting";
 
 type Database = ReturnType<typeof getDb>;
+
+// Caps how many source ids ride along on a Sentry report — a bulk request's
+// source list is caller-controlled, and Sentry truncates oversized `extra`
+// payloads, which would otherwise cost the rest of the event's context.
+const REPORTED_SOURCE_ID_SAMPLE_SIZE = 10;
 
 // The read endpoints (list/show) resolve `sourceType` by joining `sources`
 // directly into their SELECT. The write endpoints (create/patch/bulk-patch)
@@ -42,10 +48,10 @@ export async function resolveSourceTypes(
 
     return new Map(rows.map((row) => [row.uuid, row.type]));
   } catch (error) {
-    console.error("[sourceType] failed to resolve source types", {
+    reportError("[sourceType] failed to resolve source types", error, {
       userId,
-      sourceIds: uniqueSourceIds,
-      error,
+      sourceIdCount: uniqueSourceIds.length,
+      sourceIdSample: uniqueSourceIds.slice(0, REPORTED_SOURCE_ID_SAMPLE_SIZE),
     });
     return new Map();
   }

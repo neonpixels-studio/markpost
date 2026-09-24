@@ -4,6 +4,7 @@ import { records, type RecordStatus } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
 import { requireScope, requireUser } from "../../utils/auth";
 import { ApiError, apiErrorHandler } from "../../utils/errors";
+import { reportError } from "../../utils/errorReporting";
 import {
   recordSerializer,
   type RecordListApiResponse,
@@ -313,7 +314,9 @@ function logBulkUpdate(userId: string, updatedCount: number): void {
     kind: "dim",
     message: `Updated ${updatedCount} record${updatedCount === 1 ? "" : "s"}`,
   }).catch((writeError) => {
-    console.error("[records/patch] failed to write event:", writeError);
+    reportError("[records/patch] failed to write event:", writeError, {
+      updatedCount,
+    });
   });
 }
 

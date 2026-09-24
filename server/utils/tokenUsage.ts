@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { apiTokens } from "../db/schema";
+import { reportError } from "./errorReporting";
 
 // Every API-token-authenticated request would otherwise UPDATE the token row to
 // refresh lastUsedAt, so a CLI polling or syncing in a loop generates one write
@@ -42,6 +43,6 @@ export async function refreshTokenLastUsedAt(
       .set({ lastUsedAt: now })
       .where(eq(apiTokens.id, tokenId));
   } catch (error) {
-    console.error("[auth] failed to update lastUsedAt", error);
+    reportError("[auth] failed to update lastUsedAt", error, { tokenId });
   }
 }

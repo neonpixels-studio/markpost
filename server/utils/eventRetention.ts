@@ -2,6 +2,7 @@ import { and, eq, inArray, lt } from "drizzle-orm";
 import { getDb } from "../db";
 import { events } from "../db/schema";
 import { EVENT_RETENTION_DAYS } from "#shared/utils/retention";
+import { reportError } from "./errorReporting";
 
 // The events table is the highest-write table in the app (one row per webhook
 // ingest, record create, and bulk delete) and has no natural upper bound, so
@@ -68,9 +69,16 @@ export async function maybePruneEventsForUser(userId: string): Promise<void> {
   }
 
   const pruned = await pruneEventsForUser(userId).catch((pruneError) => {
-    console.error(
-      `[eventRetention] failed to prune events for user ${userId}:`,
+    // Static message, userId only in `extra` — reportError tags Sentry events
+    // by this exact message string (see errorReporting.ts) so interpolating
+    // userId in here would fragment one call site into one Sentry tag value
+    // per user instead of grouping them.
+    reportError(
+      "[eventRetention] failed to prune events for user:",
       pruneError,
+      {
+        userId,
+      },
     );
     return 0;
   });

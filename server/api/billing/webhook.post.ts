@@ -11,6 +11,7 @@ import {
   extractSubscriptionData,
 } from "../../services/stripe";
 import { setUserStripeCustomerId } from "../../utils/users";
+import { reportErrorCondition } from "../../utils/errorReporting";
 
 const STRIPE_WEBHOOK_SECRET_ENV = "STRIPE_WEBHOOK_SECRET";
 const STRIPE_SIGNATURE_HEADER = "stripe-signature";
@@ -109,7 +110,7 @@ async function handleCheckoutSessionCompleted(
     // createCheckoutSession always sets both client_reference_id and
     // metadata.userId, so neither being present means the checkout-creation code
     // regressed — log at error, not warn, so it surfaces.
-    console.error(
+    reportErrorCondition(
       "[billing/webhook] checkout session missing userId; skipping customer id persist",
       { sessionId: session.id },
     );
