@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import {
   computed,
   ref,
@@ -19,6 +20,19 @@ import {
 } from "vue";
 import { useSyncSettings } from "../app/composables/useSyncSettings";
 import { useApiTokens } from "../app/composables/useApiTokens";
+
+// server/utils/errorReporting.ts (and everything that imports it, which is
+// most of server/*) talks to the real @sentry/nuxt SDK. Without Sentry.init
+// in the test process captureException/captureMessage are harmless no-ops
+// today, but that's incidental, not guaranteed — mock the module globally so
+// the suite never depends on that, and no test accidentally makes a real
+// Sentry call. Tests that need to assert reportError's Sentry wiring (see
+// tests/server/utils/errorReporting.test.ts) declare their own more specific
+// vi.mock for this module, which takes precedence in that file.
+vi.mock("@sentry/nuxt", () => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
 
 Object.assign(globalThis, {
   computed,

@@ -6,7 +6,7 @@ import {
   type ClerkWebhookEvent,
 } from "../../services/clerkWebhook";
 import { apiErrorHandler, ApiError } from "../../utils/errors";
-import { reportError } from "../../utils/errorReporting";
+import { reportErrorCondition } from "../../utils/errorReporting";
 
 const USER_DELETED_EVENT = "user.deleted";
 
@@ -59,7 +59,7 @@ async function handleUserDeleted(
   // account's data/billing can't be cleaned up automatically. Log at error with
   // the delivery id so it can be traced and handled by hand.
   if (!userId) {
-    reportError(
+    reportErrorCondition(
       "[webhooks/clerk] user.deleted missing user id; cannot reconcile",
       { svixId },
     );

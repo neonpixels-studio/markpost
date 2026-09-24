@@ -155,7 +155,7 @@ describe("maybePruneEventsForUser", () => {
 
     await expect(maybePruneEventsForUser(userId)).resolves.toBeUndefined();
     expect(errorSpy).toHaveBeenCalledWith(
-      `[eventRetention] failed to prune events for user ${userId}:`,
+      "[eventRetention] failed to prune events for user:",
       expect.any(Error),
     );
   });

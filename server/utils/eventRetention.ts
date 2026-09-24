@@ -69,10 +69,16 @@ export async function maybePruneEventsForUser(userId: string): Promise<void> {
   }
 
   const pruned = await pruneEventsForUser(userId).catch((pruneError) => {
+    // Static message, userId only in `extra` — reportError tags Sentry events
+    // by this exact message string (see errorReporting.ts) so interpolating
+    // userId in here would fragment one call site into one Sentry tag value
+    // per user instead of grouping them.
     reportError(
-      `[eventRetention] failed to prune events for user ${userId}:`,
+      "[eventRetention] failed to prune events for user:",
       pruneError,
-      { userId },
+      {
+        userId,
+      },
     );
     return 0;
   });

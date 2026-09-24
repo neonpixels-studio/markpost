@@ -1,15 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { reportError } from "../../../server/utils/errorReporting";
+import {
+  reportError,
+  reportErrorCondition,
+} from "../../../server/utils/errorReporting";
 
 const captureExceptionMock = vi.fn();
+const captureMessageMock = vi.fn();
 
 vi.mock("@sentry/nuxt", () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...args),
+  captureMessage: (...args: unknown[]) => captureMessageMock(...args),
 }));
 
 describe("reportError", () => {
   beforeEach(() => {
     captureExceptionMock.mockClear();
+    captureMessageMock.mockClear();
   });
 
   afterEach(() => {
@@ -30,14 +36,17 @@ describe("reportError", () => {
     );
   });
 
-  it("sends the error to Sentry", () => {
+  it("sends the error to Sentry, tagged by the report site", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const error = new Error("database exploded");
 
     reportError("[test] something failed", error);
 
     expect(captureExceptionMock).toHaveBeenCalledOnce();
-    expect(captureExceptionMock).toHaveBeenCalledWith(error, undefined);
+    expect(captureExceptionMock).toHaveBeenCalledWith(error, {
+      tags: { reportSite: "[test] something failed" },
+      extra: undefined,
+    });
   });
 
   it("forwards extra context as Sentry extra data", () => {
@@ -47,8 +56,36 @@ describe("reportError", () => {
     reportError("[test] something failed", error, { userId: "user_abc" });
 
     expect(captureExceptionMock).toHaveBeenCalledWith(error, {
+      tags: { reportSite: "[test] something failed" },
       extra: { userId: "user_abc" },
     });
+  });
+
+  it("tags two different call sites distinctly, even when they share an underlying error", () => {
+    // Sentry otherwise groups by exception type + stack alone, which would
+    // collapse two unrelated best-effort failures raising the same
+    // underlying DB error into a single issue.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const sharedError = new Error("connection timeout");
+
+    reportError("[hooks/ingest] failed to update source stats:", sharedError);
+    reportError("[hooks/ingest] failed to write ping event:", sharedError);
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(2);
+    expect(captureExceptionMock).toHaveBeenNthCalledWith(
+      1,
+      sharedError,
+      expect.objectContaining({
+        tags: { reportSite: "[hooks/ingest] failed to update source stats:" },
+      }),
+    );
+    expect(captureExceptionMock).toHaveBeenNthCalledWith(
+      2,
+      sharedError,
+      expect.objectContaining({
+        tags: { reportSite: "[hooks/ingest] failed to write ping event:" },
+      }),
+    );
   });
 
   it("reports a non-Error thrown value", () => {
@@ -58,31 +95,45 @@ describe("reportError", () => {
 
     expect(captureExceptionMock).toHaveBeenCalledWith(
       "a plain string error",
-      undefined,
+      expect.objectContaining({
+        tags: { reportSite: "[test] something failed" },
+      }),
+    );
+  });
+});
+
+describe("reportErrorCondition", () => {
+  beforeEach(() => {
+    captureExceptionMock.mockClear();
+    captureMessageMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("logs the message and context to the console", () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    reportErrorCondition("[test] missing required field", { userId: "u1" });
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "[test] missing required field",
+      { userId: "u1" },
     );
   });
 
-  it("does not report the same error object to Sentry twice", () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const error = new Error("database exploded");
-
-    reportError("[funnel] unexpected error", error);
-    reportError("[inner] failed to write event", error);
-
-    // The inner, more specific catch site reported first — the funnel's later
-    // catch of the same error object must not produce a second Sentry event.
-    expect(captureExceptionMock).toHaveBeenCalledOnce();
-    // Both call sites still get their own console.error line — only the
-    // Sentry side is deduplicated.
-    expect(console.error).toHaveBeenCalledTimes(2);
-  });
-
-  it("reports two distinct error instances separately, even with the same message", () => {
+  it("sends a Sentry message event carrying the context, for a condition with no thrown exception", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    reportError("[test] something failed", new Error("boom"));
-    reportError("[test] something failed", new Error("boom"));
+    reportErrorCondition("[test] missing required field", { userId: "u1" });
 
-    expect(captureExceptionMock).toHaveBeenCalledTimes(2);
+    expect(captureMessageMock).toHaveBeenCalledWith(
+      "[test] missing required field",
+      { level: "error", extra: { userId: "u1" } },
+    );
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 });

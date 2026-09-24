@@ -267,19 +267,16 @@ export async function reserveAuthAttempt(
 // not surfaced) rather than turning a refund hiccup into a user-visible
 // error for a request that already succeeded.
 export async function refundAuthAttempt(ipAddress: string): Promise<void> {
-  const ipHash = hashIp(ipAddress);
-
   try {
     const database = getDb();
     await database
       .update(authFailureThrottle)
       .set({ count: sql`GREATEST(${authFailureThrottle.count} - 1, 0)` })
-      .where(eq(authFailureThrottle.ipHash, ipHash));
+      .where(eq(authFailureThrottle.ipHash, hashIp(ipAddress)));
   } catch (error) {
     reportError(
       "[authFailureThrottle] failed to refund a successful auth attempt",
       error,
-      { ipHash },
     );
   }
 }
