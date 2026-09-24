@@ -5,6 +5,11 @@ import { reportError } from "./errorReporting";
 
 type Database = ReturnType<typeof getDb>;
 
+// Caps how many source ids ride along on a Sentry report — a bulk request's
+// source list is caller-controlled, and Sentry truncates oversized `extra`
+// payloads, which would otherwise cost the rest of the event's context.
+const REPORTED_SOURCE_ID_SAMPLE_SIZE = 10;
+
 // The read endpoints (list/show) resolve `sourceType` by joining `sources`
 // directly into their SELECT. The write endpoints (create/patch/bulk-patch)
 // only have an `insert`/`update` `.returning()` — a plain records row with no
@@ -46,10 +51,7 @@ export async function resolveSourceTypes(
     reportError("[sourceType] failed to resolve source types", error, {
       userId,
       sourceIdCount: uniqueSourceIds.length,
-      // Bounded sample, not the full list — a bulk request's source list is
-      // caller-controlled and Sentry truncates oversized `extra` payloads,
-      // which would otherwise cost the rest of the event's context.
-      sourceIdSample: uniqueSourceIds.slice(0, 10),
+      sourceIdSample: uniqueSourceIds.slice(0, REPORTED_SOURCE_ID_SAMPLE_SIZE),
     });
     return new Map();
   }

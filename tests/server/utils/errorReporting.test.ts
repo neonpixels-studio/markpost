@@ -14,8 +14,8 @@ vi.mock("@sentry/nuxt", () => ({
 
 describe("reportError", () => {
   beforeEach(() => {
-    captureExceptionMock.mockClear();
-    captureMessageMock.mockClear();
+    captureExceptionMock.mockReset();
+    captureMessageMock.mockReset();
   });
 
   afterEach(() => {
@@ -131,8 +131,8 @@ describe("reportError", () => {
 
 describe("reportErrorCondition", () => {
   beforeEach(() => {
-    captureExceptionMock.mockClear();
-    captureMessageMock.mockClear();
+    captureExceptionMock.mockReset();
+    captureMessageMock.mockReset();
   });
 
   afterEach(() => {
@@ -152,6 +152,19 @@ describe("reportErrorCondition", () => {
     );
   });
 
+  it("logs only the message, with no trailing undefined, when called without context", () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    reportErrorCondition("[test] missing required field");
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "[test] missing required field",
+    );
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("sends a Sentry message event carrying the context, for a condition with no thrown exception", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -161,6 +174,7 @@ describe("reportErrorCondition", () => {
       "[test] missing required field",
       {
         level: "error",
+        tags: { reportSite: "[test] missing required field" },
         fingerprint: ["{{ default }}", "[test] missing required field"],
         extra: { userId: "u1" },
       },

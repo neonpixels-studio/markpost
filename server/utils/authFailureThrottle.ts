@@ -222,10 +222,13 @@ async function reserveAndFetchCounter(
 
     return row ?? null;
   } catch (error) {
+    // Not passing ipHash as context: without AUTH_THROTTLE_IP_PEPPER set (see
+    // the module-load warning above), this hash is reversible to the raw IP
+    // by brute force, and this project does not enable Sentry's
+    // sendDefaultPii — shipping it to a third party would defeat that.
     reportError(
       "[authFailureThrottle] failed to reserve an auth attempt",
       error,
-      { ipHash },
     );
     return null;
   }
@@ -267,23 +270,21 @@ export async function reserveAuthAttempt(
 // not surfaced) rather than turning a refund hiccup into a user-visible
 // error for a request that already succeeded.
 export async function refundAuthAttempt(ipAddress: string): Promise<void> {
-  // Computed inside the try (not hoisted above it) so a hash failure is
-  // covered by the same never-throw guarantee as the DB write below — see the
-  // comment on this function.
-  let ipHash: string | undefined;
-
   try {
-    ipHash = hashIp(ipAddress);
+    // hashIp is called here, inside the try, so a hash failure is covered by
+    // the same never-throw guarantee as the DB write below — see the comment
+    // on this function.
     const database = getDb();
     await database
       .update(authFailureThrottle)
       .set({ count: sql`GREATEST(${authFailureThrottle.count} - 1, 0)` })
-      .where(eq(authFailureThrottle.ipHash, ipHash));
+      .where(eq(authFailureThrottle.ipHash, hashIp(ipAddress)));
   } catch (error) {
+    // Not passing an ipHash as context — see the comment in
+    // reserveAndFetchCounter's catch above.
     reportError(
       "[authFailureThrottle] failed to refund a successful auth attempt",
       error,
-      ipHash ? { ipHash } : undefined,
     );
   }
 }

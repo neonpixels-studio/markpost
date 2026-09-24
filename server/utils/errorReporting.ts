@@ -7,10 +7,23 @@ import * as Sentry from "@sentry/nuxt";
 // "[hooks/ingest] failed to update source stats" and "...failed to write
 // ping event") from collapsing into a single Sentry issue. The `reportSite`
 // tag is for filtering/searching in the Sentry UI once an issue is found;
-// the fingerprint below is what actually keeps distinct call sites as
-// distinct issues.
-function fingerprintFor(message: string): string[] {
-  return ["{{ default }}", message];
+// the fingerprint is what actually keeps distinct call sites as distinct
+// issues. Shared by reportError and reportErrorCondition so both tag and
+// fingerprint identically — this must not silently exist on only one of the
+// two entry points.
+function sentryCaptureContext(
+  message: string,
+  context: Record<string, unknown> | undefined,
+): {
+  tags: { reportSite: string };
+  fingerprint: string[];
+  extra: Record<string, unknown> | undefined;
+} {
+  return {
+    tags: { reportSite: message },
+    fingerprint: ["{{ default }}", message],
+    extra: context,
+  };
 }
 
 // This is a monitoring side effect, not the thing the caller actually cares
@@ -54,11 +67,7 @@ export function reportError(
   console.error(message, error);
 
   captureSafely(() => {
-    Sentry.captureException(error, {
-      tags: { reportSite: message },
-      fingerprint: fingerprintFor(message),
-      extra: context,
-    });
+    Sentry.captureException(error, sentryCaptureContext(message, context));
   });
 }
 
@@ -71,13 +80,16 @@ export function reportErrorCondition(
   message: string,
   context?: Record<string, unknown>,
 ): void {
-  console.error(message, context);
+  if (context) {
+    console.error(message, context);
+  } else {
+    console.error(message);
+  }
 
   captureSafely(() => {
     Sentry.captureMessage(message, {
       level: "error",
-      fingerprint: fingerprintFor(message),
-      extra: context,
+      ...sentryCaptureContext(message, context),
     });
   });
 }
