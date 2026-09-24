@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SCOPE_NAMES } from "../../../server/utils/protectedResource";
+import { SCOPE_NAMES } from "#shared/utils/scopes";
 import openApiTemplate from "../../../server/utils/openapi.template.json";
 import {
   buildLlmsTxt,

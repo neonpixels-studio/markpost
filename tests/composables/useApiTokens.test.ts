@@ -13,6 +13,7 @@ function makeTokenResource(overrides: Record<string, unknown> = {}) {
       createdAt: "2026-04-02T00:00:00.000Z",
       lastUsedAt: "2026-06-27T12:00:00.000Z",
       expiresAt: null,
+      scopes: null,
       ...overrides,
     },
   };
@@ -108,6 +109,24 @@ describe("useApiTokens", () => {
       expect(tokens.value[0].expiresAt).toBeNull();
     });
 
+    it("sets scopes to null (full access) when the field is null", async () => {
+      mockFetch.mockResolvedValueOnce(makeListResponse());
+      const { tokens, loadTokens } = useApiTokens();
+      await loadTokens();
+      expect(tokens.value[0].scopes).toBeNull();
+    });
+
+    it("passes through a scoped token's scope list", async () => {
+      mockFetch.mockResolvedValueOnce(
+        makeListResponse([
+          makeTokenResource({ scopes: ["records:read", "records:write"] }),
+        ]),
+      );
+      const { tokens, loadTokens } = useApiTokens();
+      await loadTokens();
+      expect(tokens.value[0].scopes).toEqual(["records:read", "records:write"]);
+    });
+
     it("sets loadError when the response carries an errors body", async () => {
       mockFetch.mockResolvedValueOnce(makeErrorResponse("DB unavailable."));
       const { loadError, loadTokens } = useApiTokens();
@@ -191,6 +210,46 @@ describe("useApiTokens", () => {
     });
 
     it("omits expiresInDays from the mint request body when not provided", async () => {
+      mockFetch
+        .mockResolvedValueOnce(makeMintResponse())
+        .mockResolvedValueOnce(makeListResponse());
+      const { mintToken } = useApiTokens();
+      await mintToken("new-token");
+
+      expect(mockFetch).toHaveBeenNthCalledWith(1, "/api/tokens", {
+        method: "POST",
+        body: {
+          data: {
+            type: "api_tokens",
+            attributes: { name: "new-token" },
+          },
+        },
+      });
+    });
+
+    it("passes scopes in the mint request body when provided", async () => {
+      mockFetch
+        .mockResolvedValueOnce(makeMintResponse())
+        .mockResolvedValueOnce(makeListResponse());
+      const { mintToken } = useApiTokens();
+      await mintToken("new-token", 30, ["records:read"]);
+
+      expect(mockFetch).toHaveBeenNthCalledWith(1, "/api/tokens", {
+        method: "POST",
+        body: {
+          data: {
+            type: "api_tokens",
+            attributes: {
+              name: "new-token",
+              expiresInDays: 30,
+              scopes: ["records:read"],
+            },
+          },
+        },
+      });
+    });
+
+    it("omits scopes from the mint request body when not provided (full access)", async () => {
       mockFetch
         .mockResolvedValueOnce(makeMintResponse())
         .mockResolvedValueOnce(makeListResponse());
