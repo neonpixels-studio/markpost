@@ -870,6 +870,142 @@ describe("PATCH /api/records/:uuid", () => {
       expect(selectMock).not.toHaveBeenCalled();
     });
 
+    // markpost#306: a title/content edit on a record the CLI already wrote to
+    // disk must re-queue it (status -> "pending", syncedAt -> null) so the
+    // next sync pass picks up the new title/content — otherwise the on-disk
+    // file keeps its pre-edit name and body indefinitely.
+    describe("re-sync on title/content edit (markpost#306)", () => {
+      it("resets status to pending and clears syncedAt when editing the title of a synced record", async () => {
+        mockGetRouterParam.mockReturnValue(validUuid);
+        mockReadBody.mockResolvedValue(buildBody({ title: "New title" }));
+        stubSelects([
+          [existingRecordRow("synced", new Date("2024-01-01T00:00:00Z"))],
+        ]);
+        const { set } = stubUpdateResult([
+          {
+            ...sampleRecord,
+            title: "New title",
+            status: "pending",
+            syncedAt: null,
+          },
+        ]);
+
+        const response = await handler(buildEvent(userId));
+
+        expect(set).toHaveBeenCalledWith({
+          title: "New title",
+          status: "pending",
+          syncedAt: null,
+        });
+        expect(response.data?.attributes.status).toBe("pending");
+      });
+
+      it("resets status to pending and clears syncedAt when editing the content of a synced record", async () => {
+        mockGetRouterParam.mockReturnValue(validUuid);
+        mockReadBody.mockResolvedValue(buildBody({ content: "New content" }));
+        stubSelects([
+          [existingRecordRow("synced", new Date("2024-01-01T00:00:00Z"))],
+        ]);
+        const { set } = stubUpdateResult([
+          {
+            ...sampleRecord,
+            content: "New content",
+            status: "pending",
+            syncedAt: null,
+          },
+        ]);
+
+        await handler(buildEvent(userId));
+
+        expect(set).toHaveBeenCalledWith({
+          content: "New content",
+          status: "pending",
+          syncedAt: null,
+        });
+      });
+
+      it("does not re-queue a title/content edit on a record that is already pending", async () => {
+        mockGetRouterParam.mockReturnValue(validUuid);
+        mockReadBody.mockResolvedValue(buildBody({ title: "New title" }));
+        stubSelects([[existingRecordRow("pending", null)]]);
+        const { set } = stubUpdateResult([
+          { ...sampleRecord, title: "New title", status: "pending" },
+        ]);
+
+        await handler(buildEvent(userId));
+
+        expect(set).toHaveBeenCalledWith({ title: "New title" });
+      });
+
+      it("does not re-queue a title/content edit on a record that is in error", async () => {
+        mockGetRouterParam.mockReturnValue(validUuid);
+        mockReadBody.mockResolvedValue(buildBody({ title: "New title" }));
+        stubSelects([
+          [existingRecordRow("error", new Date("2024-01-01T00:00:00Z"))],
+        ]);
+        const { set } = stubUpdateResult([
+          { ...sampleRecord, title: "New title", status: "error" },
+        ]);
+
+        await handler(buildEvent(userId));
+
+        expect(set).toHaveBeenCalledWith({ title: "New title" });
+      });
+
+      it("does not query for the current status on a metadata-only update (no title/content)", async () => {
+        mockGetRouterParam.mockReturnValue(validUuid);
+        mockReadBody.mockResolvedValue(buildBody({ errorMessage: "boom" }));
+        const { set } = stubUpdateResult([
+          { ...sampleRecord, errorMessage: "boom" },
+        ]);
+
+        await handler(buildEvent(userId));
+
+        expect(set).toHaveBeenCalledWith({ errorMessage: "boom" });
+        expect(selectMock).not.toHaveBeenCalled();
+      });
+
+      it("honors an explicit status sent alongside a title edit instead of auto-resetting it", async () => {
+        mockGetRouterParam.mockReturnValue(validUuid);
+        mockReadBody.mockResolvedValue(
+          buildBody({ title: "New title", status: "error" }),
+        );
+        const { set } = stubUpdateResult([
+          { ...sampleRecord, title: "New title", status: "error" },
+        ]);
+
+        await handler(buildEvent(userId));
+
+        expect(set).toHaveBeenCalledWith({
+          title: "New title",
+          status: "error",
+        });
+        expect(selectMock).not.toHaveBeenCalled();
+      });
+
+      it("leaves filePath untouched when re-queueing a synced record", async () => {
+        mockGetRouterParam.mockReturnValue(validUuid);
+        mockReadBody.mockResolvedValue(buildBody({ title: "New title" }));
+        stubSelects([
+          [existingRecordRow("synced", new Date("2024-01-01T00:00:00Z"))],
+        ]);
+        const { set } = stubUpdateResult([
+          {
+            ...sampleRecord,
+            title: "New title",
+            status: "pending",
+            syncedAt: null,
+          },
+        ]);
+
+        await handler(buildEvent(userId));
+
+        expect(set).toHaveBeenCalledWith(
+          expect.not.objectContaining({ filePath: expect.anything() }),
+        );
+      });
+    });
+
     it("throws 422 when a client sends a standalone syncedAt with no status change", async () => {
       mockGetRouterParam.mockReturnValue(validUuid);
       mockReadBody.mockResolvedValue(buildBody({ syncedAt: null }));
