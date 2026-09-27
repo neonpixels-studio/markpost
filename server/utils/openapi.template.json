@@ -171,6 +171,82 @@
           "422": { "$ref": "#/components/responses/ValidationError" }
         }
       },
+      "patch": {
+        "tags": ["Records"],
+        "summary": "Bulk-update records",
+        "description": "Updates up to 100 records in one call, each identified by `uuid`. Each item requires at least one of `status`, `filePath`, or `errorMessage`; `syncedAt` is never client-settable (422 rejects it) — it is stamped by the server when an item's `status` moves to `synced`, and skipped when the record is already synced with a `syncedAt` set. `uuid`s must be unique within the request. Items whose `uuid` does not resolve to a record owned by the caller are silently dropped from the response rather than erroring the whole batch.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "type": { "const": "records" },
+                      "attributes": {
+                        "type": "object",
+                        "required": ["records"],
+                        "properties": {
+                          "records": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 100,
+                            "items": {
+                              "type": "object",
+                              "required": ["uuid"],
+                              "properties": {
+                                "uuid": {
+                                  "type": "string",
+                                  "format": "uuid"
+                                },
+                                "status": {
+                                  "$ref": "#/components/schemas/RecordStatus"
+                                },
+                                "filePath": { "type": ["string", "null"] },
+                                "errorMessage": {
+                                  "type": ["string", "null"]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The records that were updated (dropped uuids are simply absent).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Record" }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": { "updated": { "type": "integer" } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      },
       "delete": {
         "tags": ["Records"],
         "summary": "Batch-delete records",
@@ -429,6 +505,17 @@
     },
     "/sources/{uuid}": {
       "parameters": [{ "$ref": "#/components/parameters/SourceUuid" }],
+      "get": {
+        "tags": ["Sources"],
+        "summary": "Get a source",
+        "description": "`providerSecret` is always null here (only revealed once, on create/rotate).",
+        "responses": {
+          "200": { "$ref": "#/components/responses/SingleSource" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
       "patch": {
         "tags": ["Sources"],
         "summary": "Update a source",
@@ -527,6 +614,59 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/sources/{uuid}/test": {
+      "parameters": [{ "$ref": "#/components/parameters/SourceUuid" }],
+      "post": {
+        "tags": ["Sources"],
+        "summary": "Send a test event to a source",
+        "description": "Only supported for sources that ingest via the JSON webhook path (422 otherwise). Runs a sample payload through the same signature-verification and field-mapping logic a real delivery would use, without creating a record. Provide `payload` to test against a shape matching this source's own field mapping; omit it to use the generic default sample. For github/stripe, the signature check signs the payload with this source's own stored secret and confirms this app's HMAC logic accepts it — it cannot confirm the provider itself has the same secret configured. For zapier/shortcuts, only a hash of the secret is stored, so the signature check reports `not_verifiable` rather than being re-derived.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "attributes": {
+                        "type": "object",
+                        "properties": {
+                          "payload": {
+                            "type": "object",
+                            "description": "A sample payload to run through this source's field mapping and (for github/stripe) signature check. Defaults to a generic sample when omitted."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The test result: signature check outcome and a preview of the parsed Markdown fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": { "$ref": "#/components/schemas/SourceTestEvent" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
           "422": { "$ref": "#/components/responses/ValidationError" }
         }
       }
@@ -1289,6 +1429,54 @@
           "links": {
             "type": "object",
             "properties": { "self": { "type": "string" } }
+          }
+        }
+      },
+      "SourceTestEvent": {
+        "type": "object",
+        "properties": {
+          "type": { "const": "sourceTestEvents" },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The source's uuid."
+          },
+          "attributes": {
+            "type": "object",
+            "properties": {
+              "provider": { "type": ["string", "null"] },
+              "payload": {
+                "type": "object",
+                "description": "The sample payload actually used (either the caller-supplied one or the generated default)."
+              },
+              "signatureCheck": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "not_required",
+                      "verified",
+                      "failed",
+                      "not_verifiable"
+                    ],
+                    "description": "`not_required`: no provider configured, so the source authenticates by slug alone. `verified`: this source's stored secret produced a signature this app's own logic accepts. `failed`: signature verification failed. `not_verifiable`: the provider (zapier/shortcuts) only ever has its secret stored as a one-way hash, so it cannot be re-signed here."
+                  },
+                  "message": { "type": "string" }
+                }
+              },
+              "fieldMapping": {
+                "type": "object",
+                "description": "A preview of how the sample payload parses through this source's field mapping and the Markdown pipeline. Illustrative only: it does not run the real ingest path's file-path collision resolution, so a real delivery landing on the same `filePath` may be re-suffixed.",
+                "properties": {
+                  "title": { "type": "string" },
+                  "content": { "type": "string" },
+                  "tags": { "type": "array", "items": { "type": "string" } },
+                  "frontmatter": { "type": ["object", "null"] },
+                  "filePath": { "type": "string" }
+                }
+              }
+            }
           }
         }
       },
