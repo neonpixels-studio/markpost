@@ -81,8 +81,8 @@ describe("convertHtmlToMarkdown", () => {
     ]);
   });
 
-  it("does not throw on an empty table", () => {
-    expect(() => convertHtmlToMarkdown("<table></table>")).not.toThrow();
+  it("returns an empty string for an empty table instead of throwing", () => {
+    expect(convertHtmlToMarkdown("<table></table>")).toBe("");
   });
 
   it("escapes a pipe character inside a cell instead of corrupting columns", () => {
@@ -92,6 +92,20 @@ describe("convertHtmlToMarkdown", () => {
     );
 
     expect(tableRows(result)).toEqual([["Col"], ["---"], ["a \\| b"]]);
+  });
+
+  it("falls back to raw HTML for a table with block content in a cell", () => {
+    // A cell holding a list, heading, blockquote, or nested table can't be
+    // flattened into a single GFM table cell, so the renderer intentionally
+    // keeps the whole table as HTML rather than losing that structure. This
+    // pins down that documented fallback so a future dependency bump can't
+    // silently change it back to flattened paragraphs.
+    const result = convertHtmlToMarkdown(
+      "<table><tr><td><ul><li>a</li><li>b</li></ul></td><td>plain</td></tr></table>",
+    );
+
+    expect(result).toContain("<table");
+    expect(result).toContain("<li>a</li>");
   });
 });
 
