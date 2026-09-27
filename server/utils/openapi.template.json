@@ -174,7 +174,7 @@
       "patch": {
         "tags": ["Records"],
         "summary": "Bulk-update records",
-        "description": "Updates up to 100 records in one call, each identified by `uuid`. Each item requires at least one of `status`, `filePath`, or `errorMessage`; `syncedAt` is never client-settable (422 rejects it) — it is stamped by the server when an item's `status` moves to `synced`, and skipped when the record is already synced with a `syncedAt` set. `uuid`s must be unique within the request. Items whose `uuid` does not resolve to a record owned by the caller are silently dropped from the response rather than erroring the whole batch.",
+        "description": "Updates up to 100 records in one call, each identified by `uuid`. Each item requires at least one of `status`, `filePath`, or `errorMessage`; `syncedAt` is never client-settable (422 rejects it); it is stamped by the server when an item's `status` moves to `synced`, and skipped when the record is already synced with a `syncedAt` set. `uuid`s must be unique within the request. Items whose `uuid` does not resolve to a record owned by the caller are silently dropped from the response rather than erroring the whole batch.",
         "requestBody": {
           "required": true,
           "content": {
@@ -623,7 +623,7 @@
       "post": {
         "tags": ["Sources"],
         "summary": "Send a test event to a source",
-        "description": "Only supported for sources that ingest via the JSON webhook path (422 otherwise). Runs a sample payload through the same signature-verification and field-mapping logic a real delivery would use, without creating a record. Provide `payload` to test against a shape matching this source's own field mapping; omit it to use the generic default sample. For github/stripe, the signature check signs the payload with this source's own stored secret and confirms this app's HMAC logic accepts it — it cannot confirm the provider itself has the same secret configured. For zapier/shortcuts, only a hash of the secret is stored, so the signature check reports `not_verifiable` rather than being re-derived.",
+        "description": "Only supported for sources that ingest via the JSON webhook path (422 otherwise). Runs a sample payload through the same signature-verification and field-mapping logic a real delivery would use, without creating a record. Provide `payload` to test against a shape matching this source's own field mapping; omit it to use the generic default sample. For github/stripe, the signature check signs the payload with this source's own stored secret and confirms this app's HMAC logic accepts it; it cannot confirm the provider itself has the same secret configured. For zapier/shortcuts, only a hash of the secret is stored, so the signature check reports `not_verifiable` rather than being re-derived.",
         "requestBody": {
           "required": false,
           "content": {
