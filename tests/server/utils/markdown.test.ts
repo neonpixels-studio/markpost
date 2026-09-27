@@ -47,6 +47,25 @@ describe("convertHtmlToMarkdown", () => {
     const result = convertHtmlToMarkdown("<span>plain</span>");
     expect(result).toBe("plain");
   });
+
+  it("converts an HTML table to a GFM markdown table", () => {
+    const result = convertHtmlToMarkdown(
+      "<table><thead><tr><th>Service</th><th>Status</th></tr></thead>" +
+        "<tbody><tr><td>API</td><td>Up</td></tr>" +
+        "<tr><td>Worker</td><td>Down</td></tr></tbody></table>",
+    );
+
+    // Header row, separator row, and each data row preserved on their own
+    // line with cells still pipe-delimited, instead of collapsing into bare
+    // paragraphs with no row/column structure.
+    const lines = result.split("\n").filter((line) => line.trim() !== "");
+    expect(lines).toEqual([
+      "| Service | Status |",
+      "| --- | --- |",
+      "| API | Up |",
+      "| Worker | Down |",
+    ]);
+  });
 });
 
 describe("titleToSlug", () => {

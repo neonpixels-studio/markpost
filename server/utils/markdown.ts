@@ -1,4 +1,5 @@
 import TurndownService from "turndown";
+import { tables } from "turndown-plugin-gfm";
 
 export type ParsedPayload = {
   title: string;
@@ -52,6 +53,10 @@ const turndown = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
 });
+// Without this plugin, TurndownService has no rule for <table>/<tr>/<td>, so
+// their content falls back to the default block-element handling and each
+// cell surfaces as its own bare paragraph, losing all row/column structure.
+turndown.use(tables);
 
 export function convertHtmlToMarkdown(html: string): string {
   return turndown.turndown(html);
