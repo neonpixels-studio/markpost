@@ -1,5 +1,5 @@
 import TurndownService from "turndown";
-import { tables } from "turndown-plugin-gfm";
+import { tables } from "@joplin/turndown-plugin-gfm";
 
 export type ParsedPayload = {
   title: string;

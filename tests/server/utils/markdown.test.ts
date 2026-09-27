@@ -55,18 +55,60 @@ describe("convertHtmlToMarkdown", () => {
         "<tr><td>Worker</td><td>Down</td></tr></tbody></table>",
     );
 
-    // Header row, separator row, and each data row preserved on their own
-    // line with cells still pipe-delimited, instead of collapsing into bare
-    // paragraphs with no row/column structure.
-    const lines = result.split("\n").filter((line) => line.trim() !== "");
-    expect(lines).toEqual([
-      "| Service | Status |",
-      "| --- | --- |",
-      "| API | Up |",
-      "| Worker | Down |",
+    // Header row, separator row, and each data row preserved with cells
+    // still pipe-delimited, instead of collapsing into bare paragraphs with
+    // no row/column structure. Cell values are trimmed since the renderer
+    // pads cells with spaces to align columns.
+    expect(tableRows(result)).toEqual([
+      ["Service", "Status"],
+      ["---", "---"],
+      ["API", "Up"],
+      ["Worker", "Down"],
     ]);
   });
+
+  it("converts a table with no header row instead of keeping raw HTML", () => {
+    const result = convertHtmlToMarkdown(
+      "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>",
+    );
+
+    expect(result).not.toContain("<table");
+    expect(tableRows(result)).toEqual([
+      ["", ""],
+      ["---", "---"],
+      ["A", "B"],
+      ["C", "D"],
+    ]);
+  });
+
+  it("does not throw on an empty table", () => {
+    expect(() => convertHtmlToMarkdown("<table></table>")).not.toThrow();
+  });
+
+  it("escapes a pipe character inside a cell instead of corrupting columns", () => {
+    const result = convertHtmlToMarkdown(
+      "<table><thead><tr><th>Col</th></tr></thead>" +
+        "<tbody><tr><td>a | b</td></tr></tbody></table>",
+    );
+
+    expect(tableRows(result)).toEqual([["Col"], ["---"], ["a \\| b"]]);
+  });
 });
+
+// Splits a markdown table row into its cell values, trimming the alignment
+// padding the renderer adds and ignoring escaped pipes (`\|`) inside a cell
+// so they aren't mistaken for column separators.
+function tableRows(markdown: string): string[][] {
+  return markdown
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) =>
+      line
+        .split(/(?<!\\)\|/)
+        .slice(1, -1)
+        .map((cell) => cell.trim()),
+    );
+}
 
 describe("titleToSlug", () => {
   it("lowercases and replaces spaces with hyphens", () => {
