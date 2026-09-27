@@ -107,11 +107,24 @@ describe("convertHtmlToMarkdown", () => {
     expect(result).toContain("<table");
     expect(result).toContain("<li>a</li>");
   });
+
+  it("keeps a <br> inside a cell on the same row instead of breaking the table", () => {
+    const result = convertHtmlToMarkdown(
+      "<table><thead><tr><th>Col</th></tr></thead>" +
+        "<tbody><tr><td>line1<br>line2</td></tr></tbody></table>",
+    );
+
+    const lines = result.split("\n").filter((line) => line.trim() !== "");
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toContain("<br>");
+  });
 });
 
 // Splits a markdown table row into its cell values, trimming the alignment
 // padding the renderer adds and ignoring escaped pipes (`\|`) inside a cell
-// so they aren't mistaken for column separators.
+// so they aren't mistaken for column separators. Assumes a cell never ends in
+// a literal backslash (none of the cases above do) -- that would read as an
+// escaped pipe and merge two cells.
 function tableRows(markdown: string): string[][] {
   return markdown
     .split("\n")
