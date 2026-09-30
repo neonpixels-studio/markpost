@@ -47,7 +47,95 @@ describe("convertHtmlToMarkdown", () => {
     const result = convertHtmlToMarkdown("<span>plain</span>");
     expect(result).toBe("plain");
   });
+
+  it("converts an HTML table to a GFM markdown table", () => {
+    const result = convertHtmlToMarkdown(
+      "<table><thead><tr><th>Service</th><th>Status</th></tr></thead>" +
+        "<tbody><tr><td>API</td><td>Up</td></tr>" +
+        "<tr><td>Worker</td><td>Down</td></tr></tbody></table>",
+    );
+
+    // Header row, separator row, and each data row preserved with cells
+    // still pipe-delimited, instead of collapsing into bare paragraphs with
+    // no row/column structure. Cell values are trimmed since the renderer
+    // pads cells with spaces to align columns.
+    expect(tableRows(result)).toEqual([
+      ["Service", "Status"],
+      ["---", "---"],
+      ["API", "Up"],
+      ["Worker", "Down"],
+    ]);
+  });
+
+  it("converts a table with no header row instead of keeping raw HTML", () => {
+    const result = convertHtmlToMarkdown(
+      "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>",
+    );
+
+    expect(result).not.toContain("<table");
+    expect(tableRows(result)).toEqual([
+      ["", ""],
+      ["---", "---"],
+      ["A", "B"],
+      ["C", "D"],
+    ]);
+  });
+
+  it("returns an empty string for an empty table instead of throwing", () => {
+    expect(convertHtmlToMarkdown("<table></table>")).toBe("");
+  });
+
+  it("escapes a pipe character inside a cell instead of corrupting columns", () => {
+    const result = convertHtmlToMarkdown(
+      "<table><thead><tr><th>Col</th></tr></thead>" +
+        "<tbody><tr><td>a | b</td></tr></tbody></table>",
+    );
+
+    expect(tableRows(result)).toEqual([["Col"], ["---"], ["a \\| b"]]);
+  });
+
+  it("falls back to raw HTML for a table with block content in a cell", () => {
+    // A cell holding a list, heading, blockquote, or nested table can't be
+    // flattened into a single GFM table cell, so the renderer intentionally
+    // keeps the whole table as HTML rather than losing that structure. This
+    // pins down that documented fallback so a future dependency bump can't
+    // silently change it back to flattened paragraphs.
+    const result = convertHtmlToMarkdown(
+      "<table><tr><td><ul><li>a</li><li>b</li></ul></td><td>plain</td></tr></table>",
+    );
+
+    expect(result).toContain("<table");
+    expect(result).toContain("<li>a</li>");
+  });
+
+  it("keeps a <br> inside a cell on the same row instead of breaking the table", () => {
+    const result = convertHtmlToMarkdown(
+      "<table><thead><tr><th>Col</th></tr></thead>" +
+        "<tbody><tr><td>line1<br>line2</td></tr></tbody></table>",
+    );
+
+    const lines = result.split("\n").filter((line) => line.trim() !== "");
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toContain("<br>");
+  });
 });
+
+// Splits a markdown table row into its cell values, trimming the alignment
+// padding the renderer adds and ignoring escaped pipes (`\|`) inside a cell
+// so they aren't mistaken for column separators. Assumes a cell never ends in
+// a literal backslash (none of the cases above do) -- that would read as an
+// escaped pipe and merge two cells.
+function tableRows(markdown: string): string[][] {
+  return markdown
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) =>
+      line
+        .split(/(?<!\\)\|/)
+        .slice(1, -1)
+        .map((cell) => cell.trim()),
+    );
+}
 
 describe("titleToSlug", () => {
   it("lowercases and replaces spaces with hyphens", () => {
