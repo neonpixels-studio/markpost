@@ -15,13 +15,14 @@ const STALE_ORIGIN = "dh-markpost.netlify.app";
 // server/api/** so a new or removed route fails the test until the spec catches
 // up.
 const EXPECTED_OPERATIONS: Record<string, string[]> = {
-  "/records": ["get", "post", "delete"],
+  "/records": ["get", "post", "patch", "delete"],
   "/records/{uuid}": ["get", "patch"],
   "/records/export": ["get"],
   "/records/stats": ["get"],
   "/sources": ["get", "post"],
-  "/sources/{uuid}": ["patch", "delete"],
+  "/sources/{uuid}": ["get", "patch", "delete"],
   "/sources/{uuid}/rotate-secret": ["post"],
+  "/sources/{uuid}/test": ["post"],
   "/events": ["get"],
   "/events/export": ["get"],
   "/tokens": ["get", "post"],
