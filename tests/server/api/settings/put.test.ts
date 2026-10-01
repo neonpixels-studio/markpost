@@ -205,13 +205,16 @@ describe("PUT /api/settings", () => {
     "accepts accentColor %s",
     async (accentColor) => {
       mockReadBody.mockResolvedValue(buildBody({ accentColor }));
-      stubUpsertResult([{ ...sampleSettings, accentColor }]);
+      const { values } = stubUpsertResult([{ ...sampleSettings, accentColor }]);
 
       const response = await handler(buildEvent(userId));
 
       expect(response).toEqual({
         data: expect.objectContaining({ type: "user_settings" }),
       });
+      expect(values).toHaveBeenCalledWith(
+        expect.objectContaining({ userId, accentColor }),
+      );
     },
   );
 

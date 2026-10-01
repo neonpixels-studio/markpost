@@ -177,6 +177,7 @@ describe("apiValidate", () => {
       ]),
     ).not.toThrow();
   });
+
   describe("pattern rule", () => {
     function captureApiError(run: () => void): ApiError {
       try {
