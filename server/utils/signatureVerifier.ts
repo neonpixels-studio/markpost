@@ -14,6 +14,17 @@ import {
   STRIPE_PROVIDER,
 } from "#shared/utils/webhookSecrets";
 
+// Every status the source test-event action (server/api/sources/[uuid]/test.post.ts)
+// can report for signatureCheck. The OpenAPI spec's SourceTestEvent enum is
+// asserted against this list (tests/server/utils/appUrlAssets.test.ts).
+export const SIGNATURE_CHECK_STATUSES = [
+  "not_required",
+  "verified",
+  "failed",
+  "not_verifiable",
+] as const;
+export type SignatureCheckStatus = (typeof SIGNATURE_CHECK_STATUSES)[number];
+
 // Exported so every caller that needs to read/forward these headers (the hooks
 // endpoint's buildProviderHeaders) imports the same constant instead of
 // re-declaring it — a renamed header here must not be able to silently stop
