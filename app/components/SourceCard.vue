@@ -65,6 +65,7 @@
         <button
           v-if="isPausable"
           class="icon-btn"
+          :disabled="pausing"
           :title="pauseTitle"
           :aria-label="pauseTitle"
           style="color: var(--ink-3)"
@@ -198,6 +199,8 @@ const PRESET_TYPES = new Set([
 
 const props = defineProps<{
   source: SourceResource;
+  // A pause/resume request for this source is in flight.
+  pausing?: boolean;
 }>();
 
 const emit = defineEmits<{

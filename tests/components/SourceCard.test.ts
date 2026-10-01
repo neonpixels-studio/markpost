@@ -105,6 +105,16 @@ describe("SourceCard", () => {
     expect(wrapper.find('button[title="Pause source"]').exists()).toBe(false);
   });
 
+  it("disables the pause button while a request is in flight", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource(), pausing: true },
+    });
+    expect(
+      wrapper.find('button[title="Pause source"]').attributes("disabled"),
+    ).toBeDefined();
+  });
+
   it("emits toggle-pause with the source uuid when the pause button is clicked", async () => {
     const wrapper = mount(SourceCard, {
       ...globalConfig,

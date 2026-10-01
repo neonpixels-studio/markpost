@@ -426,6 +426,7 @@ describe("POST /api/hooks/[slug]", () => {
     });
 
     it("returns 413 for an oversized delivery to a paused source (content-length is checked first)", async () => {
+      stubSourceOnly([{ ...sampleSource, paused: true }]);
       mockGetHeader.mockImplementation((_event: unknown, name: string) =>
         name === CONTENT_LENGTH_HEADER
           ? String(MAX_WEBHOOK_BODY_BYTES + 1)
@@ -436,6 +437,7 @@ describe("POST /api/hooks/[slug]", () => {
         statusCode: 413,
       });
       expect(selectMock).not.toHaveBeenCalled();
+      expect(mockReadRawBody).not.toHaveBeenCalled();
     });
 
     it("ingests normally once the source is resumed (paused: false)", async () => {

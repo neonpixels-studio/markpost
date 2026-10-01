@@ -90,6 +90,7 @@
             v-for="source in sources"
             :key="source.attributes.uuid"
             :source="source"
+            :pausing="pausingUuids.has(source.attributes.uuid)"
             @remove="onRemoveRequested"
             @rotate="onRotateRequested"
             @configure-mapping="onConfigureMappingRequested"
