@@ -1,6 +1,7 @@
 import TurndownService from "turndown";
 import { tables } from "@joplin/turndown-plugin-gfm";
 import {
+  hasBackslash,
   isSafeImageUrl,
   isSafeLinkUrl,
   sanitizeElementTree,
@@ -82,13 +83,23 @@ turndown.addRule("sanitizeRawHtmlTables", {
 turndown.addRule("unsafeLink", {
   filter: (node) => {
     const href = node.getAttribute("href");
-    return node.nodeName === "A" && !!href && !isSafeLinkUrl(href);
+    if (node.nodeName !== "A" || !href) {
+      return false;
+    }
+    return (
+      !isSafeLinkUrl(href) ||
+      hasBackslash(href) ||
+      hasBackslash(node.getAttribute("title"))
+    );
   },
   replacement: (content) => content,
 });
 turndown.addRule("unsafeImage", {
   filter: (node) =>
-    node.nodeName === "IMG" && !isSafeImageUrl(node.getAttribute("src")),
+    node.nodeName === "IMG" &&
+    (!isSafeImageUrl(node.getAttribute("src")) ||
+      hasBackslash(node.getAttribute("src")) ||
+      hasBackslash(node.getAttribute("title"))),
   replacement: () => "",
 });
 

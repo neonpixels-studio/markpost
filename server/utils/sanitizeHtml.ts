@@ -4,8 +4,11 @@ const IMAGE_URL_SCHEMES = ["http:", "https:"];
 // ("java\tscript:"), so they are stripped before the scheme check.
 const URL_IGNORED_CHARS_PATTERN = /[\u0000- \u007f-\u009f]/g;
 const ATTRIBUTE_BREAKING_CHARS_PATTERN = /[\r\n<>]+/g;
-const BLANK_LINE_PATTERN = /(\r?\n)[ \t\r]*(?=\r?\n)/g;
+const CARRIAGE_RETURN_PATTERN = /\r\n?/g;
+const BLANK_LINE_PATTERN = /\n[ \t]*(?=\n)/g;
 const TEXT_NODE_TYPE = 3;
+const PROCESSING_INSTRUCTION_NODE_TYPE = 7;
+const COMMENT_NODE_TYPE = 8;
 const URL_SCHEME_PATTERN = /^([a-z][a-z0-9+.-]*:)/i;
 // Markdown renderers decode entities and backslash escapes in link
 // destinations, so "javascript&#58;" or "javascript\\:" would become a real
@@ -111,6 +114,12 @@ function isUrlSchemeAllowed(
   return allowedSchemes.includes(scheme.toLowerCase());
 }
 
+// Turndown escapes <>() in link destinations and quotes in titles but not
+// backslashes, so a backslash could close the link early and start an autolink.
+export function hasBackslash(value: string | null | undefined): boolean {
+  return (value ?? "").includes("\\");
+}
+
 export function isSafeLinkUrl(value: string | null | undefined): boolean {
   return isUrlSchemeAllowed(value, LINK_URL_SCHEMES);
 }
@@ -156,12 +165,26 @@ function normalizeAttributeValues(element: Element): void {
   }
 }
 
+// Turndown strips comments outside <pre> but not inside it, and a comment body
+// is serialized verbatim, so blank lines in it would end the HTML block.
+function removeNonContentNodes(node: Node): void {
+  for (const child of Array.from(node.childNodes)) {
+    if (
+      child.nodeType === COMMENT_NODE_TYPE ||
+      child.nodeType === PROCESSING_INSTRUCTION_NODE_TYPE
+    ) {
+      node.removeChild(child);
+      continue;
+    }
+    removeNonContentNodes(child);
+  }
+}
+
 function breakBlankLines(node: Node): void {
   if (node.nodeType === TEXT_NODE_TYPE) {
-    node.textContent = (node.textContent ?? "").replace(
-      BLANK_LINE_PATTERN,
-      "$1\u00a0",
-    );
+    node.textContent = (node.textContent ?? "")
+      .replace(CARRIAGE_RETURN_PATTERN, "\n")
+      .replace(BLANK_LINE_PATTERN, "\n\u00a0");
     return;
   }
   Array.from(node.childNodes).forEach(breakBlankLines);
@@ -204,5 +227,6 @@ export function sanitizeElementTree(root: Element): void {
   for (const element of [root, ...Array.from(root.querySelectorAll("*"))]) {
     normalizeAttributeValues(element);
   }
+  removeNonContentNodes(root);
   breakBlankLines(root);
 }

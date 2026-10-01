@@ -710,4 +710,30 @@ describe("convertHtmlToMarkdown sanitization", () => {
     }
     expect(attributeEscape).not.toContain("<img src=x");
   });
+
+  it("does not let comments or carriage returns in pre text escape the kept table", () => {
+    const comment = convertHtmlToMarkdown(
+      blockTable(
+        "<ul><li><pre><!--\n\n<img src=x onerror=alert(1)>--></pre></li></ul>",
+      ),
+    );
+    const carriageReturn = convertHtmlToMarkdown(
+      blockTable("<ul><li><pre>a&#13;&#13;<b>b</b></pre></li></ul>"),
+    );
+    expect(comment).not.toContain("onerror");
+    expect(carriageReturn).not.toMatch(/\r/);
+    expect(carriageReturn).not.toMatch(/\n[ \t]*\n(?=[^]*<\/table>)/);
+  });
+
+  it("drops links and images whose URL or title contains a backslash", () => {
+    expect(
+      convertHtmlToMarkdown('<a href="https://a.test/\\)\\<x//\\>">t</a>'),
+    ).toBe("t");
+    expect(
+      convertHtmlToMarkdown('<a href="https://a.test" title="\\&quot;)">t</a>'),
+    ).toBe("t");
+    expect(
+      convertHtmlToMarkdown('<img src="https://a.test/\\x" alt="x">'),
+    ).toBe("");
+  });
 });
