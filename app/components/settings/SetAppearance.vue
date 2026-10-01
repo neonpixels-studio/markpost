@@ -225,6 +225,7 @@
 
 <script setup lang="ts">
 import SetHead from "./SetHead.vue";
+import { HEX_COLOR_PATTERN } from "#shared/utils/accentColor";
 
 const ACCENT_OPTIONS = [
   { id: "violet", name: "violet", hex: "#a855f7" },
@@ -238,7 +239,6 @@ const ACCENT_OPTIONS = [
 ];
 
 const VALID_THEMES = ["light", "dark", "system"] as const;
-const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 const THEME_OPTIONS = [
   { id: "light", ic: "sun", label: "Light" },

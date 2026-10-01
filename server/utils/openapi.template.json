@@ -924,7 +924,10 @@
                         "properties": {
                           "vaultDir": { "type": "string" },
                           "filenameTemplate": { "type": "string" },
-                          "accentColor": { "type": "string" },
+                          "accentColor": {
+                            "type": "string",
+                            "pattern": "^#[0-9a-fA-F]{6}$"
+                          },
                           "autoSync": { "type": "boolean" },
                           "autoDelete": { "type": "boolean" },
                           "frontmatter": { "type": "boolean" },

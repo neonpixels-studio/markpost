@@ -10,6 +10,8 @@ export type AttributeRule = {
   optional?: boolean;
   type?: "string" | "boolean" | "number";
   enum?: readonly string[];
+  pattern?: RegExp;
+  patternMessage?: string;
 };
 
 const VALIDATION_STATUS = "422";
@@ -33,6 +35,10 @@ function typeMessage(key: string, type: string): string {
 
 function enumMessage(key: string, allowed: readonly string[]): string {
   return `${titleCase(key)} must be one of: ${allowed.join(", ")}`;
+}
+
+function patternMessage(key: string): string {
+  return `${titleCase(key)} has an invalid format`;
 }
 
 function buildError(rule: AttributeRule, detail: string): ApiErrorObject {
@@ -90,6 +96,19 @@ function validateEnum(
   return buildError(rule, enumMessage(rule.key, rule.enum));
 }
 
+function validatePattern(
+  value: unknown,
+  rule: AttributeRule,
+): ApiErrorObject | null {
+  if (!rule.pattern) {
+    return null;
+  }
+  if (typeof value === "string" && rule.pattern.test(value)) {
+    return null;
+  }
+  return buildError(rule, rule.patternMessage ?? patternMessage(rule.key));
+}
+
 function validateRule(
   attributes: Record<string, unknown>,
   rule: AttributeRule,
@@ -104,7 +123,11 @@ function validateRule(
     return null;
   }
 
-  return validateType(value, rule) ?? validateEnum(value, rule);
+  return (
+    validateType(value, rule) ??
+    validateEnum(value, rule) ??
+    validatePattern(value, rule)
+  );
 }
 
 export function apiValidate(body: ApiRequest, rules: AttributeRule[]): void {

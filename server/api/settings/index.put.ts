@@ -1,3 +1,4 @@
+import { HEX_COLOR_PATTERN } from "#shared/utils/accentColor";
 import { getDb } from "../../db";
 import { userSettings } from "../../db/schema";
 import type { ApiRequest } from "../../types/api.types";
@@ -44,7 +45,13 @@ const VALIDATION_RULES: AttributeRule[] = [
     enum: CONFLICT_STRATEGIES,
   },
   { key: "theme", type: "string", optional: true, enum: THEMES },
-  { key: "accentColor", type: "string", optional: true },
+  {
+    key: "accentColor",
+    type: "string",
+    optional: true,
+    pattern: HEX_COLOR_PATTERN,
+    patternMessage: "AccentColor must be a hex color like #a855f7",
+  },
 ];
 
 const ALLOWED_ATTRIBUTE_KEYS: (keyof UpdateSettingsAttributes)[] = [

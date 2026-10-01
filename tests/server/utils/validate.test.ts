@@ -177,4 +177,50 @@ describe("apiValidate", () => {
       ]),
     ).not.toThrow();
   });
+  describe("pattern rule", () => {
+    const rules = [
+      { key: "code", type: "string" as const, pattern: /^[a-z]+$/ },
+    ];
+
+    it("passes a value matching the pattern", () => {
+      expect(() =>
+        apiValidate(buildRequest({ code: "abc" }), rules),
+      ).not.toThrow();
+    });
+
+    it("rejects a value not matching the pattern with a 422 pointing at the attribute", () => {
+      try {
+        apiValidate(buildRequest({ code: "ABC1" }), rules);
+        expect.unreachable();
+      } catch (error) {
+        const apiError = error as ApiError;
+        expect(apiError.statusCode).toBe(422);
+        expect(apiError.errors).toEqual([
+          {
+            status: "422",
+            title: "Invalid Attribute",
+            detail: "Code has an invalid format",
+            source: { pointer: "/data/attributes/code" },
+          },
+        ]);
+      }
+    });
+
+    it("uses patternMessage when provided", () => {
+      const custom = [{ ...rules[0], patternMessage: "Nope" }];
+
+      try {
+        apiValidate(buildRequest({ code: "1" }), custom);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as ApiError).errors[0].detail).toBe("Nope");
+      }
+    });
+
+    it("skips the pattern for an absent optional value", () => {
+      const optional = [{ ...rules[0], optional: true }];
+
+      expect(() => apiValidate(buildRequest({}), optional)).not.toThrow();
+    });
+  });
 });
