@@ -217,6 +217,30 @@ describe("apiValidate", () => {
       }
     });
 
+    it("rejects a non-string value when the rule has a pattern but no type", () => {
+      try {
+        apiValidate(buildRequest({ code: 123 }), [
+          { key: "code", pattern: /^[a-z]+$/ },
+        ]);
+        expect.unreachable();
+      } catch (error) {
+        expect((error as ApiError).errors[0].detail).toBe(
+          "Code has an invalid format",
+        );
+      }
+    });
+
+    it("stays stateless for a global regex across repeated calls", () => {
+      const globalRules = [{ key: "code", pattern: /^[a-z]+$/g }];
+
+      expect(() =>
+        apiValidate(buildRequest({ code: "abc" }), globalRules),
+      ).not.toThrow();
+      expect(() =>
+        apiValidate(buildRequest({ code: "abc" }), globalRules),
+      ).not.toThrow();
+    });
+
     it("skips the pattern for an absent optional value", () => {
       const optional = [{ ...rules[0], optional: true }];
 

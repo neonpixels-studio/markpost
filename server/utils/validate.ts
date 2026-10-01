@@ -37,7 +37,7 @@ function enumMessage(key: string, allowed: readonly string[]): string {
   return `${titleCase(key)} must be one of: ${allowed.join(", ")}`;
 }
 
-function patternMessage(key: string): string {
+function defaultPatternMessage(key: string): string {
   return `${titleCase(key)} has an invalid format`;
 }
 
@@ -103,10 +103,15 @@ function validatePattern(
   if (!rule.pattern) {
     return null;
   }
+  // Reset so a global/sticky regex shared across requests stays stateless.
+  rule.pattern.lastIndex = 0;
   if (typeof value === "string" && rule.pattern.test(value)) {
     return null;
   }
-  return buildError(rule, rule.patternMessage ?? patternMessage(rule.key));
+  return buildError(
+    rule,
+    rule.patternMessage ?? defaultPatternMessage(rule.key),
+  );
 }
 
 function validateRule(

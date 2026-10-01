@@ -1,3 +1,4 @@
+import openapiTemplate from "../../../server/utils/openapi.template.json";
 import { describe, expect, it } from "vitest";
 import { HEX_COLOR_PATTERN } from "../../../shared/utils/accentColor";
 
@@ -12,4 +13,17 @@ describe("HEX_COLOR_PATTERN", () => {
       expect(HEX_COLOR_PATTERN.test(value)).toBe(false);
     },
   );
+});
+
+describe("openapi accentColor pattern", () => {
+  it("matches HEX_COLOR_PATTERN so the docs cannot drift from the server rule", () => {
+    const content = (openapiTemplate as any).paths["/settings"].put.requestBody
+      .content;
+    const schema = Object.values(content as Record<string, any>)[0].schema;
+    const pattern =
+      schema.properties.data.properties.attributes.properties.accentColor
+        .pattern;
+
+    expect(pattern).toBe(HEX_COLOR_PATTERN.source);
+  });
 });
