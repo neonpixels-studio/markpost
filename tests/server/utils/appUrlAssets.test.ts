@@ -85,7 +85,8 @@ function resolvePointer(root: unknown, ref: string): unknown {
   return current;
 }
 
-const SETTINGS_ATTRIBUTES = "properties/data/properties/attributes/properties";
+const REQUEST_ATTRIBUTE_PROPERTIES =
+  "properties/data/properties/attributes/properties";
 
 // Spec enum location -> the exported server/shared const it must mirror. The
 // expected sets come from the code, never from a list duplicated here.
@@ -118,15 +119,15 @@ const ENUM_PARITY: Array<{
     expected: THEMES,
   },
   {
-    pointer: `paths/~1settings/put/requestBody/content/application~1json/schema/${SETTINGS_ATTRIBUTES}/conflictStrategy`,
+    pointer: `paths/~1settings/put/requestBody/content/application~1json/schema/${REQUEST_ATTRIBUTE_PROPERTIES}/conflictStrategy`,
     expected: CONFLICT_STRATEGIES,
   },
   {
-    pointer: `paths/~1settings/put/requestBody/content/application~1json/schema/${SETTINGS_ATTRIBUTES}/theme`,
+    pointer: `paths/~1settings/put/requestBody/content/application~1json/schema/${REQUEST_ATTRIBUTE_PROPERTIES}/theme`,
     expected: THEMES,
   },
   {
-    pointer: `paths/~1sources/post/requestBody/content/application~1json/schema/${SETTINGS_ATTRIBUTES}/provider`,
+    pointer: `paths/~1sources/post/requestBody/content/application~1json/schema/${REQUEST_ATTRIBUTE_PROPERTIES}/provider`,
     expected: [...ROTATABLE_PROVIDER_IDS, null],
   },
   {
