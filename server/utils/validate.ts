@@ -96,6 +96,12 @@ function validateEnum(
   return buildError(rule, enumMessage(rule.key, rule.enum));
 }
 
+// Strip g/y so a shared module-level regex never carries lastIndex between calls.
+function matchesPattern(value: string, pattern: RegExp): boolean {
+  const statelessFlags = pattern.flags.replace(/[gy]/g, "");
+  return new RegExp(pattern.source, statelessFlags).test(value);
+}
+
 function validatePattern(
   value: unknown,
   rule: AttributeRule,
@@ -103,9 +109,7 @@ function validatePattern(
   if (!rule.pattern) {
     return null;
   }
-  // Reset so a global/sticky regex shared across requests stays stateless.
-  rule.pattern.lastIndex = 0;
-  if (typeof value === "string" && rule.pattern.test(value)) {
+  if (typeof value === "string" && matchesPattern(value, rule.pattern)) {
     return null;
   }
   return buildError(

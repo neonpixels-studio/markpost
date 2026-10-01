@@ -178,6 +178,15 @@ describe("apiValidate", () => {
     ).not.toThrow();
   });
   describe("pattern rule", () => {
+    function captureApiError(run: () => void): ApiError {
+      try {
+        run();
+      } catch (error) {
+        return error as ApiError;
+      }
+      throw new Error("Expected apiValidate to throw");
+    }
+
     const rules = [
       { key: "code", type: "string" as const, pattern: /^[a-z]+$/ },
     ];
@@ -189,45 +198,39 @@ describe("apiValidate", () => {
     });
 
     it("rejects a value not matching the pattern with a 422 pointing at the attribute", () => {
-      try {
-        apiValidate(buildRequest({ code: "ABC1" }), rules);
-        expect.unreachable();
-      } catch (error) {
-        const apiError = error as ApiError;
-        expect(apiError.statusCode).toBe(422);
-        expect(apiError.errors).toEqual([
-          {
-            status: "422",
-            title: "Invalid Attribute",
-            detail: "Code has an invalid format",
-            source: { pointer: "/data/attributes/code" },
-          },
-        ]);
-      }
+      const apiError = captureApiError(() =>
+        apiValidate(buildRequest({ code: "ABC1" }), rules),
+      );
+
+      expect(apiError.statusCode).toBe(422);
+      expect(apiError.errors).toEqual([
+        {
+          status: "422",
+          title: "Invalid Attribute",
+          detail: "Code has an invalid format",
+          source: { pointer: "/data/attributes/code" },
+        },
+      ]);
     });
 
     it("uses patternMessage when provided", () => {
       const custom = [{ ...rules[0], patternMessage: "Nope" }];
 
-      try {
-        apiValidate(buildRequest({ code: "1" }), custom);
-        expect.unreachable();
-      } catch (error) {
-        expect((error as ApiError).errors[0].detail).toBe("Nope");
-      }
+      const apiError = captureApiError(() =>
+        apiValidate(buildRequest({ code: "1" }), custom),
+      );
+
+      expect(apiError.errors[0].detail).toBe("Nope");
     });
 
     it("rejects a non-string value when the rule has a pattern but no type", () => {
-      try {
+      const apiError = captureApiError(() =>
         apiValidate(buildRequest({ code: 123 }), [
           { key: "code", pattern: /^[a-z]+$/ },
-        ]);
-        expect.unreachable();
-      } catch (error) {
-        expect((error as ApiError).errors[0].detail).toBe(
-          "Code has an invalid format",
-        );
-      }
+        ]),
+      );
+
+      expect(apiError.errors[0].detail).toBe("Code has an invalid format");
     });
 
     it("stays stateless for a global regex across repeated calls", () => {
