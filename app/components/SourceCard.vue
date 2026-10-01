@@ -66,7 +66,6 @@
           class="icon-btn"
           :title="pauseTitle"
           :aria-label="pauseTitle"
-          :aria-pressed="source.attributes.paused"
           style="color: var(--ink-3)"
           @click="emit('toggle-pause', source.attributes.uuid)"
         >

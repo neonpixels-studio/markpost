@@ -95,8 +95,9 @@ function notFoundError(): ApiError {
 }
 
 // 423 Locked: the source exists and is intentionally disabled by its owner, so
-// this is neither a 404 (the slug is valid) nor a retryable 429/503. Providers
-// that retry non-2xx deliveries will keep retrying until the source resumes.
+// this is neither a 404 (the slug is valid) nor a retryable 429/503. Deliveries
+// during a pause are rejected and not stored; whether the sender retries
+// depends on the provider.
 const PAUSED_STATUS = 423;
 
 function sourcePausedError(): ApiError {

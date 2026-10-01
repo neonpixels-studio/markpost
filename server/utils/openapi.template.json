@@ -1143,7 +1143,7 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "423": {
-            "description": "The source is paused. Checked before the body is read, the signature verified, or the throttle consumed. Resume the source (`PATCH /sources/{uuid}` with `paused: false`) to accept deliveries again.",
+            "description": "The source is paused. Checked right after the Content-Length limit and source lookup, before the body is read, the signature verified, or the throttle consumed. The delivery is not stored; whether the sender retries depends on the provider. Resume the source (`PATCH /sources/{uuid}` with `paused: false`) to accept deliveries again.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorDocument" }

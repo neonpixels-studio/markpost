@@ -259,6 +259,17 @@ describe("sources page", () => {
       expect(mockSetPaused).toHaveBeenCalledWith("uuid-1", false);
     });
 
+    it("ignores a second toggle while the first request is still in flight", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockSetPaused.mockReturnValue(new Promise(() => {}));
+      const wrapper = mount(SourcesPage, globalConfig);
+
+      await wrapper.find(".pause-trigger").trigger("click");
+      await wrapper.find(".pause-trigger").trigger("click");
+
+      expect(mockSetPaused).toHaveBeenCalledTimes(1);
+    });
+
     it("shows an error banner when the request fails", async () => {
       sourcesRef.value = [makeSource("uuid-1")];
       mockSetPaused.mockRejectedValue(new Error("boom"));

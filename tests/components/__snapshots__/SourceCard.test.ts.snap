@@ -15,7 +15,7 @@ exports[`SourceCard > matches snapshot for a paused source 1`] = `
           <circle cx="9" cy="6" r="2.4" fill="var(--surface)"></circle>
           <circle cx="15" cy="12" r="2.4" fill="var(--surface)"></circle>
           <circle cx="8" cy="18" r="2.4" fill="var(--surface)"></circle>
-        </svg></button><button class="icon-btn" title="Resume source" aria-label="Resume source" aria-pressed="true" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        </svg></button><button class="icon-btn" title="Resume source" aria-label="Resume source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <polygon points="6 3 20 12 6 21 6 3"></polygon>
         </svg></button>
       <!--v-if--><button class="icon-btn" title="Send test event" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -51,7 +51,7 @@ exports[`SourceCard > matches snapshot for a preset (stripe) source 1`] = `
           <circle cx="9" cy="6" r="2.4" fill="var(--surface)"></circle>
           <circle cx="15" cy="12" r="2.4" fill="var(--surface)"></circle>
           <circle cx="8" cy="18" r="2.4" fill="var(--surface)"></circle>
-        </svg></button><button class="icon-btn" title="Pause source" aria-label="Pause source" aria-pressed="false" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        </svg></button><button class="icon-btn" title="Pause source" aria-label="Pause source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <rect x="6" y="4" width="4" height="16" rx="1"></rect>
           <rect x="14" y="4" width="4" height="16" rx="1"></rect>
         </svg></button>
@@ -90,7 +90,7 @@ exports[`SourceCard > matches snapshot for a webhook source 1`] = `
           <circle cx="9" cy="6" r="2.4" fill="var(--surface)"></circle>
           <circle cx="15" cy="12" r="2.4" fill="var(--surface)"></circle>
           <circle cx="8" cy="18" r="2.4" fill="var(--surface)"></circle>
-        </svg></button><button class="icon-btn" title="Pause source" aria-label="Pause source" aria-pressed="false" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        </svg></button><button class="icon-btn" title="Pause source" aria-label="Pause source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <rect x="6" y="4" width="4" height="16" rx="1"></rect>
           <rect x="14" y="4" width="4" height="16" rx="1"></rect>
         </svg></button>
@@ -123,7 +123,7 @@ exports[`SourceCard > matches snapshot for an email source 1`] = `
       </div>
     </div>
     <div class="row gap-2" style="align-items: center;"><span class="badge warn"><i class="dot"></i>idle</span>
-      <!--v-if--><button class="icon-btn" title="Pause source" aria-label="Pause source" aria-pressed="false" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <!--v-if--><button class="icon-btn" title="Pause source" aria-label="Pause source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <rect x="6" y="4" width="4" height="16" rx="1"></rect>
           <rect x="14" y="4" width="4" height="16" rx="1"></rect>
         </svg></button>
