@@ -95,6 +95,16 @@ describe("SourceCard", () => {
     expect(wrapper.html()).toMatchSnapshot();
   });
 
+  it("hides the pause control for an email source (no inbound handler enforces it)", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: {
+        source: makeSource({ type: "email", endpointSlug: "clip-ab12" }),
+      },
+    });
+    expect(wrapper.find('button[title="Pause source"]').exists()).toBe(false);
+  });
+
   it("emits toggle-pause with the source uuid when the pause button is clicked", async () => {
     const wrapper = mount(SourceCard, {
       ...globalConfig,

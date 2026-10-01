@@ -63,6 +63,7 @@
           <AppIcon name="sliders" :size="16" />
         </button>
         <button
+          v-if="isPausable"
           class="icon-btn"
           :title="pauseTitle"
           :aria-label="pauseTitle"
@@ -153,7 +154,7 @@ import {
   SHARED_SECRET_PROVIDER_IDS,
 } from "#shared/utils/webhookSecrets";
 import { isSourceMappable } from "#shared/utils/fieldMapping";
-import { isSourceTestable } from "#shared/utils/sourceTypes";
+import { isSourcePausable, isSourceTestable } from "#shared/utils/sourceTypes";
 
 const ICON_BY_TYPE: Record<string, string> = {
   webhook: "zap",
@@ -206,6 +207,10 @@ const emit = defineEmits<{
   "test-event": [uuid: string];
   "toggle-pause": [uuid: string];
 }>();
+
+const isPausable = computed(() =>
+  isSourcePausable(props.source.attributes.type),
+);
 
 const pauseTitle = computed(() =>
   props.source.attributes.paused ? "Resume source" : "Pause source",

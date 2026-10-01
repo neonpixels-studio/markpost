@@ -425,6 +425,19 @@ describe("POST /api/hooks/[slug]", () => {
       expect(insertMock).not.toHaveBeenCalled();
     });
 
+    it("returns 413 for an oversized delivery to a paused source (content-length is checked first)", async () => {
+      mockGetHeader.mockImplementation((_event: unknown, name: string) =>
+        name === CONTENT_LENGTH_HEADER
+          ? String(MAX_WEBHOOK_BODY_BYTES + 1)
+          : undefined,
+      );
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 413,
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
     it("ingests normally once the source is resumed (paused: false)", async () => {
       stubSourceAndSettings([{ ...sampleSource, paused: false }]);
       stubInsertRecord(sampleRecord);

@@ -41,6 +41,14 @@ export function isSourceType(value: string): value is SourceType {
 // type that applies to, rather than three separate `=== EMAIL_SOURCE_TYPE`
 // comparisons that could individually drift if a new non-JSON-webhook source
 // type were ever added.
+// Pause is only enforced by the hooks ingest endpoint
+// (server/api/hooks/[slug].post.ts). Email-in has no inbound handler yet, so
+// pausing an email source would do nothing; the card hides the control until
+// one exists rather than showing a "paused" badge over live ingestion.
+export function isSourcePausable(sourceType: string): boolean {
+  return sourceType !== EMAIL_SOURCE_TYPE;
+}
+
 export function isSourceTestable(sourceType: string): boolean {
   return sourceType !== EMAIL_SOURCE_TYPE;
 }

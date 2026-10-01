@@ -273,15 +273,18 @@ describe("sources page", () => {
     it("shows an error banner when the request fails", async () => {
       sourcesRef.value = [makeSource("uuid-1")];
       mockSetPaused.mockRejectedValue(new Error("boom"));
-      vi.spyOn(console, "error").mockImplementation(() => {});
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
       const wrapper = mount(SourcesPage, globalConfig);
 
       await wrapper.find(".pause-trigger").trigger("click");
       await flushPromises();
 
       expect(wrapper.findAll(".app-alert").at(-1)?.text()).toContain(
-        "Failed to update source. Please try again.",
+        "Failed to pause source. Please try again.",
       );
+      consoleErrorSpy.mockRestore();
     });
   });
 

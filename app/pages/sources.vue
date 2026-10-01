@@ -178,7 +178,7 @@ import {
   isSourceMappable,
   type FieldMappingConfig,
 } from "#shared/utils/fieldMapping";
-import { isSourceTestable } from "#shared/utils/sourceTypes";
+import { isSourcePausable, isSourceTestable } from "#shared/utils/sourceTypes";
 import type { RotateState } from "~/types/rotateSecret";
 import type { FieldMappingState } from "~/types/fieldMapping";
 import type { TestEventState } from "~/types/testEvent";
@@ -300,18 +300,25 @@ const onTogglePauseRequested = async (uuid: string) => {
   const source = sources.value.find(
     (candidate) => candidate.attributes.uuid === uuid,
   );
-  if (!source || pausingUuids.value.has(uuid)) {
+  // Mirrors SourceCard's own gate (isPausable).
+  if (
+    !source ||
+    !isSourcePausable(source.attributes.type) ||
+    pausingUuids.value.has(uuid)
+  ) {
     return;
   }
+
+  const nextPaused = !source.attributes.paused;
 
   pauseError.value = null;
   pausingUuids.value.add(uuid);
 
   try {
-    await setPaused(uuid, !source.attributes.paused);
+    await setPaused(uuid, nextPaused);
   } catch (toggleError) {
     console.error("[sources] togglePause error:", toErrorMessage(toggleError));
-    pauseError.value = "Failed to update source. Please try again.";
+    pauseError.value = `Failed to ${nextPaused ? "pause" : "resume"} source. Please try again.`;
   } finally {
     pausingUuids.value.delete(uuid);
   }
