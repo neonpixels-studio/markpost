@@ -658,4 +658,30 @@ describe("convertHtmlToMarkdown sanitization", () => {
       convertHtmlToMarkdown('<img src="https://a.test/i.png" alt="x">'),
     ).toBe("![x](https://a.test/i.png)");
   });
+
+  it("rejects entity and backslash obfuscated schemes in links and images", () => {
+    expect(
+      convertHtmlToMarkdown('<a href="javascript&amp;#58;alert(1)">x</a>'),
+    ).toBe("x");
+    expect(convertHtmlToMarkdown('<a href="javascript\\:alert(1)">x</a>')).toBe(
+      "x",
+    );
+    expect(
+      convertHtmlToMarkdown('<img src="javascript&amp;#58;alert(1)" alt="x">'),
+    ).toBe("");
+  });
+
+  it("removes svg elements with their content from the kept table", () => {
+    const result = convertHtmlToMarkdown(
+      blockTable("<ul><li>ok</li></ul><svg><style>secret</style></svg>"),
+    );
+    expect(result).not.toContain("secret");
+    expect(result).toContain("ok");
+  });
+
+  it("allows query strings containing ampersands", () => {
+    expect(
+      convertHtmlToMarkdown('<a href="https://a.test/?a=1&amp;b=2">x</a>'),
+    ).toBe("[x](https://a.test/?a=1&b=2)");
+  });
 });

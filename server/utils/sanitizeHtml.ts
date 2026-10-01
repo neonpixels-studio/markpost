@@ -4,6 +4,12 @@ const IMAGE_URL_SCHEMES = ["http:", "https:"];
 // ("java\tscript:"), so they are stripped before the scheme check.
 const URL_IGNORED_CHARS_PATTERN = /[\u0000- \u007f-\u009f]/g;
 const URL_SCHEME_PATTERN = /^([a-z][a-z0-9+.-]*:)/i;
+// Markdown renderers decode entities and backslash escapes in link
+// destinations, so "javascript&#58;" or "javascript\\:" would become a real
+// scheme after storage. Any such character before the first path/query/fragment
+// delimiter is treated as an obfuscated scheme and rejected.
+const URL_SCHEME_SEGMENT_PATTERN = /^[^/?#]*/;
+const URL_OBFUSCATION_PATTERN = /[&\\]/;
 
 const GLOBAL_ALLOWED_ATTRIBUTES: string[] = [];
 const ALLOWED_ATTRIBUTES_BY_TAG: Record<string, string[]> = {
@@ -91,6 +97,10 @@ function isUrlSchemeAllowed(
   allowedSchemes: string[],
 ): boolean {
   const normalized = (value ?? "").replace(URL_IGNORED_CHARS_PATTERN, "");
+  const schemeSegment = URL_SCHEME_SEGMENT_PATTERN.exec(normalized)?.[0] ?? "";
+  if (URL_OBFUSCATION_PATTERN.test(schemeSegment)) {
+    return false;
+  }
   const scheme = URL_SCHEME_PATTERN.exec(normalized)?.[1];
   // No scheme means a relative, fragment, or protocol-relative URL.
   if (!scheme) {
@@ -111,7 +121,7 @@ function isAttributeAllowed(element: Element, attributeName: string): boolean {
   const name = attributeName.toLowerCase();
   const allowedNames = [
     ...GLOBAL_ALLOWED_ATTRIBUTES,
-    ...(ALLOWED_ATTRIBUTES_BY_TAG[element.nodeName] ?? []),
+    ...(ALLOWED_ATTRIBUTES_BY_TAG[element.nodeName.toUpperCase()] ?? []),
   ];
   if (!allowedNames.includes(name)) {
     return false;
@@ -149,11 +159,13 @@ function unwrapElement(element: Element): void {
 }
 
 function sanitizeElement(element: Element): void {
-  if (DROPPED_WITH_CONTENT_TAGS.has(element.nodeName)) {
+  // Foreign-namespace elements (svg, math) keep a lowercase nodeName.
+  const tagName = element.nodeName.toUpperCase();
+  if (DROPPED_WITH_CONTENT_TAGS.has(tagName)) {
     element.parentNode?.removeChild(element);
     return;
   }
-  if (!ALLOWED_TAGS.has(element.nodeName)) {
+  if (!ALLOWED_TAGS.has(tagName)) {
     unwrapElement(element);
     return;
   }
