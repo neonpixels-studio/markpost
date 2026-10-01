@@ -14,6 +14,44 @@ export function parseStoredConsent(
   return null;
 }
 
+type GtagWindow = Window & {
+  dataLayer: unknown[];
+  gtag: (...args: unknown[]) => void;
+};
+
+const GA_COOKIE_PREFIX = "_ga";
+const EPOCH_UTC = "Thu, 01 Jan 1970 00:00:00 GMT";
+
+export function readStoredConsent(): AnalyticsConsent | null {
+  try {
+    return parseStoredConsent(
+      localStorage.getItem(STORAGE_KEY_ANALYTICS_CONSENT),
+    );
+  } catch {
+    return null;
+  }
+}
+
+// Storage can be blocked (privacy modes); the choice still applies for this
+// session via the in-memory ref, it just won't persist.
+export function writeStoredConsent(choice: AnalyticsConsent): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_ANALYTICS_CONSENT, choice);
+  } catch {
+    // intentionally ignored, see above
+  }
+}
+
+function clearGoogleAnalyticsCookies(): void {
+  const names = document.cookie
+    .split(";")
+    .map((pair) => pair.split("=")[0]?.trim() ?? "")
+    .filter((name) => name.startsWith(GA_COOKIE_PREFIX));
+  names.forEach((name) => {
+    document.cookie = `${name}=; max-age=0; expires=${EPOCH_UTC}; path=/`;
+  });
+}
+
 function disableFlagName(gaId: string): string {
   return `ga-disable-${gaId}`;
 }
@@ -32,18 +70,15 @@ export function loadGoogleAnalytics(gaId: string): void {
   loader.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(gaId)}`;
   document.head.appendChild(loader);
 
-  const win = window as unknown as {
-    dataLayer: unknown[];
-    gtag: (...args: unknown[]) => void;
-  };
-  win.dataLayer = win.dataLayer || [];
-  win.gtag = function gtag() {
+  const analyticsWindow = window as unknown as GtagWindow;
+  analyticsWindow.dataLayer = analyticsWindow.dataLayer || [];
+  analyticsWindow.gtag = function gtag() {
     // gtag.js expects the raw `arguments` object, not a rest array.
     // eslint-disable-next-line prefer-rest-params
-    win.dataLayer.push(arguments);
+    analyticsWindow.dataLayer.push(arguments);
   };
-  win.gtag("js", new Date());
-  win.gtag("config", gaId);
+  analyticsWindow.gtag("js", new Date());
+  analyticsWindow.gtag("config", gaId);
 }
 
 // Google's documented opt-out switch. A script already loaded this page view
@@ -51,4 +86,5 @@ export function loadGoogleAnalytics(gaId: string): void {
 // where the stored "denied" choice prevents the script loading at all.
 export function disableGoogleAnalytics(gaId: string): void {
   (window as unknown as Record<string, unknown>)[disableFlagName(gaId)] = true;
+  clearGoogleAnalyticsCookies();
 }

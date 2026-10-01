@@ -11,88 +11,15 @@
         <span class="mono faint" style="font-size: 12px">© 2026 markpost</span>
       </div>
       <div class="row mono gap-6" style="font-size: 12px; color: var(--ink-3)">
-        <NuxtLink
-          to="/pricing"
-          style="
-            background: none;
-            border: 0;
-            cursor: pointer;
-            font-family: var(--mono);
-            font-size: 13px;
-            padding: 0;
-            color: var(--ink-3);
-          "
-        >
-          pricing
-        </NuxtLink>
-        <NuxtLink
-          to="/docs"
-          style="
-            background: none;
-            border: 0;
-            cursor: pointer;
-            font-family: var(--mono);
-            font-size: 13px;
-            padding: 0;
-            color: var(--ink-3);
-          "
-        >
-          docs
-        </NuxtLink>
-        <NuxtLink
-          to="/login"
-          style="
-            background: none;
-            border: 0;
-            cursor: pointer;
-            font-family: var(--mono);
-            font-size: 13px;
-            padding: 0;
-            color: var(--ink-3);
-          "
-        >
-          sign in
-        </NuxtLink>
-        <NuxtLink
-          to="/privacy"
-          style="
-            background: none;
-            border: 0;
-            cursor: pointer;
-            font-family: var(--mono);
-            font-size: 13px;
-            padding: 0;
-            color: var(--ink-3);
-          "
-        >
-          privacy
-        </NuxtLink>
-        <NuxtLink
-          to="/terms"
-          style="
-            background: none;
-            border: 0;
-            cursor: pointer;
-            font-family: var(--mono);
-            font-size: 13px;
-            padding: 0;
-            color: var(--ink-3);
-          "
-        >
-          terms
-        </NuxtLink>
+        <NuxtLink to="/pricing" class="footer-link"> pricing </NuxtLink>
+        <NuxtLink to="/docs" class="footer-link"> docs </NuxtLink>
+        <NuxtLink to="/login" class="footer-link"> sign in </NuxtLink>
+        <NuxtLink to="/privacy" class="footer-link"> privacy </NuxtLink>
+        <NuxtLink to="/terms" class="footer-link"> terms </NuxtLink>
         <button
           v-if="gaId"
           type="button"
-          style="
-            background: none;
-            border: 0;
-            cursor: pointer;
-            font-family: var(--mono);
-            font-size: 13px;
-            padding: 0;
-            color: var(--ink-3);
-          "
+          class="footer-link"
           @click="reopenPrompt"
         >
           cookie settings
@@ -111,3 +38,15 @@
 const gaId = useRuntimeConfig().public.gaId;
 const { reopenPrompt } = useAnalyticsConsent();
 </script>
+
+<style scoped>
+.footer-link {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 0;
+  color: var(--ink-3);
+}
+</style>

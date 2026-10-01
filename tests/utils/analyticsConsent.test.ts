@@ -4,6 +4,8 @@ import {
   disableGoogleAnalytics,
   loadGoogleAnalytics,
   parseStoredConsent,
+  readStoredConsent,
+  writeStoredConsent,
 } from "../../app/utils/analyticsConsent";
 
 const GA_ID = "G-TEST123";
@@ -28,7 +30,42 @@ describe("parseStoredConsent", () => {
 describe("loadGoogleAnalytics", () => {
   beforeEach(() => {
     document.head.innerHTML = "";
-    delete (window as unknown as Record<string, unknown>).dataLayer;
+    const globals = window as unknown as Record<string, unknown>;
+    delete globals.dataLayer;
+    delete globals.gtag;
+    delete globals[`ga-disable-${GA_ID}`];
+  });
+
+  it("removes _ga cookies when analytics is disabled", () => {
+    document.cookie = "_ga=abc; path=/";
+    document.cookie = "_ga_TEST123=def; path=/";
+    document.cookie = "keep=1; path=/";
+    disableGoogleAnalytics(GA_ID);
+    expect(document.cookie).not.toContain("_ga");
+    expect(document.cookie).toContain("keep=1");
+  });
+
+  it("tolerates blocked storage", () => {
+    const original = Storage.prototype.getItem;
+    Storage.prototype.getItem = () => {
+      throw new Error("blocked");
+    };
+    try {
+      expect(readStoredConsent()).toBeNull();
+    } finally {
+      Storage.prototype.getItem = original;
+    }
+    expect(() => {
+      const originalSet = Storage.prototype.setItem;
+      Storage.prototype.setItem = () => {
+        throw new Error("blocked");
+      };
+      try {
+        writeStoredConsent("granted");
+      } finally {
+        Storage.prototype.setItem = originalSet;
+      }
+    }).not.toThrow();
   });
 
   it("injects the gtag script once and configures the id", () => {

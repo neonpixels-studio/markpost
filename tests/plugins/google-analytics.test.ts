@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { watch } from "vue";
+import { watch, nextTick } from "vue";
 import { useAnalyticsConsent } from "../../app/composables/useAnalyticsConsent";
 import {
   GA_SCRIPT_ELEMENT_ID,
@@ -34,6 +34,10 @@ describe("google-analytics plugin", () => {
     gaId = GA_ID;
     document.head.innerHTML = "";
     localStorage.clear();
+    const globals = window as unknown as Record<string, unknown>;
+    delete globals.dataLayer;
+    delete globals.gtag;
+    delete globals[`ga-disable-${GA_ID}`];
     useAnalyticsConsent().consent.value = null;
   });
 
@@ -46,6 +50,9 @@ describe("google-analytics plugin", () => {
     localStorage.setItem(STORAGE_KEY_ANALYTICS_CONSENT, "denied");
     runPlugin();
     expect(gaScript()).toBeNull();
+    expect(
+      (window as unknown as Record<string, unknown>)[`ga-disable-${GA_ID}`],
+    ).toBe(true);
   });
 
   it("injects GA when consent was previously granted", () => {

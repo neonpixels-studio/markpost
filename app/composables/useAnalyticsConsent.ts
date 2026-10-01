@@ -1,8 +1,8 @@
 import {
   CONSENT_DENIED,
   CONSENT_GRANTED,
-  STORAGE_KEY_ANALYTICS_CONSENT,
-  parseStoredConsent,
+  readStoredConsent,
+  writeStoredConsent,
   type AnalyticsConsent,
 } from "~/utils/analyticsConsent";
 
@@ -13,14 +13,12 @@ const isPromptOpen = ref(false);
 
 export function useAnalyticsConsent() {
   const initConsent = () => {
-    consent.value = parseStoredConsent(
-      localStorage.getItem(STORAGE_KEY_ANALYTICS_CONSENT),
-    );
+    consent.value = readStoredConsent();
     isPromptOpen.value = consent.value === null;
   };
 
   const setConsent = (choice: AnalyticsConsent) => {
-    localStorage.setItem(STORAGE_KEY_ANALYTICS_CONSENT, choice);
+    writeStoredConsent(choice);
     consent.value = choice;
     isPromptOpen.value = false;
   };
