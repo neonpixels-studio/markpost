@@ -1,5 +1,10 @@
 import TurndownService from "turndown";
 import { tables } from "@joplin/turndown-plugin-gfm";
+import {
+  isSafeImageUrl,
+  isSafeLinkUrl,
+  sanitizeElementTree,
+} from "./sanitizeHtml";
 
 export type ParsedPayload = {
   title: string;
@@ -57,6 +62,35 @@ const turndown = new TurndownService({
 // their content falls back to the default block-element handling and each
 // cell surfaces as its own bare paragraph, losing all row/column structure.
 turndown.use(tables);
+
+// Tables that can't be flattened to GFM (block content in a cell) are emitted
+// as raw outerHTML from untrusted input. Rules added later are matched first,
+// so this filter runs before the tables plugin's rule and sanitizes the table
+// in place. It never matches, so the plugin still renders the table.
+turndown.addRule("sanitizeRawHtmlTables", {
+  filter: (node) => {
+    if (node.nodeName === "TABLE") {
+      sanitizeElementTree(node as unknown as Element);
+    }
+    return false;
+  },
+  replacement: (content) => content,
+});
+
+// Links and images with a disallowed scheme (javascript:, data:, ...) are
+// reduced to their text / dropped instead of being written to stored markdown.
+turndown.addRule("unsafeLink", {
+  filter: (node) =>
+    node.nodeName === "A" &&
+    !!node.getAttribute("href") &&
+    !isSafeLinkUrl(node.getAttribute("href")),
+  replacement: (content) => content,
+});
+turndown.addRule("unsafeImage", {
+  filter: (node) =>
+    node.nodeName === "IMG" && !isSafeImageUrl(node.getAttribute("src")),
+  replacement: () => "",
+});
 
 export function convertHtmlToMarkdown(html: string): string {
   return turndown.turndown(html);

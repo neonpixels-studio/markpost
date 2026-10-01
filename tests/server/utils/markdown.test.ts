@@ -552,3 +552,110 @@ describe("assembleMarkdownDocument", () => {
     expect(result.indexOf("# My Note")).toBeGreaterThan(frontmatterEnd);
   });
 });
+
+describe("convertHtmlToMarkdown sanitization", () => {
+  const blockTable = (cell: string, tableAttributes = "") =>
+    `<table${tableAttributes}><tr><th>H</th></tr><tr><td>${cell}</td></tr></table>`;
+
+  it("keeps a table with block content as sanitized raw HTML", () => {
+    const result = convertHtmlToMarkdown(
+      blockTable("<ul><li>one</li><li>two</li></ul>"),
+    );
+    expect(result).toContain("<table>");
+    expect(result).toContain("<li>one</li>");
+  });
+
+  it("strips event handler and style attributes from the kept table", () => {
+    const result = convertHtmlToMarkdown(
+      blockTable(
+        '<ul onmouseover="alert(1)" style="x:y"><li class="c" onclick="x()">one</li></ul>',
+        ' onclick="alert(2)" class="evil" id="a"',
+      ),
+    );
+    expect(result).toContain("<li>one</li>");
+    expect(result).not.toMatch(/onclick|onmouseover|style=|class="evil"|id=/);
+  });
+
+  it("removes script and iframe elements with their content from the kept table", () => {
+    const result = convertHtmlToMarkdown(
+      blockTable(
+        '<ul><li>ok</li></ul><script>alert(1)</script><iframe src="https://evil.test"></iframe>',
+      ),
+    );
+    expect(result).not.toMatch(/script|iframe|alert/);
+    expect(result).toContain("ok");
+  });
+
+  it("unwraps unknown tags in the kept table but keeps their text", () => {
+    const result = convertHtmlToMarkdown(
+      blockTable("<ul><li><custom-tag>kept text</custom-tag></li></ul>"),
+    );
+    expect(result).not.toContain("custom-tag");
+    expect(result).toContain("kept text");
+  });
+
+  it("removes javascript: hrefs and obfuscated variants inside the kept table", () => {
+    const result = convertHtmlToMarkdown(
+      blockTable(
+        '<ul><li><a href="javascript:alert(1)">a</a><a href="  JaVa\tScript:alert(1)">b</a><a href="https://ok.test">c</a></li></ul>',
+      ),
+    );
+    expect(result).not.toMatch(/javascript/i);
+    expect(result).toContain('href="https://ok.test"');
+  });
+
+  it("removes data: image sources inside the kept table", () => {
+    const result = convertHtmlToMarkdown(
+      blockTable('<ul><li><img src="data:text/html,x" alt="a"></li></ul>'),
+    );
+    expect(result).not.toContain("data:");
+  });
+
+  it("still flattens simple tables to GFM", () => {
+    const result = convertHtmlToMarkdown(
+      '<table onclick="x()"><tr><th>A</th></tr><tr><td>1</td></tr></table>',
+    );
+    expect(result).toMatch(/\| A +\|/);
+    expect(result).not.toContain("<table");
+  });
+
+  it("drops javascript: link URLs but keeps the link text", () => {
+    const result = convertHtmlToMarkdown(
+      '<p><a href="javascript:alert(1)">click</a></p>',
+    );
+    expect(result).toBe("click");
+  });
+
+  it("drops data: and vbscript: link URLs", () => {
+    expect(
+      convertHtmlToMarkdown('<a href="data:text/html,<b>x</b>">x</a>'),
+    ).toBe("x");
+    expect(convertHtmlToMarkdown('<a href="vbscript:x">y</a>')).toBe("y");
+  });
+
+  it("keeps http, https, mailto, relative, and fragment links", () => {
+    expect(convertHtmlToMarkdown('<a href="http://a.test">a</a>')).toBe(
+      "[a](http://a.test)",
+    );
+    expect(convertHtmlToMarkdown('<a href="https://a.test">a</a>')).toBe(
+      "[a](https://a.test)",
+    );
+    expect(convertHtmlToMarkdown('<a href="mailto:a@b.test">a</a>')).toBe(
+      "[a](mailto:a@b.test)",
+    );
+    expect(convertHtmlToMarkdown('<a href="/rel">a</a>')).toBe("[a](/rel)");
+    expect(convertHtmlToMarkdown('<a href="#top">a</a>')).toBe("[a](#top)");
+  });
+
+  it("drops images with disallowed schemes and keeps https images", () => {
+    expect(
+      convertHtmlToMarkdown('<img src="javascript:alert(1)" alt="x">'),
+    ).toBe("");
+    expect(
+      convertHtmlToMarkdown('<img src="data:image/png;base64,AA" alt="x">'),
+    ).toBe("");
+    expect(
+      convertHtmlToMarkdown('<img src="https://a.test/i.png" alt="x">'),
+    ).toBe("![x](https://a.test/i.png)");
+  });
+});
