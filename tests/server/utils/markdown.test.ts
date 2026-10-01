@@ -684,4 +684,30 @@ describe("convertHtmlToMarkdown sanitization", () => {
       convertHtmlToMarkdown('<a href="https://a.test/?a=1&amp;b=2">x</a>'),
     ).toBe("[x](https://a.test/?a=1&b=2)");
   });
+
+  it("keeps relative links containing a literal ampersand", () => {
+    expect(
+      convertHtmlToMarkdown('<a href="terms&amp;conditions.html">x</a>'),
+    ).toBe("[x](terms&conditions.html)");
+  });
+
+  it("leaves links without an href as plain text", () => {
+    expect(convertHtmlToMarkdown("<a>text</a>")).toBe("text");
+    expect(convertHtmlToMarkdown('<a href="">text</a>')).toBe("text");
+  });
+
+  it("does not let blank lines in attributes or pre text escape the kept table", () => {
+    const attributeEscape = convertHtmlToMarkdown(
+      blockTable(
+        '<ul><li><img src="https://a.test/i.png" alt="x&#10;&#10;<img src=x onerror=alert(1)>&#10;"></li></ul>',
+      ),
+    );
+    const preEscape = convertHtmlToMarkdown(
+      blockTable("<ul><li><pre>a\n\n[x](javascript:alert(1))</pre></li></ul>"),
+    );
+    for (const result of [attributeEscape, preEscape]) {
+      expect(result).not.toMatch(/\n[ \t]*\n(?=[^]*<\/table>)/);
+    }
+    expect(attributeEscape).not.toContain("<img src=x");
+  });
 });

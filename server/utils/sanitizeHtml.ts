@@ -3,15 +3,17 @@ const IMAGE_URL_SCHEMES = ["http:", "https:"];
 // Browsers ignore whitespace and control characters inside a URL scheme
 // ("java\tscript:"), so they are stripped before the scheme check.
 const URL_IGNORED_CHARS_PATTERN = /[\u0000- \u007f-\u009f]/g;
+const ATTRIBUTE_BREAKING_CHARS_PATTERN = /[\r\n<>]+/g;
+const BLANK_LINE_PATTERN = /(\r?\n)[ \t\r]*(?=\r?\n)/g;
+const TEXT_NODE_TYPE = 3;
 const URL_SCHEME_PATTERN = /^([a-z][a-z0-9+.-]*:)/i;
 // Markdown renderers decode entities and backslash escapes in link
 // destinations, so "javascript&#58;" or "javascript\\:" would become a real
-// scheme after storage. Any such character before the first path/query/fragment
+// scheme after storage. Any entity-shaped sequence or backslash before the first path/query
 // delimiter is treated as an obfuscated scheme and rejected.
-const URL_SCHEME_SEGMENT_PATTERN = /^[^/?#]*/;
-const URL_OBFUSCATION_PATTERN = /[&\\]/;
+const URL_SCHEME_SEGMENT_PATTERN = /^[^/?]*/;
+const URL_OBFUSCATION_PATTERN = /&(#x?[0-9a-f]+|[a-z][a-z0-9]*);|\\/i;
 
-const GLOBAL_ALLOWED_ATTRIBUTES: string[] = [];
 const ALLOWED_ATTRIBUTES_BY_TAG: Record<string, string[]> = {
   A: ["href", "title"],
   IMG: ["src", "alt", "title", "width", "height"],
@@ -119,10 +121,8 @@ export function isSafeImageUrl(value: string | null | undefined): boolean {
 
 function isAttributeAllowed(element: Element, attributeName: string): boolean {
   const name = attributeName.toLowerCase();
-  const allowedNames = [
-    ...GLOBAL_ALLOWED_ATTRIBUTES,
-    ...(ALLOWED_ATTRIBUTES_BY_TAG[element.nodeName.toUpperCase()] ?? []),
-  ];
+  const allowedNames =
+    ALLOWED_ATTRIBUTES_BY_TAG[element.nodeName.toUpperCase()] ?? [];
   if (!allowedNames.includes(name)) {
     return false;
   }
@@ -137,14 +137,34 @@ function isAttributeAllowed(element: Element, attributeName: string): boolean {
 }
 
 function stripDisallowedAttributes(element: Element): void {
-  const attributeNames = Array.from(element.attributes).map(
-    (attribute) => attribute.name,
-  );
-  for (const attributeName of attributeNames) {
-    if (!isAttributeAllowed(element, attributeName)) {
-      element.removeAttribute(attributeName);
-    }
+  Array.from(element.attributes)
+    .map((attribute) => attribute.name)
+    .filter((attributeName) => !isAttributeAllowed(element, attributeName))
+    .forEach((attributeName) => element.removeAttribute(attributeName));
+}
+
+// A raw HTML block ends at the first blank line and the remainder is parsed as
+// Markdown again. Kept attribute values and text must never serialize with a
+// blank line (or a literal "<") or they could smuggle markup out of the block.
+function normalizeAttributeValues(element: Element): void {
+  for (const attribute of Array.from(element.attributes)) {
+    const isUrl = attribute.name.toLowerCase() in URL_ATTRIBUTE_SCHEMES;
+    const normalized = isUrl
+      ? attribute.value.replace(URL_IGNORED_CHARS_PATTERN, "")
+      : attribute.value.replace(ATTRIBUTE_BREAKING_CHARS_PATTERN, " ");
+    element.setAttribute(attribute.name, normalized);
   }
+}
+
+function breakBlankLines(node: Node): void {
+  if (node.nodeType === TEXT_NODE_TYPE) {
+    node.textContent = (node.textContent ?? "").replace(
+      BLANK_LINE_PATTERN,
+      "$1\u00a0",
+    );
+    return;
+  }
+  Array.from(node.childNodes).forEach(breakBlankLines);
 }
 
 function unwrapElement(element: Element): void {
@@ -181,4 +201,8 @@ export function sanitizeElementTree(root: Element): void {
   for (const descendant of descendants) {
     sanitizeElement(descendant);
   }
+  for (const element of [root, ...Array.from(root.querySelectorAll("*"))]) {
+    normalizeAttributeValues(element);
+  }
+  breakBlankLines(root);
 }

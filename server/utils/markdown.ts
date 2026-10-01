@@ -80,10 +80,10 @@ turndown.addRule("sanitizeRawHtmlTables", {
 // Links and images with a disallowed scheme (javascript:, data:, ...) are
 // reduced to their text / dropped instead of being written to stored markdown.
 turndown.addRule("unsafeLink", {
-  filter: (node) =>
-    node.nodeName === "A" &&
-    !!node.getAttribute("href") &&
-    !isSafeLinkUrl(node.getAttribute("href")),
+  filter: (node) => {
+    const href = node.getAttribute("href");
+    return node.nodeName === "A" && !!href && !isSafeLinkUrl(href);
+  },
   replacement: (content) => content,
 });
 turndown.addRule("unsafeImage", {
