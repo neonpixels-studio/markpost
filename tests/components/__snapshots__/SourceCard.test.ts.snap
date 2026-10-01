@@ -1,5 +1,43 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`SourceCard > matches snapshot for a paused source 1`] = `
+"<div class="card card-pad">
+  <div class="row between">
+    <div class="row gap-3"><span style="width: 40px; height: 40px; border-radius: 9px; background: var(--accent-tint); color: var(--accent-700); display: grid; place-items: center; flex-grow: 0; flex-shrink: 0; flex-basis: auto;"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg></span>
+      <div class="col" style="gap: 3px;"><span class="row gap-2" style="align-items: center;"><span style="font-weight: 600; font-size: 15px;">Webhook endpoint</span>
+        <!--v-if--></span><span class="mono faint" style="font-size: 11.5px;">POST · any JSON payload</span>
+      </div>
+    </div>
+    <div class="row gap-2" style="align-items: center;"><span class="badge warn"><i class="dot"></i>paused</span><button class="icon-btn" title="Configure field mapping" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="4" y1="6" x2="20" y2="6"></line>
+          <line x1="4" y1="12" x2="20" y2="12"></line>
+          <line x1="4" y1="18" x2="20" y2="18"></line>
+          <circle cx="9" cy="6" r="2.4" fill="var(--surface)"></circle>
+          <circle cx="15" cy="12" r="2.4" fill="var(--surface)"></circle>
+          <circle cx="8" cy="18" r="2.4" fill="var(--surface)"></circle>
+        </svg></button><button class="icon-btn" title="Resume source" aria-label="Resume source" aria-pressed="true" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="6 3 20 12 6 21 6 3"></polygon>
+        </svg></button>
+      <!--v-if--><button class="icon-btn" title="Send test event" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        </svg></button><button class="icon-btn" title="Remove source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg></button>
+    </div>
+  </div>
+  <div class="code" style="margin-top: 16px;">
+    <div class="code-head"><span class="lang">ingest url</span><button class="icon-btn mono" style="font-size: 11px; gap: 5px; display: inline-flex; align-items: center; color: var(--ink-3);"><svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg> copy</button></div>
+    <div class="code-body mono" style="font-size: 12.5px; word-break: break-all;">https://ingest.markpost.io/v1/hooks/<span style="color: var(--accent-700);">wh_abc12345</span></div>
+  </div>
+  <!--v-if-->
+  <div class="row wrap mono gap-6" style="font-size: 11.5px; color: var(--ink-3); margin-top: 14px;"><span>42 records</span><span>never hit</span><span>routes to 99-incoming/</span></div>
+</div>"
+`;
+
 exports[`SourceCard > matches snapshot for a preset (stripe) source 1`] = `
 "<div class="card card-pad">
   <div class="row between">
@@ -13,6 +51,9 @@ exports[`SourceCard > matches snapshot for a preset (stripe) source 1`] = `
           <circle cx="9" cy="6" r="2.4" fill="var(--surface)"></circle>
           <circle cx="15" cy="12" r="2.4" fill="var(--surface)"></circle>
           <circle cx="8" cy="18" r="2.4" fill="var(--surface)"></circle>
+        </svg></button><button class="icon-btn" title="Pause source" aria-label="Pause source" aria-pressed="false" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6" y="4" width="4" height="16" rx="1"></rect>
+          <rect x="14" y="4" width="4" height="16" rx="1"></rect>
         </svg></button>
       <!--v-if--><button class="icon-btn" title="Send test event" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
@@ -49,6 +90,9 @@ exports[`SourceCard > matches snapshot for a webhook source 1`] = `
           <circle cx="9" cy="6" r="2.4" fill="var(--surface)"></circle>
           <circle cx="15" cy="12" r="2.4" fill="var(--surface)"></circle>
           <circle cx="8" cy="18" r="2.4" fill="var(--surface)"></circle>
+        </svg></button><button class="icon-btn" title="Pause source" aria-label="Pause source" aria-pressed="false" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6" y="4" width="4" height="16" rx="1"></rect>
+          <rect x="14" y="4" width="4" height="16" rx="1"></rect>
         </svg></button>
       <!--v-if--><button class="icon-btn" title="Send test event" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
@@ -79,7 +123,10 @@ exports[`SourceCard > matches snapshot for an email source 1`] = `
       </div>
     </div>
     <div class="row gap-2" style="align-items: center;"><span class="badge warn"><i class="dot"></i>idle</span>
-      <!--v-if-->
+      <!--v-if--><button class="icon-btn" title="Pause source" aria-label="Pause source" aria-pressed="false" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6" y="4" width="4" height="16" rx="1"></rect>
+          <rect x="14" y="4" width="4" height="16" rx="1"></rect>
+        </svg></button>
       <!--v-if-->
       <!--v-if--><button class="icon-btn" title="Remove source" style="color: var(--ink-3);"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="3 6 5 6 21 6"></polyline>

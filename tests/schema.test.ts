@@ -231,6 +231,12 @@ describe("records schema", () => {
 });
 
 describe("sources schema", () => {
+  it("has a paused boolean that defaults to false so existing sources keep ingesting", () => {
+    expect(sources.paused.name).toBe("paused");
+    expect(sources.paused.notNull).toBe(true);
+    expect(sources.paused.default).toBe(false);
+  });
+
   it("includes a uuid primary key column", () => {
     expect(sources.uuid).toBeDefined();
   });

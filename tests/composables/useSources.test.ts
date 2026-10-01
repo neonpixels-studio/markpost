@@ -83,6 +83,7 @@ describe("buildSourceMeta", () => {
     fieldMapping: null,
     lastHitAt: null,
     recordCount: 0,
+    paused: false,
   };
 
   it("returns three meta items in correct order", () => {
@@ -133,6 +134,7 @@ describe("sourceActivityStatus", () => {
     fieldMapping: null,
     lastHitAt: null,
     recordCount: 0,
+    paused: false,
   };
 
   beforeEach(() => {
@@ -142,6 +144,17 @@ describe("sourceActivityStatus", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("is 'paused' (warn) for a paused source regardless of delivery history", () => {
+    const recentHit = new Date("2026-01-14T12:00:00Z").toISOString();
+    expect(
+      sourceActivityStatus({
+        ...baseAttributes,
+        lastHitAt: recentHit,
+        paused: true,
+      }),
+    ).toEqual({ tone: "warn", label: "paused" });
   });
 
   it("is 'active' (ok) when the source delivered within the active window", () => {
@@ -269,6 +282,7 @@ function makeSourceResource(
       fieldMapping: null,
       lastHitAt: null,
       recordCount: 0,
+      paused: false,
     },
     links: { self: "/api/sources/attributes-uuid" },
     ...overrides,
@@ -328,6 +342,7 @@ describe("useSources", () => {
           fieldMapping: null,
           lastHitAt: null,
           recordCount: 0,
+          paused: false,
         },
       });
       const { sources, removeSource } = useSources();
@@ -372,6 +387,7 @@ describe("useSources", () => {
           fieldMapping: null,
           lastHitAt: null,
           recordCount: 0,
+          paused: false,
         },
       });
       mockFetch.mockResolvedValue({ data: rotated });
@@ -402,6 +418,7 @@ describe("useSources", () => {
           fieldMapping: null,
           lastHitAt: null,
           recordCount: 0,
+          paused: false,
         },
       });
       mockFetch.mockResolvedValue({ data: rotated });
@@ -439,6 +456,7 @@ describe("useSources", () => {
           fieldMapping: null,
           lastHitAt: null,
           recordCount: 0,
+          paused: false,
         },
       });
       const rotated = {
@@ -485,6 +503,39 @@ describe("useSources", () => {
     });
   });
 
+  describe("setPaused", () => {
+    it.each([[true], [false]])(
+      "PATCHes paused: %s and replaces the entry in the reactive list",
+      async (paused) => {
+        const existing = makeSourceResource({ id: "attributes-uuid" });
+        const updated = makeSourceResource({
+          attributes: { ...existing.attributes, paused },
+        });
+        mockFetch.mockResolvedValue({ data: updated });
+        const { sources, setPaused } = useSources();
+        sources.value = [existing];
+
+        await setPaused("attributes-uuid", paused);
+
+        expect(mockFetch).toHaveBeenCalledWith("/api/sources/attributes-uuid", {
+          method: "PATCH",
+          body: { data: { type: "sources", attributes: { paused } } },
+        });
+        expect(sources.value[0]?.attributes.paused).toBe(paused);
+      },
+    );
+
+    it("propagates a failed request and leaves the list untouched", async () => {
+      const existing = makeSourceResource({ id: "attributes-uuid" });
+      mockFetch.mockRejectedValue(new Error("boom"));
+      const { sources, setPaused } = useSources();
+      sources.value = [existing];
+
+      await expect(setPaused("attributes-uuid", true)).rejects.toThrow("boom");
+      expect(sources.value[0]?.attributes.paused).toBe(false);
+    });
+  });
+
   describe("updateFieldMapping", () => {
     it("PATCHes the source with the given fieldMapping", async () => {
       const updated = makeSourceResource({
@@ -500,6 +551,7 @@ describe("useSources", () => {
           fieldMapping: { title: "data.subject" },
           lastHitAt: null,
           recordCount: 0,
+          paused: false,
         },
       });
       mockFetch.mockResolvedValue({ data: updated });
@@ -538,6 +590,7 @@ describe("useSources", () => {
           fieldMapping: null,
           lastHitAt: null,
           recordCount: 0,
+          paused: false,
         },
       });
       mockFetch.mockResolvedValue({ data: updated });
@@ -568,6 +621,7 @@ describe("useSources", () => {
           fieldMapping: null,
           lastHitAt: null,
           recordCount: 0,
+          paused: false,
         },
       });
       const updated = {

@@ -94,6 +94,7 @@
             @rotate="onRotateRequested"
             @configure-mapping="onConfigureMappingRequested"
             @test-event="onTestEventRequested"
+            @toggle-pause="onTogglePauseRequested"
           />
 
           <button
@@ -217,6 +218,7 @@ const {
   addSource: addSourceToList,
   rotateSecret,
   updateFieldMapping,
+  setPaused,
   sendTestEvent,
 } = useSources();
 
@@ -228,6 +230,7 @@ const pendingRemoveUuid = ref<string | null>(null);
 const loadError = ref<string | null>(null);
 const addError = ref<string | null>(null);
 const removeError = ref<string | null>(null);
+const pauseError = ref<string | null>(null);
 const rotateError = ref<string | null>(null);
 const fieldMappingError = ref<string | null>(null);
 const testEventError = ref<string | null>(null);
@@ -242,6 +245,8 @@ const isSavingFieldMapping = ref(false);
 // Same guard for sending a test event (see TestEventModal's `submitting`
 // prop).
 const isSendingTestEvent = ref(false);
+// Sources with a pause/resume request in flight (see onTogglePauseRequested).
+const pausingUuids = ref(new Set<string>());
 
 // The transient add/remove failures share one dismissible-banner shape. Each is
 // cleared when its own action restarts, so both can be visible at once if the
@@ -261,6 +266,12 @@ const actionErrors = computed(() =>
       title: "Failed to remove source",
       message: removeError.value,
       clear: () => (removeError.value = null),
+    },
+    {
+      key: "pause",
+      title: "Failed to update source",
+      message: pauseError.value,
+      clear: () => (pauseError.value = null),
     },
   ].filter((actionError) => actionError.message !== null),
 );
@@ -282,6 +293,29 @@ async function fetchInitialSources(): Promise<void> {
     loadError.value = "Failed to load sources. Please try again.";
   }
 }
+
+// Pauses a running source or resumes a paused one. Ignored while another
+// toggle is in flight so a double-click can't send two contradictory PATCHes.
+const onTogglePauseRequested = async (uuid: string) => {
+  const source = sources.value.find(
+    (candidate) => candidate.attributes.uuid === uuid,
+  );
+  if (!source || pausingUuids.value.has(uuid)) {
+    return;
+  }
+
+  pauseError.value = null;
+  pausingUuids.value.add(uuid);
+
+  try {
+    await setPaused(uuid, !source.attributes.paused);
+  } catch (toggleError) {
+    console.error("[sources] togglePause error:", toErrorMessage(toggleError));
+    pauseError.value = "Failed to update source. Please try again.";
+  } finally {
+    pausingUuids.value.delete(uuid);
+  }
+};
 
 const openModal = () => {
   modalState.value = {

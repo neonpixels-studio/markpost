@@ -63,6 +63,19 @@
           <AppIcon name="sliders" :size="16" />
         </button>
         <button
+          class="icon-btn"
+          :title="pauseTitle"
+          :aria-label="pauseTitle"
+          :aria-pressed="source.attributes.paused"
+          style="color: var(--ink-3)"
+          @click="emit('toggle-pause', source.attributes.uuid)"
+        >
+          <AppIcon
+            :name="source.attributes.paused ? 'play' : 'pause'"
+            :size="16"
+          />
+        </button>
+        <button
           v-if="isRotatable"
           class="icon-btn"
           title="Rotate secret"
@@ -192,7 +205,12 @@ const emit = defineEmits<{
   rotate: [uuid: string];
   "configure-mapping": [uuid: string];
   "test-event": [uuid: string];
+  "toggle-pause": [uuid: string];
 }>();
+
+const pauseTitle = computed(() =>
+  props.source.attributes.paused ? "Resume source" : "Pause source",
+);
 
 // Only provider-backed sources have a rotatable secret; a plain webhook or
 // email-in source has none, so the action is hidden for them.

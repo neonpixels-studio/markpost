@@ -181,6 +181,10 @@ export const sources = pgTable(
       .defaultNow()
       .notNull(),
     throttleCount: integer("throttle_count").default(0).notNull(),
+    // A paused source keeps its endpointSlug and secret but rejects incoming
+    // deliveries (see server/api/hooks/[slug].post.ts). Defaults to false so
+    // every existing source keeps ingesting.
+    paused: boolean("paused").default(false).notNull(),
   },
   (table) => [
     index("sources_user_id_idx").on(table.userId),

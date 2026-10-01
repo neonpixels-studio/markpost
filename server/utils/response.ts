@@ -210,6 +210,7 @@ type SourceAttributes = {
   fieldMapping: unknown;
   lastHitAt: Date | null;
   recordCount: number;
+  paused: boolean;
 };
 
 type SourceInput = SourceAttributes;
@@ -258,6 +259,7 @@ export function sourceSerializer(
       fieldMapping: source.fieldMapping,
       lastHitAt: source.lastHitAt,
       recordCount: source.recordCount,
+      paused: source.paused,
     },
     links: {
       self: `/api/sources/${source.uuid}`,

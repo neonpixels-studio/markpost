@@ -176,6 +176,13 @@
       "when": 1790033309801,
       "tag": "0028_add_auth_failure_throttle",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790829869770,
+      "tag": "0029_add_source_paused",
+      "breakpoints": true
     }
   ]
 }

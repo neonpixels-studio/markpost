@@ -36,6 +36,7 @@ const sampleSource = {
   fieldMapping: { event: "$.type" },
   lastHitAt: null,
   recordCount: 0,
+  paused: false,
 };
 
 function buildEvent(contextUserId: string | undefined): H3Event {
@@ -115,6 +116,7 @@ describe("PATCH /api/sources/:uuid", () => {
           fieldMapping: { event: "$.type" },
           lastHitAt: null,
           recordCount: 0,
+          paused: false,
         },
         links: { self: `/api/sources/${validUuid}` },
       },
@@ -206,6 +208,63 @@ describe("PATCH /api/sources/:uuid", () => {
       data: { errors: expect.any(Array) },
     });
   });
+
+  it("pauses a source and returns paused: true", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ paused: true }));
+    const { set } = stubUpdateResult([{ ...sampleSource, paused: true }]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ paused: true });
+    expect(response.data?.attributes.paused).toBe(true);
+  });
+
+  it("resumes a paused source and returns paused: false", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ paused: false }));
+    const { set } = stubUpdateResult([{ ...sampleSource, paused: false }]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(set).toHaveBeenCalledWith({ paused: false });
+    expect(response.data?.attributes.paused).toBe(false);
+  });
+
+  it("keeps endpointSlug in the response when pausing", async () => {
+    mockGetRouterParam.mockReturnValue(validUuid);
+    mockReadBody.mockResolvedValue(buildBody({ paused: true }));
+    stubUpdateResult([{ ...sampleSource, paused: true }]);
+
+    const response = await handler(buildEvent(userId));
+
+    expect(response.data?.attributes.endpointSlug).toBe(
+      sampleSource.endpointSlug,
+    );
+  });
+
+  it.each([["true"], [1], [null]])(
+    "throws 422 when paused is not a boolean (%s)",
+    async (paused) => {
+      mockGetRouterParam.mockReturnValue(validUuid);
+      mockReadBody.mockResolvedValue(buildBody({ paused }));
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 422,
+        data: {
+          errors: [
+            expect.objectContaining({
+              source: { pointer: "/data/attributes/paused" },
+            }),
+          ],
+        },
+      });
+      expect(updateMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("throws 422 when routeFolder is not a string", async () => {
     mockGetRouterParam.mockReturnValue(validUuid);

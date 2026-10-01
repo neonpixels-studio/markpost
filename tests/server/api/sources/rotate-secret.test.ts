@@ -39,6 +39,7 @@ const sampleSource = {
   fieldMapping: null,
   lastHitAt: null,
   recordCount: 0,
+  paused: false,
 };
 
 function buildEvent(contextUserId: string | undefined): H3Event {

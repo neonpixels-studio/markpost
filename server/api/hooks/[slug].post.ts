@@ -73,6 +73,7 @@ type SourceRow = {
   providerSecret: string | null;
   fieldMapping: unknown;
   lastHitAt: Date | null;
+  paused: boolean;
 };
 
 type UserSettingsRow = {
@@ -91,6 +92,19 @@ function apiError(httpStatus: number, title: string, detail: string): ApiError {
 
 function notFoundError(): ApiError {
   return apiError(404, "Not Found", "No source was found for the given slug.");
+}
+
+// 423 Locked: the source exists and is intentionally disabled by its owner, so
+// this is neither a 404 (the slug is valid) nor a retryable 429/503. Providers
+// that retry non-2xx deliveries will keep retrying until the source resumes.
+const PAUSED_STATUS = 423;
+
+function sourcePausedError(): ApiError {
+  return apiError(
+    PAUSED_STATUS,
+    "Locked",
+    "This source is paused. Resume it to accept deliveries.",
+  );
 }
 
 function signatureError(reason: string): ApiError {
@@ -137,6 +151,7 @@ async function resolveSourceBySlug(slug: string): Promise<SourceRow | null> {
       providerSecret: sources.providerSecret,
       fieldMapping: sources.fieldMapping,
       lastHitAt: sources.lastHitAt,
+      paused: sources.paused,
     })
     .from(sources)
     .where(eq(sources.endpointSlug, slug))
@@ -528,6 +543,10 @@ async function resolveAndValidateSource(
 
   if (!source) {
     throw notFoundError();
+  }
+
+  if (source.paused) {
+    throw sourcePausedError();
   }
 
   return source;
@@ -941,6 +960,8 @@ export default defineEventHandler(async (event) => {
     assertContentLengthWithinLimit(getHeader(event, CONTENT_LENGTH_HEADER));
 
     const slug = getRouterParam(event, "slug");
+    // Also rejects a paused source (423) here, before the body is read, the
+    // signature is checked, or the throttle is touched.
     const source = await resolveAndValidateSource(slug);
 
     const rawBodyText = await readRawBody(event);

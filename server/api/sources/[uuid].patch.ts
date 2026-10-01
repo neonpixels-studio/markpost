@@ -13,6 +13,7 @@ import { invalidUuidError, isValidUuid } from "../../utils/uuid";
 type PatchSourceAttributes = {
   routeFolder?: string;
   fieldMapping?: unknown;
+  paused?: unknown;
 };
 
 type PatchSourceBody = ApiRequest & {
@@ -24,6 +25,7 @@ type PatchSourceBody = ApiRequest & {
 type SourceUpdatePayload = {
   routeFolder?: string;
   fieldMapping?: unknown;
+  paused?: boolean;
 };
 
 function emptyUpdateError(): ApiError {
@@ -32,12 +34,35 @@ function emptyUpdateError(): ApiError {
       {
         status: "422",
         title: "Invalid Attribute",
-        detail: "At least one of routeFolder or fieldMapping must be provided.",
+        detail:
+          "At least one of routeFolder, fieldMapping, or paused must be provided.",
         source: { pointer: "/data/attributes" },
       },
     ],
     422,
   );
+}
+
+function invalidPausedError(): ApiError {
+  return new ApiError(
+    [
+      {
+        status: "422",
+        title: "Invalid Attribute",
+        detail: "paused must be a boolean.",
+        source: { pointer: "/data/attributes/paused" },
+      },
+    ],
+    422,
+  );
+}
+
+function assertValidPaused(paused: unknown): boolean {
+  if (typeof paused !== "boolean") {
+    throw invalidPausedError();
+  }
+
+  return paused;
 }
 
 function buildUpdatePayload(
@@ -51,6 +76,10 @@ function buildUpdatePayload(
 
   if ("fieldMapping" in attributes) {
     payload.fieldMapping = attributes.fieldMapping ?? null;
+  }
+
+  if (attributes.paused !== undefined) {
+    payload.paused = assertValidPaused(attributes.paused);
   }
 
   return payload;
