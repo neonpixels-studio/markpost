@@ -81,6 +81,7 @@ const clerkGlobals = {
 
 const appGlobals = {
   useTheme: "readonly",
+  useAnalyticsConsent: "readonly",
   useSettings: "readonly",
   useSyncSettings: "readonly",
   useApiTokens: "readonly",

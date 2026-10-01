@@ -53,6 +53,50 @@
         >
           sign in
         </NuxtLink>
+        <NuxtLink
+          to="/privacy"
+          style="
+            background: none;
+            border: 0;
+            cursor: pointer;
+            font-family: var(--mono);
+            font-size: 13px;
+            padding: 0;
+            color: var(--ink-3);
+          "
+        >
+          privacy
+        </NuxtLink>
+        <NuxtLink
+          to="/terms"
+          style="
+            background: none;
+            border: 0;
+            cursor: pointer;
+            font-family: var(--mono);
+            font-size: 13px;
+            padding: 0;
+            color: var(--ink-3);
+          "
+        >
+          terms
+        </NuxtLink>
+        <button
+          v-if="gaId"
+          type="button"
+          style="
+            background: none;
+            border: 0;
+            cursor: pointer;
+            font-family: var(--mono);
+            font-size: 13px;
+            padding: 0;
+            color: var(--ink-3);
+          "
+          @click="reopenPrompt"
+        >
+          cookie settings
+        </button>
         <span class="row gap-2">
           <AppBadge tone="ok" dot style="font-size: 10px"
             >all systems go</AppBadge
@@ -62,3 +106,8 @@
     </div>
   </footer>
 </template>
+
+<script setup lang="ts">
+const gaId = useRuntimeConfig().public.gaId;
+const { reopenPrompt } = useAnalyticsConsent();
+</script>

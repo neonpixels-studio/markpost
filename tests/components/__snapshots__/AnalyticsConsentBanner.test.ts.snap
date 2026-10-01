@@ -1,0 +1,8 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`AnalyticsConsentBanner > matches snapshot when no choice is stored 1`] = `
+"<section class="card row between wrap gap-4" role="region" aria-label="Analytics consent" style="position: fixed; right: 20px; bottom: 20px; left: 20px; max-width: 560px; margin-left: auto; padding: 16px 20px; z-index: 50;">
+  <p class="muted" style="margin: 0px; font-size: 13.5px; flex-grow: 1; flex-shrink: 1; flex-basis: 240px;"> Allow Google Analytics to measure how the site is used? It stays off unless you accept. See the <a>privacy policy</a>. </p>
+  <div class="row gap-2"><button size="sm">decline</button><button size="sm" variant="accent">accept</button></div>
+</section>"
+`;

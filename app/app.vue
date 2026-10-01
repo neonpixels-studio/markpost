@@ -1,6 +1,7 @@
 <template>
   <NuxtRouteAnnouncer />
   <NuxtPage />
+  <AnalyticsConsentBanner />
 </template>
 
 <script setup lang="ts">

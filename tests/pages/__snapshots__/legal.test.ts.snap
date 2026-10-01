@@ -1,0 +1,72 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`legal pages > privacy page matches snapshot 1`] = `
+"<!--
+    @todo DRAFT, not legal advice. Written from what the code does. The owner
+    must review (contact address, jurisdiction, retention, processors) before
+    relying on it.
+  -->
+<div class="scroll" style="height: 100vh; overflow-y: auto; background: var(--bg);">
+  <the-marketing-nav-stub></the-marketing-nav-stub>
+  <main style="max-width: 760px; margin: 0px auto; padding: 56px 40px 72px;"><span>legal</span>
+    <h1 class="h1" style="margin-top: 16px;">Privacy policy</h1>
+    <p class="mono faint" style="margin-top: 10px; font-size: 12px;"> Last updated September 30, 2026</p>
+    <div class="col gap-4" style="margin-top: 32px; line-height: 1.6;">
+      <p class="muted"> This is a plain-language summary of what markpost collects and why. It is a draft pending owner review. </p>
+      <h2 class="h2">What we store</h2>
+      <ul class="col gap-2" style="padding-left: 20px;">
+        <li> Your account identifier from our sign-in provider, and the Stripe customer id if you subscribe. </li>
+        <li>The sources, API tokens (stored hashed), and settings you create.</li>
+        <li> Everything sent to your endpoints: webhook and email payloads are converted to Markdown records and kept until you delete them or your account. </li>
+        <li> An activity log of events, automatically removed after 90 days. </li>
+      </ul>
+      <h2 class="h2">Third parties</h2>
+      <ul class="col gap-2" style="padding-left: 20px;">
+        <li>Clerk handles sign-in and holds your email and credentials.</li>
+        <li>Stripe processes payments. We never see your card details.</li>
+        <li>Neon hosts the database, and Netlify hosts the app.</li>
+        <li> Sentry receives error reports and performance data, which may include session replays of the app. </li>
+        <li> Google Analytics (GA4) measures site usage. It loads only if you accept analytics in the consent prompt. </li>
+      </ul>
+      <h2 class="h2">Analytics choice</h2>
+      <p class="muted"> Your choice is stored in this browser (local storage) and you can change it any time from the "cookie settings" link in the footer. Declining never limits what you can do in markpost. </p>
+      <h2 class="h2">Deleting your data</h2>
+      <p class="muted"> Deleting your account in settings cancels billing and removes your records, sources, tokens, and settings. </p>
+      <h2 class="h2">Contact</h2>
+      <p class="muted"> Questions or requests: open an issue at <a href="https://github.com/neonpixels-studio/markpost"> github.com/neonpixels-studio/markpost</a>. </p>
+    </div>
+  </main>
+  <the-marketing-footer-stub></the-marketing-footer-stub>
+</div>"
+`;
+
+exports[`legal pages > terms page matches snapshot 1`] = `
+"<!--
+    @todo DRAFT, not legal advice. Written from what the code does. The owner
+    must review (liability, governing law, refunds, acceptable use) before
+    relying on it.
+  -->
+<div class="scroll" style="height: 100vh; overflow-y: auto; background: var(--bg);">
+  <the-marketing-nav-stub></the-marketing-nav-stub>
+  <main style="max-width: 760px; margin: 0px auto; padding: 56px 40px 72px;"><span>legal</span>
+    <h1 class="h1" style="margin-top: 16px;">Terms of service</h1>
+    <p class="mono faint" style="margin-top: 10px; font-size: 12px;"> Last updated September 30, 2026</p>
+    <div class="col gap-4" style="margin-top: 32px; line-height: 1.6;">
+      <p class="muted"> These are the basic terms for using markpost. They are a draft pending owner review. </p>
+      <h2 class="h2">The service</h2>
+      <p class="muted"> markpost receives webhooks and email you point at it, converts them to Markdown, and makes them available for sync to your vault. It is provided as is, without warranties, and may change or be interrupted. </p>
+      <h2 class="h2">Your account</h2>
+      <p class="muted"> You are responsible for your account, your API tokens, and the content sent to your endpoints. Keep secrets safe and rotate them if exposed. </p>
+      <h2 class="h2">Acceptable use</h2>
+      <p class="muted"> Do not use markpost to send unlawful content, to abuse or overload the service, or to probe other users' data. We may throttle or suspend accounts that do. </p>
+      <h2 class="h2">Billing</h2>
+      <p class="muted"> Paid plans are billed through Stripe and can be cancelled at any time; see <a>pricing</a> for plan limits. Your files stay yours when you cancel. </p>
+      <h2 class="h2">Your data</h2>
+      <p class="muted"> You keep ownership of what you send us. How we handle it is described in the <a>privacy policy</a>. </p>
+      <h2 class="h2">Liability</h2>
+      <p class="muted"> To the extent the law allows, markpost is not liable for lost data or indirect damages. Export your records if they matter to you. </p>
+    </div>
+  </main>
+  <the-marketing-footer-stub></the-marketing-footer-stub>
+</div>"
+`;
