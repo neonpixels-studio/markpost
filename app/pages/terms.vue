@@ -1,10 +1,10 @@
 <template>
-  <!--
-    @todo DRAFT, not legal advice. Written from what the code does. The owner
-    must review (liability, governing law, refunds, acceptable use) before
-    relying on it.
-  -->
   <LegalDocument eyebrow="legal" title="Terms of service" :updated="UPDATED">
+    <!--
+      @todo DRAFT, not legal advice. Written from what the code does. The owner
+      must review (liability, governing law, refunds, acceptable use) before
+      relying on it.
+    -->
     <p class="muted">
       These are the basic terms for using markpost. They are a draft pending
       owner review.

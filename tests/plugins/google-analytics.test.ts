@@ -39,6 +39,7 @@ describe("google-analytics plugin", () => {
     delete globals.gtag;
     delete globals[`ga-disable-${GA_ID}`];
     useAnalyticsConsent().consent.value = null;
+    useAnalyticsConsent().isPromptOpen.value = false;
   });
 
   it("does not inject GA without a stored choice", () => {

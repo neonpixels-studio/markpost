@@ -34,6 +34,9 @@ describe("loadGoogleAnalytics", () => {
     delete globals.dataLayer;
     delete globals.gtag;
     delete globals[`ga-disable-${GA_ID}`];
+    document.cookie.split(";").forEach((pair) => {
+      document.cookie = `${pair.split("=")[0]?.trim()}=; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+    });
   });
 
   it("removes _ga cookies when analytics is disabled", () => {

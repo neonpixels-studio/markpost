@@ -1,10 +1,10 @@
 <template>
-  <!--
-    @todo DRAFT, not legal advice. Written from what the code does. The owner
-    must review (contact address, jurisdiction, retention, processors) before
-    relying on it.
-  -->
   <LegalDocument eyebrow="legal" title="Privacy policy" :updated="UPDATED">
+    <!--
+      @todo DRAFT, not legal advice. Written from what the code does. The owner
+      must review (contact address, jurisdiction, retention, processors) before
+      relying on it.
+    -->
     <p class="muted">
       This is a plain-language summary of what markpost collects and why. It is
       a draft pending owner review.

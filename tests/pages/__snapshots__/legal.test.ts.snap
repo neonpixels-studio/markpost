@@ -1,17 +1,17 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`legal pages > privacy page matches snapshot 1`] = `
-"<!--
-    @todo DRAFT, not legal advice. Written from what the code does. The owner
-    must review (contact address, jurisdiction, retention, processors) before
-    relying on it.
-  -->
-<div class="scroll" style="height: 100vh; overflow-y: auto; background: var(--bg);">
+"<div class="scroll" style="height: 100vh; overflow-y: auto; background: var(--bg);">
   <the-marketing-nav-stub></the-marketing-nav-stub>
   <main style="max-width: 760px; margin: 0px auto; padding: 56px 40px 72px;"><span>legal</span>
     <h1 class="h1" style="margin-top: 16px;">Privacy policy</h1>
     <p class="mono faint" style="margin-top: 10px; font-size: 12px;"> Last updated September 30, 2026</p>
     <div class="col gap-4" style="margin-top: 32px; line-height: 1.6;">
+      <!--
+      @todo DRAFT, not legal advice. Written from what the code does. The owner
+      must review (contact address, jurisdiction, retention, processors) before
+      relying on it.
+    -->
       <p class="muted"> This is a plain-language summary of what markpost collects and why. It is a draft pending owner review. </p>
       <h2 class="h2">What we store</h2>
       <ul class="col gap-2" style="padding-left: 20px;">
@@ -41,17 +41,17 @@ exports[`legal pages > privacy page matches snapshot 1`] = `
 `;
 
 exports[`legal pages > terms page matches snapshot 1`] = `
-"<!--
-    @todo DRAFT, not legal advice. Written from what the code does. The owner
-    must review (liability, governing law, refunds, acceptable use) before
-    relying on it.
-  -->
-<div class="scroll" style="height: 100vh; overflow-y: auto; background: var(--bg);">
+"<div class="scroll" style="height: 100vh; overflow-y: auto; background: var(--bg);">
   <the-marketing-nav-stub></the-marketing-nav-stub>
   <main style="max-width: 760px; margin: 0px auto; padding: 56px 40px 72px;"><span>legal</span>
     <h1 class="h1" style="margin-top: 16px;">Terms of service</h1>
     <p class="mono faint" style="margin-top: 10px; font-size: 12px;"> Last updated September 30, 2026</p>
     <div class="col gap-4" style="margin-top: 32px; line-height: 1.6;">
+      <!--
+      @todo DRAFT, not legal advice. Written from what the code does. The owner
+      must review (liability, governing law, refunds, acceptable use) before
+      relying on it.
+    -->
       <p class="muted"> These are the basic terms for using markpost. They are a draft pending owner review. </p>
       <h2 class="h2">The service</h2>
       <p class="muted"> markpost receives webhooks and email you point at it, converts them to Markdown, and makes them available for sync to your vault. It is provided as is, without warranties, and may change or be interrupted. </p>
