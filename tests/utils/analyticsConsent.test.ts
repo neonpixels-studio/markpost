@@ -45,6 +45,32 @@ describe("loadGoogleAnalytics", () => {
     expect(document.cookie).toContain("keep=1");
   });
 
+  it("also expires _ga cookies for each parent domain", () => {
+    const happyDOM = (
+      window as unknown as { happyDOM: { setURL: (url: string) => void } }
+    ).happyDOM;
+    happyDOM.setURL("https://app.markpost.dev/");
+    const writes: string[] = [];
+    Object.defineProperty(document, "cookie", {
+      configurable: true,
+      get: () => "_ga=abc",
+      set: (value: string) => writes.push(value),
+    });
+    try {
+      disableGoogleAnalytics(GA_ID);
+    } finally {
+      delete (document as unknown as Record<string, unknown>).cookie;
+      happyDOM.setURL("http://localhost:3000/");
+    }
+    expect(writes.some((write) => write.includes("domain=.markpost.dev"))).toBe(
+      true,
+    );
+    expect(
+      writes.some((write) => write.includes("domain=.app.markpost.dev")),
+    ).toBe(true);
+    expect(writes.every((write) => write.includes("max-age=0"))).toBe(true);
+  });
+
   it("tolerates blocked storage", () => {
     const original = Storage.prototype.getItem;
     Storage.prototype.getItem = () => {

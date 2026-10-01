@@ -29,7 +29,7 @@ exports[`legal pages > privacy page matches snapshot 1`] = `
         <li> Google Analytics (GA4) measures site usage. It loads only if you accept analytics in the consent prompt. </li>
       </ul>
       <h2 class="h2">Analytics choice</h2>
-      <p class="muted"> Your choice is stored in this browser (local storage) and you can change it any time from the "cookie settings" link in the footer. Declining never limits what you can do in markpost. </p>
+      <p class="muted"> Your choice is stored in this browser (local storage) and you can change it any time from the "cookie settings" link in the site footer. Declining never limits what you can do in markpost. </p>
       <h2 class="h2">Deleting your data</h2>
       <p class="muted"> Deleting your account in settings cancels billing and removes your records, sources, tokens, and settings. </p>
       <h2 class="h2">Contact</h2>

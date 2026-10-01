@@ -42,49 +42,77 @@ export function writeStoredConsent(choice: AnalyticsConsent): void {
   }
 }
 
+function cookieDomainCandidates(): string[] {
+  const parts = location.hostname.split(".");
+  return parts
+    .slice(0, -1)
+    .map((_, index) => `.${parts.slice(index).join(".")}`);
+}
+
+// GA sets its cookies on the registrable parent domain, so expire the name for
+// the host and every parent suffix.
+function expireCookie(name: string): void {
+  const expiry = `${name}=; max-age=0; expires=${EPOCH_UTC}; path=/`;
+  document.cookie = expiry;
+  cookieDomainCandidates().forEach((domain) => {
+    document.cookie = `${expiry}; domain=${domain}`;
+  });
+}
+
 function clearGoogleAnalyticsCookies(): void {
-  const names = document.cookie
+  document.cookie
     .split(";")
     .map((pair) => pair.split("=")[0]?.trim() ?? "")
-    .filter((name) => name.startsWith(GA_COOKIE_PREFIX));
-  names.forEach((name) => {
-    document.cookie = `${name}=; max-age=0; expires=${EPOCH_UTC}; path=/`;
-  });
+    .filter((name) => name.startsWith(GA_COOKIE_PREFIX))
+    .forEach(expireCookie);
 }
 
 function disableFlagName(gaId: string): string {
   return `ga-disable-${gaId}`;
 }
 
-// Idempotent: a second grant (or a re-run of the plugin) never adds a second
-// gtag script or fires a second `config`.
-export function loadGoogleAnalytics(gaId: string): void {
-  (window as unknown as Record<string, unknown>)[disableFlagName(gaId)] = false;
-  if (document.getElementById(GA_SCRIPT_ELEMENT_ID)) {
-    return;
-  }
+function setDisableFlag(gaId: string, disabled: boolean): void {
+  (window as unknown as Record<string, unknown>)[disableFlagName(gaId)] =
+    disabled;
+}
 
+function injectGtagScript(gaId: string): void {
   const loader = document.createElement("script");
   loader.id = GA_SCRIPT_ELEMENT_ID;
   loader.async = true;
   loader.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(gaId)}`;
   document.head.appendChild(loader);
+}
 
+function bootstrapGtag(gaId: string): void {
   const analyticsWindow = window as unknown as GtagWindow;
   analyticsWindow.dataLayer = analyticsWindow.dataLayer || [];
-  analyticsWindow.gtag = function gtag() {
-    // gtag.js expects the raw `arguments` object, not a rest array.
-    // eslint-disable-next-line prefer-rest-params
-    analyticsWindow.dataLayer.push(arguments);
-  };
+  analyticsWindow.gtag =
+    analyticsWindow.gtag ||
+    function gtag() {
+      // gtag.js expects the raw `arguments` object, not a rest array.
+      // eslint-disable-next-line prefer-rest-params
+      analyticsWindow.dataLayer.push(arguments);
+    };
   analyticsWindow.gtag("js", new Date());
   analyticsWindow.gtag("config", gaId);
+}
+
+// Idempotent: a second grant (or a re-run of the plugin) never adds a second
+// gtag script or fires a second `config`.
+export function loadGoogleAnalytics(gaId: string): void {
+  setDisableFlag(gaId, false);
+  if (document.getElementById(GA_SCRIPT_ELEMENT_ID)) {
+    return;
+  }
+  injectGtagScript(gaId);
+  bootstrapGtag(gaId);
 }
 
 // Google's documented opt-out switch. A script already loaded this page view
 // cannot be unloaded, so this stops further hits until the next page load,
 // where the stored "denied" choice prevents the script loading at all.
 export function disableGoogleAnalytics(gaId: string): void {
-  (window as unknown as Record<string, unknown>)[disableFlagName(gaId)] = true;
+  setDisableFlag(gaId, true);
   clearGoogleAnalyticsCookies();
 }

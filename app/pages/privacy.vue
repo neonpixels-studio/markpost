@@ -46,8 +46,8 @@
     <h2 class="h2">Analytics choice</h2>
     <p class="muted">
       Your choice is stored in this browser (local storage) and you can change
-      it any time from the "cookie settings" link in the footer. Declining never
-      limits what you can do in markpost.
+      it any time from the "cookie settings" link in the site footer. Declining
+      never limits what you can do in markpost.
     </p>
 
     <h2 class="h2">Deleting your data</h2>

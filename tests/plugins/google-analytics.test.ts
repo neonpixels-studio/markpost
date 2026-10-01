@@ -69,6 +69,20 @@ describe("google-analytics plugin", () => {
     expect(localStorage.getItem(STORAGE_KEY_ANALYTICS_CONSENT)).toBe("granted");
   });
 
+  it("disables GA when consent is revoked after a grant", async () => {
+    runPlugin();
+    useAnalyticsConsent().grantConsent();
+    await nextTick();
+    useAnalyticsConsent().denyConsent();
+    await nextTick();
+    expect(
+      (window as unknown as Record<string, unknown>)[`ga-disable-${GA_ID}`],
+    ).toBe(true);
+    expect(document.querySelectorAll(`#${GA_SCRIPT_ELEMENT_ID}`)).toHaveLength(
+      1,
+    );
+  });
+
   it("does nothing when no GA id is configured", () => {
     gaId = "";
     localStorage.setItem(STORAGE_KEY_ANALYTICS_CONSENT, "granted");

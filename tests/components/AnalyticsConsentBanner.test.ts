@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount } from "@vue/test-utils";
+import {
+  CONSENT_DENIED,
+  CONSENT_GRANTED,
+  STORAGE_KEY_ANALYTICS_CONSENT,
+} from "../../app/utils/analyticsConsent";
 import { useAnalyticsConsent } from "../../app/composables/useAnalyticsConsent";
 
 let gaId = "G-TEST123";
@@ -33,7 +38,9 @@ describe("AnalyticsConsentBanner", () => {
     const wrapper = mountBanner();
     await wrapper.findAll("button")[1]!.trigger("click");
     expect(wrapper.find("section").exists()).toBe(false);
-    expect(localStorage.getItem("mp_analytics_consent")).toBe("granted");
+    expect(localStorage.getItem(STORAGE_KEY_ANALYTICS_CONSENT)).toBe(
+      CONSENT_GRANTED,
+    );
 
     useAnalyticsConsent().reopenPrompt();
     await wrapper.vm.$nextTick();
@@ -43,7 +50,9 @@ describe("AnalyticsConsentBanner", () => {
   it("stores a decline", async () => {
     const wrapper = mountBanner();
     await wrapper.findAll("button")[0]!.trigger("click");
-    expect(localStorage.getItem("mp_analytics_consent")).toBe("denied");
+    expect(localStorage.getItem(STORAGE_KEY_ANALYTICS_CONSENT)).toBe(
+      CONSENT_DENIED,
+    );
   });
 
   it("renders nothing without a GA id", () => {

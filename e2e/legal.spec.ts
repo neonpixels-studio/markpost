@@ -1,10 +1,15 @@
 import { test, expect } from "@playwright/test";
+import {
+  CONSENT_DENIED,
+  STORAGE_KEY_ANALYTICS_CONSENT,
+} from "../app/utils/analyticsConsent";
 
 test("privacy policy page loads and is linked from the footer", async ({
   page,
 }) => {
-  await page.addInitScript(() =>
-    localStorage.setItem("mp_analytics_consent", "denied"),
+  await page.addInitScript(
+    ([key, value]) => localStorage.setItem(key as string, value as string),
+    [STORAGE_KEY_ANALYTICS_CONSENT, CONSENT_DENIED],
   );
   await page.goto("/");
   await page
@@ -20,8 +25,9 @@ test("privacy policy page loads and is linked from the footer", async ({
 test("terms of service page loads and is linked from the footer", async ({
   page,
 }) => {
-  await page.addInitScript(() =>
-    localStorage.setItem("mp_analytics_consent", "denied"),
+  await page.addInitScript(
+    ([key, value]) => localStorage.setItem(key as string, value as string),
+    [STORAGE_KEY_ANALYTICS_CONSENT, CONSENT_DENIED],
   );
   await page.goto("/");
   await page
