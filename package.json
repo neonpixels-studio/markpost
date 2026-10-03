@@ -38,7 +38,7 @@
     "@joplin/turndown-plugin-gfm": "^1.0.68",
     "@neondatabase/serverless": "^1.1.0",
     "@pinia/nuxt": "^1.0.2",
-    "@sentry/nuxt": "^10.75.2",
+    "@sentry/nuxt": "^11.1.0",
     "@types/turndown": "^5.0.6",
     "drizzle-orm": "^0.45.3",
     "nuxt": "^4.5.2",
