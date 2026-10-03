@@ -77,5 +77,28 @@ jobs:
           HUSKY: 0
       - name: Summarize moderate and low advisories
         run: npm audit --audit-level=moderate || true
+      # Advisories with no patched release yet, judged unreachable in production.
+      # Remove each entry once upstream ships a fix.
+      # - GHSA-vfj7-8cjw-p6xm: braces <=3.0.3 DoS on deeply nested globs; only
+      #   build tooling (nuxt > nitropack > globby) feeds it trusted patterns.
+      # - GHSA-86w9-cpqp-85rv: node-forge <=1.4.0 RSA signature parsing; only
+      #   reached via @dotenvx/dotenvx and listhen (dev-server certs).
       - name: Fail on high or critical advisories
-        run: npm audit --audit-level=high
+        env:
+          AUDIT_ALLOWLIST: >-
+            GHSA-vfj7-8cjw-p6xm
+            GHSA-86w9-cpqp-85rv
+        run: |
+          # npm audit exits nonzero whenever it finds anything; jq decides pass/fail.
+          audit_json=$(npm audit --json || true)
+          unallowed=$(echo "$audit_json" | jq -r --arg allow "$AUDIT_ALLOWLIST" '
+            ($allow | split(" ")) as $allowed
+            | [.vulnerabilities[].via[] | objects
+                | select(.severity == "high" or .severity == "critical")
+                | .url | select((split("/") | last) as $id | $allowed | index($id) | not)]
+            | unique | .[]')
+          if [ -n "$unallowed" ]; then
+            echo "High or critical advisories not in AUDIT_ALLOWLIST:"
+            echo "$unallowed"
+            exit 1
+          fi
