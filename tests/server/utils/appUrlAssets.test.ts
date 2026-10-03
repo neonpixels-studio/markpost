@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { RECORD_STATUSES } from "#shared/utils/records";
 import { SCOPE_NAMES } from "#shared/utils/scopes";
+import { SOURCE_TYPES } from "#shared/utils/sourceTypes";
+import { ROTATABLE_PROVIDER_IDS } from "#shared/utils/webhookSecrets";
+import {
+  EVENT_KINDS,
+  SUBSCRIPTION_PLANS,
+  SUBSCRIPTION_STATUSES,
+} from "../../../server/db/schema";
+import { CONFLICT_STRATEGIES, THEMES } from "../../../server/utils/response";
+import { SIGNATURE_CHECK_STATUSES } from "../../../server/utils/signatureVerifier";
 import openApiTemplate from "../../../server/utils/openapi.template.json";
 import {
   buildLlmsTxt,
@@ -61,7 +71,10 @@ function collectRefs(node: unknown, found: string[] = []): string[] {
 }
 
 function resolvePointer(root: unknown, ref: string): unknown {
-  const segments = ref.replace(/^#\//, "").split("/");
+  const segments = ref
+    .replace(/^#\//, "")
+    .split("/")
+    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
   let current: unknown = root;
   for (const segment of segments) {
     if (!current || typeof current !== "object") {
@@ -71,6 +84,57 @@ function resolvePointer(root: unknown, ref: string): unknown {
   }
   return current;
 }
+
+const REQUEST_ATTRIBUTE_PROPERTIES =
+  "properties/data/properties/attributes/properties";
+
+// Spec enum location -> the exported server/shared const it must mirror. The
+// expected sets come from the code, never from a list duplicated here.
+// Intentionally not covered: payloadType and checkout priceKey, whose literals
+// are still private to their handlers.
+const ENUM_PARITY: Array<{
+  pointer: string;
+  expected: readonly (string | null)[];
+}> = [
+  {
+    pointer:
+      "components/schemas/SourceTestEvent/properties/attributes/properties/signatureCheck/properties/status",
+    expected: SIGNATURE_CHECK_STATUSES,
+  },
+  { pointer: "components/schemas/SourceType", expected: SOURCE_TYPES },
+  { pointer: "components/schemas/RecordStatus", expected: RECORD_STATUSES },
+  { pointer: "components/schemas/EventKind", expected: EVENT_KINDS },
+  {
+    pointer: "components/schemas/SubscriptionStatus",
+    expected: SUBSCRIPTION_STATUSES,
+  },
+  {
+    pointer:
+      "components/schemas/UserSettings/properties/attributes/properties/conflictStrategy",
+    expected: CONFLICT_STRATEGIES,
+  },
+  {
+    pointer:
+      "components/schemas/UserSettings/properties/attributes/properties/theme",
+    expected: THEMES,
+  },
+  {
+    pointer: `paths/~1settings/put/requestBody/content/application~1json/schema/${REQUEST_ATTRIBUTE_PROPERTIES}/conflictStrategy`,
+    expected: CONFLICT_STRATEGIES,
+  },
+  {
+    pointer: `paths/~1settings/put/requestBody/content/application~1json/schema/${REQUEST_ATTRIBUTE_PROPERTIES}/theme`,
+    expected: THEMES,
+  },
+  {
+    pointer: `paths/~1sources/post/requestBody/content/application~1json/schema/${REQUEST_ATTRIBUTE_PROPERTIES}/provider`,
+    expected: [...ROTATABLE_PROVIDER_IDS, null],
+  },
+  {
+    pointer: `paths/~1billing~1usage/get/responses/200/content/application~1json/schema/properties/data/properties/plan`,
+    expected: SUBSCRIPTION_PLANS,
+  },
+];
 
 let previousAppUrl: string | undefined;
 
@@ -142,6 +206,18 @@ describe("openapi.json asset", () => {
       [...SCOPE_NAMES].sort(),
     );
   });
+
+  it.each(ENUM_PARITY)(
+    "keeps the $pointer enum in sync with the server code",
+    ({ pointer, expected }) => {
+      const spec = JSON.parse(buildOpenApiJson());
+      const schema = resolvePointer(spec, `#/${pointer}`) as
+        { enum?: unknown[] } | undefined;
+
+      expect(schema?.enum, `no enum at ${pointer}`).toBeDefined();
+      expect([...(schema?.enum ?? [])].sort()).toEqual([...expected].sort());
+    },
+  );
 
   it("has no dangling internal $refs", () => {
     const spec = JSON.parse(buildOpenApiJson());

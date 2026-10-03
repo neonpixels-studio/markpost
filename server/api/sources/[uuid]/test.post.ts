@@ -17,6 +17,7 @@ import {
   STRIPE_PROVIDER,
   STRIPE_SIGNATURE_HEADER,
   verifyProviderSignature,
+  type SignatureCheckStatus,
 } from "../../../utils/signatureVerifier";
 import { fetchFilenameTemplate } from "../../../utils/userSettings";
 import { sourceNotFoundError } from "../../../utils/sourceErrors";
@@ -46,9 +47,6 @@ type TestEventRequestAttributes = {
 type TestEventRequestBody = ApiRequest & {
   data?: { attributes?: TestEventRequestAttributes };
 };
-
-type SignatureCheckStatus =
-  "not_required" | "verified" | "failed" | "not_verifiable";
 
 type SignatureCheckResult = {
   status: SignatureCheckStatus;
