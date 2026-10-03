@@ -177,4 +177,78 @@ describe("apiValidate", () => {
       ]),
     ).not.toThrow();
   });
+
+  describe("pattern rule", () => {
+    function captureApiError(run: () => void): ApiError {
+      try {
+        run();
+      } catch (error) {
+        return error as ApiError;
+      }
+      throw new Error("Expected apiValidate to throw");
+    }
+
+    const rules = [
+      { key: "code", type: "string" as const, pattern: /^[a-z]+$/ },
+    ];
+
+    it("passes a value matching the pattern", () => {
+      expect(() =>
+        apiValidate(buildRequest({ code: "abc" }), rules),
+      ).not.toThrow();
+    });
+
+    it("rejects a value not matching the pattern with a 422 pointing at the attribute", () => {
+      const apiError = captureApiError(() =>
+        apiValidate(buildRequest({ code: "ABC1" }), rules),
+      );
+
+      expect(apiError.statusCode).toBe(422);
+      expect(apiError.errors).toEqual([
+        {
+          status: "422",
+          title: "Invalid Attribute",
+          detail: "Code has an invalid format",
+          source: { pointer: "/data/attributes/code" },
+        },
+      ]);
+    });
+
+    it("uses patternMessage when provided", () => {
+      const custom = [{ ...rules[0], patternMessage: "Nope" }];
+
+      const apiError = captureApiError(() =>
+        apiValidate(buildRequest({ code: "1" }), custom),
+      );
+
+      expect(apiError.errors[0].detail).toBe("Nope");
+    });
+
+    it("rejects a non-string value when the rule has a pattern but no type", () => {
+      const apiError = captureApiError(() =>
+        apiValidate(buildRequest({ code: 123 }), [
+          { key: "code", pattern: /^[a-z]+$/ },
+        ]),
+      );
+
+      expect(apiError.errors[0].detail).toBe("Code has an invalid format");
+    });
+
+    it("stays stateless for a global regex across repeated calls", () => {
+      const globalRules = [{ key: "code", pattern: /^[a-z]+$/g }];
+
+      expect(() =>
+        apiValidate(buildRequest({ code: "abc" }), globalRules),
+      ).not.toThrow();
+      expect(() =>
+        apiValidate(buildRequest({ code: "abc" }), globalRules),
+      ).not.toThrow();
+    });
+
+    it("skips the pattern for an absent optional value", () => {
+      const optional = [{ ...rules[0], optional: true }];
+
+      expect(() => apiValidate(buildRequest({}), optional)).not.toThrow();
+    });
+  });
 });

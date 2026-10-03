@@ -178,6 +178,46 @@ describe("PUT /api/settings", () => {
     });
   });
 
+  it.each(["red", "#fff", "a855f7", "#a855f7ff", "#gggggg"])(
+    "throws a 422 pointing at accentColor when it is %j",
+    async (accentColor) => {
+      mockReadBody.mockResolvedValue(buildBody({ accentColor }));
+
+      await expect(handler(buildEvent(userId))).rejects.toMatchObject({
+        statusCode: 422,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 422,
+        data: {
+          errors: [
+            expect.objectContaining({
+              status: "422",
+              source: { pointer: "/data/attributes/accentColor" },
+            }),
+          ],
+        },
+      });
+      expect(insertMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["#a855f7", "#A855F7"])(
+    "accepts accentColor %s",
+    async (accentColor) => {
+      mockReadBody.mockResolvedValue(buildBody({ accentColor }));
+      const { values } = stubUpsertResult([{ ...sampleSettings, accentColor }]);
+
+      const response = await handler(buildEvent(userId));
+
+      expect(response).toEqual({
+        data: expect.objectContaining({ type: "user_settings" }),
+      });
+      expect(values).toHaveBeenCalledWith(
+        expect.objectContaining({ userId, accentColor }),
+      );
+    },
+  );
+
   it("throws a 422 when conflictStrategy is not a valid enum value", async () => {
     mockReadBody.mockResolvedValue(
       buildBody({ conflictStrategy: "invalid_value" }),
