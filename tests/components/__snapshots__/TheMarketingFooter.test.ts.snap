@@ -1,0 +1,12 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`TheMarketingFooter > matches snapshot 1`] = `
+"<footer data-v-8beec6fa="" style="padding: 28px 40px; margin-top: 0px; border-top-width: var(--line); border-top-style: var(--line); border-top-color: var(--line);">
+  <div data-v-8beec6fa="" class="row between wrap gap-4" style="max-width: 1180px; margin: 0px auto;">
+    <div data-v-8beec6fa="" class="row gap-3">
+      <app-logo-stub data-v-8beec6fa="" size="18"></app-logo-stub><span data-v-8beec6fa="" class="mono faint" style="font-size: 12px;">© 2026 markpost</span>
+    </div>
+    <div data-v-8beec6fa="" class="row mono gap-6" style="font-size: 12px; color: var(--ink-3);"><a data-v-8beec6fa="" href="/pricing" class="footer-link"> pricing </a><a data-v-8beec6fa="" href="/docs" class="footer-link"> docs </a><a data-v-8beec6fa="" href="/login" class="footer-link"> sign in </a><a data-v-8beec6fa="" href="/privacy" class="footer-link"> privacy </a><a data-v-8beec6fa="" href="/terms" class="footer-link"> terms </a><button data-v-8beec6fa="" type="button" class="footer-link"> cookie settings </button><span data-v-8beec6fa="" class="row gap-2"><app-badge-stub data-v-8beec6fa="" tone="ok" dot="" style="font-size: 10px;"></app-badge-stub></span></div>
+  </div>
+</footer>"
+`;

@@ -1,0 +1,93 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { watch, nextTick } from "vue";
+import { useAnalyticsConsent } from "../../app/composables/useAnalyticsConsent";
+import {
+  GA_SCRIPT_ELEMENT_ID,
+  STORAGE_KEY_ANALYTICS_CONSENT,
+} from "../../app/utils/analyticsConsent";
+
+const GA_ID = "G-TEST123";
+
+// happy-dom logs (does not throw) when a <script src> is attached; treat the
+// blocked load as success so the output stays quiet.
+(
+  window as unknown as {
+    happyDOM: { settings: { handleDisabledFileLoadingAsSuccess: boolean } };
+  }
+).happyDOM.settings.handleDisabledFileLoadingAsSuccess = true;
+let gaId = GA_ID;
+
+vi.stubGlobal("defineNuxtPlugin", (plugin: () => void) => plugin);
+vi.stubGlobal("useRuntimeConfig", () => ({ public: { gaId } }));
+vi.stubGlobal("useAnalyticsConsent", useAnalyticsConsent);
+vi.stubGlobal("watch", watch);
+
+const { default: runPlugin } =
+  (await import("../../app/plugins/google-analytics.client")) as unknown as {
+    default: () => void;
+  };
+
+const gaScript = () => document.getElementById(GA_SCRIPT_ELEMENT_ID);
+
+describe("google-analytics plugin", () => {
+  beforeEach(() => {
+    gaId = GA_ID;
+    document.head.innerHTML = "";
+    localStorage.clear();
+    const globals = window as unknown as Record<string, unknown>;
+    delete globals.dataLayer;
+    delete globals.gtag;
+    delete globals[`ga-disable-${GA_ID}`];
+    useAnalyticsConsent().consent.value = null;
+    useAnalyticsConsent().isPromptOpen.value = false;
+  });
+
+  it("does not inject GA without a stored choice", () => {
+    runPlugin();
+    expect(gaScript()).toBeNull();
+  });
+
+  it("does not inject GA when consent was declined", () => {
+    localStorage.setItem(STORAGE_KEY_ANALYTICS_CONSENT, "denied");
+    runPlugin();
+    expect(gaScript()).toBeNull();
+    expect(
+      (window as unknown as Record<string, unknown>)[`ga-disable-${GA_ID}`],
+    ).toBe(true);
+  });
+
+  it("injects GA when consent was previously granted", () => {
+    localStorage.setItem(STORAGE_KEY_ANALYTICS_CONSENT, "granted");
+    runPlugin();
+    expect(gaScript()?.getAttribute("src")).toContain(GA_ID);
+  });
+
+  it("injects GA after consent is granted later, and persists it", async () => {
+    runPlugin();
+    useAnalyticsConsent().grantConsent();
+    await nextTick();
+    expect(gaScript()).not.toBeNull();
+    expect(localStorage.getItem(STORAGE_KEY_ANALYTICS_CONSENT)).toBe("granted");
+  });
+
+  it("disables GA when consent is revoked after a grant", async () => {
+    runPlugin();
+    useAnalyticsConsent().grantConsent();
+    await nextTick();
+    useAnalyticsConsent().denyConsent();
+    await nextTick();
+    expect(
+      (window as unknown as Record<string, unknown>)[`ga-disable-${GA_ID}`],
+    ).toBe(true);
+    expect(document.querySelectorAll(`#${GA_SCRIPT_ELEMENT_ID}`)).toHaveLength(
+      1,
+    );
+  });
+
+  it("does nothing when no GA id is configured", () => {
+    gaId = "";
+    localStorage.setItem(STORAGE_KEY_ANALYTICS_CONSENT, "granted");
+    runPlugin();
+    expect(gaScript()).toBeNull();
+  });
+});
