@@ -31,6 +31,7 @@ function makeSource(
       fieldMapping: null,
       lastHitAt: null,
       recordCount: 42,
+      paused: false,
       ...overrides,
     },
     links: { self: "/api/sources/test-uuid-1" },
@@ -84,6 +85,53 @@ describe("SourceCard", () => {
       },
     });
     expect(wrapper.html()).toMatchSnapshot();
+  });
+
+  it("matches snapshot for a paused source", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource({ paused: true }) },
+    });
+    expect(wrapper.html()).toMatchSnapshot();
+  });
+
+  it("hides the pause control for an email source (no inbound handler enforces it)", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: {
+        source: makeSource({ type: "email", endpointSlug: "clip-ab12" }),
+      },
+    });
+    expect(wrapper.find('button[title="Pause source"]').exists()).toBe(false);
+  });
+
+  it("disables the pause button while a request is in flight", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource(), pausing: true },
+    });
+    expect(
+      wrapper.find('button[title="Pause source"]').attributes("disabled"),
+    ).toBeDefined();
+  });
+
+  it("emits toggle-pause with the source uuid when the pause button is clicked", async () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource() },
+    });
+    await wrapper.find('button[title="Pause source"]').trigger("click");
+    expect(wrapper.emitted("toggle-pause")?.[0]).toEqual(["test-uuid-1"]);
+  });
+
+  it("offers Resume instead of Pause, and shows the paused badge, for a paused source", () => {
+    const wrapper = mount(SourceCard, {
+      ...globalConfig,
+      props: { source: makeSource({ paused: true }) },
+    });
+    expect(wrapper.find('button[title="Resume source"]').exists()).toBe(true);
+    expect(wrapper.find('button[title="Pause source"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("paused");
   });
 
   it("renders webhook ingest URL for webhook sources", () => {
@@ -318,6 +366,7 @@ describe("SourceCard", () => {
         fieldMapping: null,
         lastHitAt: null,
         recordCount: 0,
+        paused: false,
       },
       links: { self: "/api/sources/attributes-uuid" },
     };

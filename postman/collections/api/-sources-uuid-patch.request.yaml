@@ -15,7 +15,8 @@ body:
             "type": "sources",
             "attributes": {
                 "routeFolder": "05-stripe/",
-                "fieldMapping": { "event": "$.type" }
+                "fieldMapping": { "event": "$.type" },
+                "paused": false
             }
         }
     }

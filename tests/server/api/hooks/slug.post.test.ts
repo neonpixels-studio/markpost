@@ -400,6 +400,60 @@ describe("POST /api/hooks/[slug]", () => {
     });
   });
 
+  describe("paused source", () => {
+    it("rejects with 423 before reading the body, verifying the signature, or touching the throttle", async () => {
+      stubSourceOnly([{ ...sampleSource, paused: true }]);
+      mockReadRawBody.mockResolvedValue(JSON.stringify({ title: "T" }));
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 423,
+      });
+      expect(mockCreateError).toHaveBeenCalledWith({
+        statusCode: 423,
+        data: {
+          errors: [
+            {
+              status: "423",
+              title: "Locked",
+              detail: "This source is paused. Resume it to accept deliveries.",
+            },
+          ],
+        },
+      });
+      expect(mockReadRawBody).not.toHaveBeenCalled();
+      expect(mockRecordWebhookHit).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it("returns 413 for an oversized delivery to a paused source (content-length is checked first)", async () => {
+      stubSourceOnly([{ ...sampleSource, paused: true }]);
+      mockGetHeader.mockImplementation((_event: unknown, name: string) =>
+        name === CONTENT_LENGTH_HEADER
+          ? String(MAX_WEBHOOK_BODY_BYTES + 1)
+          : undefined,
+      );
+
+      await expect(handler(buildEvent())).rejects.toMatchObject({
+        statusCode: 413,
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+      expect(mockReadRawBody).not.toHaveBeenCalled();
+    });
+
+    it("ingests normally once the source is resumed (paused: false)", async () => {
+      stubSourceAndSettings([{ ...sampleSource, paused: false }]);
+      stubInsertRecord(sampleRecord);
+      stubUpdateStats();
+      mockReadRawBody.mockResolvedValue(
+        JSON.stringify({ title: "T", content: "C" }),
+      );
+
+      const response = await handler(buildEvent());
+
+      expect202Success(response, mockSetResponseStatus, sampleRecord.uuid);
+    });
+  });
+
   describe("valid payload — non-stripe source", () => {
     it("ingests a payload and returns 202 with record uuid", async () => {
       const rawBody = JSON.stringify({

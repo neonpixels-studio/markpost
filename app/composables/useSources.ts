@@ -17,6 +17,7 @@ export type SourceAttributes = {
   fieldMapping: unknown;
   lastHitAt: string | null;
   recordCount: number;
+  paused: boolean;
 };
 
 export type SourceResource = {
@@ -140,7 +141,7 @@ const SOURCE_NEW_WINDOW_MINUTES = 5;
 
 export type SourceActivityStatus = {
   tone: "" | "ok" | "warn" | "accent";
-  label: "active" | "quiet" | "ready" | "waiting" | "idle";
+  label: "active" | "quiet" | "ready" | "waiting" | "idle" | "paused";
 };
 
 // A source that has ever delivered is either firing ("active") or has gone
@@ -180,6 +181,11 @@ function undeliveredActivityStatus(createdAt: string): SourceActivityStatus {
 export function sourceActivityStatus(
   attributes: SourceAttributes,
 ): SourceActivityStatus {
+  // A paused source rejects every delivery, so its delivery history says
+  // nothing about whether it is firing; the pause itself is the status.
+  if (attributes.paused) {
+    return { tone: "warn", label: "paused" };
+  }
   if (attributes.lastHitAt) {
     return deliveredActivityStatus(attributes.lastHitAt);
   }
@@ -252,6 +258,24 @@ async function patchSourceFieldMapping(
   const response = await $fetch<SourceResponse>(`/api/sources/${uuid}`, {
     method: "PATCH",
     body: { data: { type: "sources", attributes: { fieldMapping } } },
+  });
+
+  if (!response.data) {
+    throw new Error("Server returned no data for the updated source");
+  }
+
+  return response.data;
+}
+
+// Pauses or resumes a source. The server keeps the endpoint slug and secret
+// either way; a paused source just rejects deliveries with 423.
+async function patchSourcePaused(
+  uuid: string,
+  paused: boolean,
+): Promise<SourceResource> {
+  const response = await $fetch<SourceResponse>(`/api/sources/${uuid}`, {
+    method: "PATCH",
+    body: { data: { type: "sources", attributes: { paused } } },
   });
 
   if (!response.data) {
@@ -374,6 +398,19 @@ export function useSources() {
     return updated;
   }
 
+  async function setPaused(
+    uuid: string,
+    paused: boolean,
+  ): Promise<SourceResource> {
+    const updated = await patchSourcePaused(uuid, paused);
+    // Same reasoning as updateFieldMapping: no one-time secret is at risk, so
+    // a list entry that vanished mid-request is a no-op, not a failure.
+    sources.value = sources.value.map((source) =>
+      source.attributes.uuid === uuid ? updated : source,
+    );
+    return updated;
+  }
+
   return {
     sources,
     isLoading,
@@ -382,6 +419,7 @@ export function useSources() {
     removeSource,
     rotateSecret,
     updateFieldMapping,
+    setPaused,
     sendTestEvent: requestTestEvent,
   };
 }

@@ -309,9 +309,17 @@ const baseSource = {
   fieldMapping: null,
   lastHitAt: null,
   recordCount: 0,
+  paused: false,
 };
 
 describe("sourceSerializer", () => {
+  it("exposes paused on the serialized source", () => {
+    expect(
+      sourceSerializer({ ...baseSource, paused: true })?.attributes.paused,
+    ).toBe(true);
+    expect(sourceSerializer(baseSource)?.attributes.paused).toBe(false);
+  });
+
   it("returns the correct JSON API shape for a valid source", () => {
     const result = sourceSerializer(baseSource);
 
@@ -331,6 +339,7 @@ describe("sourceSerializer", () => {
         fieldMapping: null,
         lastHitAt: null,
         recordCount: 0,
+        paused: false,
       },
       links: {
         self: `/api/sources/${baseSource.uuid}`,
@@ -345,6 +354,7 @@ describe("sourceSerializer", () => {
       fieldMapping: { event: "$.type" },
       lastHitAt: new Date("2024-02-01T12:00:00Z"),
       recordCount: 42,
+      paused: false,
     };
 
     const result = sourceSerializer(sourceWithExtras);

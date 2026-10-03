@@ -32,6 +32,7 @@ const sampleSource = {
   fieldMapping: null,
   lastHitAt: null,
   recordCount: 0,
+  paused: false,
 };
 
 function buildEvent(contextUserId: string | undefined): H3Event {
@@ -80,6 +81,7 @@ describe("GET /api/sources", () => {
             fieldMapping: null,
             lastHitAt: null,
             recordCount: 0,
+            paused: false,
           },
           links: { self: `/api/sources/${sampleSource.uuid}` },
         },

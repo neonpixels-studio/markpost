@@ -519,7 +519,7 @@
       "patch": {
         "tags": ["Sources"],
         "summary": "Update a source",
-        "description": "At least one of `routeFolder` or `fieldMapping` is required.",
+        "description": "At least one of `routeFolder`, `fieldMapping`, or `paused` is required. Set `paused: true` to stop the source accepting deliveries (they get `423 Locked`) without losing its endpoint slug or secret; `paused: false` resumes it.",
         "requestBody": {
           "required": true,
           "content": {
@@ -535,7 +535,8 @@
                         "type": "object",
                         "properties": {
                           "routeFolder": { "type": "string" },
-                          "fieldMapping": { "type": ["object", "null"] }
+                          "fieldMapping": { "type": ["object", "null"] },
+                          "paused": { "type": "boolean" }
                         }
                       }
                     }
@@ -1144,6 +1145,14 @@
           "403": { "$ref": "#/components/responses/PlanLimit" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "423": {
+            "description": "The source is paused. Checked right after the Content-Length limit and source lookup, before the body is read, the signature verified, or the throttle consumed. The delivery is not stored; whether the sender retries depends on the provider. Resume the source (`PATCH /sources/{uuid}` with `paused: false`) to accept deliveries again.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorDocument" }
+              }
+            }
+          },
           "429": {
             "description": "Throttled.",
             "headers": { "Retry-After": { "schema": { "type": "integer" } } },
@@ -1426,7 +1435,11 @@
                 "type": ["string", "null"],
                 "format": "date-time"
               },
-              "recordCount": { "type": "integer" }
+              "recordCount": { "type": "integer" },
+              "paused": {
+                "type": "boolean",
+                "description": "A paused source rejects incoming deliveries with 423 but keeps its endpoint slug and secret."
+              }
             }
           },
           "links": {

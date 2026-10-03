@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { ref } from "vue";
 
@@ -11,6 +11,7 @@ const mockRemoveSource = vi.fn();
 const mockRotateSecret = vi.fn();
 const mockUpdateFieldMapping = vi.fn();
 const mockSendTestEvent = vi.fn();
+const mockSetPaused = vi.fn();
 
 const sourcesRef = ref<object[]>([]);
 const isLoadingRef = ref(false);
@@ -24,6 +25,7 @@ vi.mock("../../app/composables/useSources", () => ({
     removeSource: mockRemoveSource,
     rotateSecret: mockRotateSecret,
     updateFieldMapping: mockUpdateFieldMapping,
+    setPaused: mockSetPaused,
     sendTestEvent: mockSendTestEvent,
   }),
   buildEndpointUrl: (type: string, slug: string) => {
@@ -53,9 +55,15 @@ const globalConfig = {
       AppIcon: { template: "<span />" },
       SourceCard: {
         template:
-          '<div class="source-card" @click="$emit(\'remove\', source.attributes.uuid)"><button class="rotate-trigger" @click.stop="$emit(\'rotate\', source.attributes.uuid)" /><button class="mapping-trigger" @click.stop="$emit(\'configure-mapping\', source.attributes.uuid)" /><button class="test-event-trigger" @click.stop="$emit(\'test-event\', source.attributes.uuid)" /></div>',
+          '<div class="source-card" @click="$emit(\'remove\', source.attributes.uuid)"><button class="rotate-trigger" @click.stop="$emit(\'rotate\', source.attributes.uuid)" /><button class="mapping-trigger" @click.stop="$emit(\'configure-mapping\', source.attributes.uuid)" /><button class="test-event-trigger" @click.stop="$emit(\'test-event\', source.attributes.uuid)" /><button class="pause-trigger" @click.stop="$emit(\'toggle-pause\', source.attributes.uuid)" /></div>',
         props: ["source"],
-        emits: ["remove", "rotate", "configure-mapping", "test-event"],
+        emits: [
+          "remove",
+          "rotate",
+          "configure-mapping",
+          "test-event",
+          "toggle-pause",
+        ],
       },
       AddSourceModal: {
         template: '<div class="add-source-modal" />',
@@ -107,6 +115,7 @@ function makeSource(id = "uuid-1") {
       fieldMapping: null,
       lastHitAt: null,
       recordCount: 0,
+      paused: false,
     },
     links: { self: `/api/sources/${id}` },
   };
@@ -122,6 +131,7 @@ describe("sources page", () => {
     mockRotateSecret.mockReset();
     mockUpdateFieldMapping.mockReset();
     mockSendTestEvent.mockReset();
+    mockSetPaused.mockReset();
   });
 
   it("calls loadSources on mount", () => {
@@ -224,6 +234,75 @@ describe("sources page", () => {
     await wrapper.find(".cancel-btn").trigger("click");
     expect(mockRemoveSource).not.toHaveBeenCalled();
     expect(wrapper.find(".confirm-dialog").exists()).toBe(false);
+  });
+
+  describe("pause flow", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("pauses a running source", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockSetPaused.mockResolvedValue(makeSource("uuid-1"));
+      const wrapper = mount(SourcesPage, globalConfig);
+
+      await wrapper.find(".pause-trigger").trigger("click");
+
+      expect(mockSetPaused).toHaveBeenCalledWith("uuid-1", true);
+    });
+
+    it("resumes a paused source", async () => {
+      const paused = makeSource("uuid-1");
+      paused.attributes.paused = true;
+      sourcesRef.value = [paused];
+      mockSetPaused.mockResolvedValue(paused);
+      const wrapper = mount(SourcesPage, globalConfig);
+
+      await wrapper.find(".pause-trigger").trigger("click");
+
+      expect(mockSetPaused).toHaveBeenCalledWith("uuid-1", false);
+    });
+
+    it("ignores a second toggle while the first request is still in flight", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockSetPaused.mockReturnValue(new Promise(() => {}));
+      const wrapper = mount(SourcesPage, globalConfig);
+
+      await wrapper.find(".pause-trigger").trigger("click");
+      await wrapper.find(".pause-trigger").trigger("click");
+
+      expect(mockSetPaused).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows an error banner when the request fails", async () => {
+      sourcesRef.value = [makeSource("uuid-1")];
+      mockSetPaused.mockRejectedValue(new Error("boom"));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const wrapper = mount(SourcesPage, globalConfig);
+
+      await wrapper.find(".pause-trigger").trigger("click");
+      await flushPromises();
+
+      expect(wrapper.findAll(".app-alert").at(-1)?.text()).toContain(
+        "Failed to pause source. Please try again.",
+      );
+    });
+
+    it("names resume in the error banner when resuming fails", async () => {
+      const paused = makeSource("uuid-1");
+      paused.attributes.paused = true;
+      sourcesRef.value = [paused];
+      mockSetPaused.mockRejectedValue(new Error("boom"));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const wrapper = mount(SourcesPage, globalConfig);
+
+      await wrapper.find(".pause-trigger").trigger("click");
+      await flushPromises();
+
+      expect(wrapper.findAll(".app-alert").at(-1)?.text()).toContain(
+        "Failed to resume source. Please try again.",
+      );
+    });
   });
 
   describe("rotate secret flow", () => {
