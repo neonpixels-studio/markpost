@@ -251,7 +251,15 @@ npm run preview
 
 ## Deployment
 
-The app deploys to Netlify automatically on push to `main`. CI runs lint and unit tests before the build. E2e tests run as a separate job after CI passes.
+### Deploys
+
+Production deploys once a week, on Mondays at 14:00 UTC, via a Netlify build hook called by `.github/workflows/weekly-production-deploy.yml`. Merging to `main` does not start a production build or touch the production database: the `[context.production]` `ignore` command in `netlify.toml` cancels any production build that was not triggered by a hook. Pull requests still get Deploy Previews.
+
+The weekly run first requires CI on the `main` HEAD commit to have concluded `success`, then applies Drizzle migrations to production (`npm run db:migrate:production`), then calls the hook. A failed migration means no deploy. The scheduled run is skipped (and logs why) when `main` has no commits in the last 7 days.
+
+To ship a hotfix now, open the Actions tab, pick **Weekly production deploy**, and choose **Run workflow**. A manual run always migrates and deploys. It needs the `NETLIFY_BUILD_HOOK_URL` and `DOTENV_PRIVATE_KEY_PRODUCTION` repo secrets and fails if either is missing or the hook returns non-2xx. Production builds started from the Netlify UI are cancelled by the same gate, so use the workflow instead. GitHub disables scheduled workflows after 60 days without repo activity; re-enable it from the Actions tab if the weekly run stops appearing.
+
+CI runs lint and unit tests before the build. E2e tests run as a separate job after CI passes.
 
 Required repository secrets (Settings → Secrets → Actions):
 
