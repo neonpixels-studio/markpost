@@ -83,11 +83,19 @@ jobs:
       #   build tooling (nuxt > nitropack > globby) feeds it trusted patterns.
       # - GHSA-86w9-cpqp-85rv: node-forge <=1.4.0 RSA signature parsing; only
       #   reached via @dotenvx/dotenvx and listhen (dev-server certs).
+      # - GHSA-858h-whjf-mvg5, GHSA-g4wm-2vf7-vfgr, GHSA-x6jw-m9v5-85vh,
+      #   GHSA-v5rq-49vh-5v5c: simple-git <4.0.1 command execution; only
+      #   @nuxt/devtools uses it, under `nuxt dev` on a local checkout. Fixed in
+      #   simple-git 4, but devtools 3.x imports its removed default export.
       - name: Fail on high or critical advisories
         env:
           AUDIT_ALLOWLIST: >-
             GHSA-vfj7-8cjw-p6xm
             GHSA-86w9-cpqp-85rv
+            GHSA-858h-whjf-mvg5
+            GHSA-g4wm-2vf7-vfgr
+            GHSA-x6jw-m9v5-85vh
+            GHSA-v5rq-49vh-5v5c
         run: |
           # npm audit exits nonzero whenever it finds anything; jq decides pass/fail.
           audit_json=$(npm audit --json || true)
