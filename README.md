@@ -199,12 +199,12 @@ The collection uses bearer token auth via the `{{apiToken}}` workspace global. T
 
 | Variable   | Location          | Description                                                                                                                                                                                                                             |
 | ---------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `baseUrl`  | Environment       | Base URL for the API (`http://localhost:3000` for Local; production URL for Production)                                                                                                                                                 |
+| `baseUrl`  | Environment       | Base URL for the API (`http://localhost:3000` for Local; `https://markpost.io` for Production)                                                                                                                                          |
 | `apiToken` | Workspace globals | Clerk session JWT sent in `Authorization: Bearer <token>` — obtain from [Clerk Dashboard](https://dashboard.clerk.com) → your user → **Sessions** → copy the session access token, or retrieve it in-app via `await session.getToken()` |
 
 Fill in `apiToken` in your workspace globals directly in your Postman client (it is intentionally left blank in the repo). The value is validated server-side by `clerkClient.verifyToken()` in `server/middleware/auth.ts` — it must be a valid Clerk-issued JWT, not the server secret key.
 
-> **Note:** The Production environment's `baseUrl` is currently a placeholder (`https://markpost.example.com`). Update it to the actual deployed URL once known.
+> **Note:** The Production environment's `baseUrl` points at `https://markpost.io`.
 
 ## Linting
 

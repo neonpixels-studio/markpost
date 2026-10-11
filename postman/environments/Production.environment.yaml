@@ -1,5 +1,5 @@
 name: Production
 values:
   - key: baseUrl
-    value: "https://markpost.example.com"
+    value: "https://markpost.io"
     enabled: true
